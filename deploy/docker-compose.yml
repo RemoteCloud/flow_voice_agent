@@ -1,0 +1,49 @@
+# Flow Voice on an edge node (vessel). One container, one port, one volume.
+#   cp deploy/.env.example deploy/.env   (fill in HUB_SECRET, tenant, Maranics host, OIDC client)
+#   docker compose -f deploy/docker-compose.yml up -d --build
+name: flow-voice
+
+services:
+  flow-voice:
+    build:
+      context: ..
+      dockerfile: deploy/Dockerfile
+    image: maranics/flow-voice:0.1
+    container_name: flow-voice
+    restart: unless-stopped
+    ports:
+      - "8443:8443"
+    volumes:
+      - flowvoice-data:/data
+      # optional: extra STT/TTS models for a derived image, TLS certs
+      # - ./models:/models:ro
+      # - ./certs:/certs:ro
+    env_file:
+      - .env
+    environment:
+      HUB_HOST: 0.0.0.0
+      HUB_PORT: "8443"
+      HUB_DATA_DIR: /data
+      HUB_PUBLIC_DIR: /app/public
+      LOG_LEVEL: ${LOG_LEVEL:-info}
+    # devices: ["/dev/snd:/dev/snd"]   # only when the container itself owns the audio hardware (profile A)
+    healthcheck:
+      test: ["CMD", "wget", "-qO-", "http://127.0.0.1:8443/healthz"]
+      interval: 30s
+      timeout: 5s
+      retries: 3
+      start_period: 10s
+
+  # Optional server-side speech-to-text (OpenAI-compatible API). Set STT_ENDPOINT=http://stt:8000 in .env.
+  # stt:
+  #   image: fedirz/faster-whisper-server:latest-cpu
+  #   container_name: flow-voice-stt
+  #   restart: unless-stopped
+  #   environment:
+  #     WHISPER__MODEL: Systran/faster-whisper-base
+  #   volumes:
+  #     - stt-models:/root/.cache/huggingface
+
+volumes:
+  flowvoice-data: {}
+  # stt-models: {}

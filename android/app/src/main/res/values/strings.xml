@@ -1,0 +1,16 @@
+<?xml version="1.0" encoding="utf-8"?>
+<resources>
+    <string name="app_name">Flow Voice</string>
+    <string name="hub_url_title">Flow Voice hub address</string>
+    <string name="hub_url_hint">http://flow-voice.vessel.local:8443</string>
+    <string name="hub_url_help">The hub runs on the ship network. Ask the officer who set it up, or read it from the hub Admin screen.</string>
+    <string name="menu_hub">Hub address…</string>
+    <string name="menu_reload">Reload</string>
+    <string name="menu_ptt_hint">Push-to-talk: hold the on-screen button, volume-up, or a headset button.</string>
+    <string name="notification_channel">Voice session</string>
+    <string name="notification_title">Flow Voice</string>
+    <string name="notification_text">Voice checklist active</string>
+    <string name="mic_denied">Microphone permission is required to answer by voice. You can still answer on screen.</string>
+    <string name="save">Save</string>
+    <string name="cancel">Cancel</string>
+</resources>

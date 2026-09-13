@@ -1,0 +1,5 @@
+[
+  { "stationId": "bridge-01", "name": "Bridge", "defaultProfile": "arrival-bridge", "language": "en", "audioPolicy": "ptt", "autoStartAllowed": true, "verbosity": "full", "voiceActions": true },
+  { "stationId": "ecr-01", "name": "Engine Control Room", "defaultProfile": null, "language": "en", "audioPolicy": "ptt", "autoStartAllowed": true, "verbosity": "full" },
+  { "stationId": "roaming", "name": "Roaming - rounds", "defaultProfile": null, "language": "en", "audioPolicy": "ptt", "autoStartAllowed": false, "verbosity": "short" }
+]

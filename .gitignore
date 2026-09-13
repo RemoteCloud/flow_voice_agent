@@ -1,0 +1,14 @@
+node_modules/
+dist/
+build-server/
+build-smoke/
+web/dist/
+data/
+*.log
+.env
+android/.gradle/
+android/build/
+android/app/build/
+android/local.properties
+android/*.keystore
+!android/app/debug.keystore

@@ -1,0 +1,317 @@
+package com.maranics.flowvoice
+
+import android.Manifest
+import android.annotation.SuppressLint
+import android.content.Context
+import android.content.Intent
+import android.content.pm.PackageManager
+import android.net.Uri
+import android.os.Build
+import android.os.Bundle
+import android.speech.RecognitionListener
+import android.speech.RecognizerIntent
+import android.speech.SpeechRecognizer
+import android.speech.tts.TextToSpeech
+import android.speech.tts.UtteranceProgressListener
+import android.text.InputType
+import android.view.KeyEvent
+import android.view.View
+import android.webkit.CookieManager
+import android.webkit.JavascriptInterface
+import android.webkit.PermissionRequest
+import android.webkit.WebChromeClient
+import android.webkit.WebResourceRequest
+import android.webkit.WebView
+import android.webkit.WebViewClient
+import android.widget.EditText
+import android.widget.LinearLayout
+import android.widget.TextView
+import android.widget.Toast
+import androidx.activity.result.contract.ActivityResultContracts
+import androidx.appcompat.app.AlertDialog
+import androidx.appcompat.app.AppCompatActivity
+import androidx.core.content.ContextCompat
+import org.json.JSONObject
+import java.util.Locale
+
+/**
+ * Flow Voice Android agent (spec 21, profile C). The app stays thin: it owns the microphone,
+ * the speaker, the foreground service and the session cookie; the hub owns everything else.
+ * The UI is the hub's PWA loaded in a WebView; `window.FlowVoiceAndroid` gives the page
+ * on-device TTS (TextToSpeech) and STT (SpeechRecognizer), and the page calls back through
+ * `window.flowVoiceBridge` — the same contract as web/src/audio.ts.
+ */
+class MainActivity : AppCompatActivity() {
+    private lateinit var web: WebView
+    private var tts: TextToSpeech? = null
+    private var ttsReady = false
+    private var recognizer: SpeechRecognizer? = null
+    private var listening = false
+    private var pttDown = false
+    private var micGranted = false
+
+    private val prefs by lazy { getSharedPreferences("flowvoice", Context.MODE_PRIVATE) }
+    private val hubUrl: String? get() = prefs.getString("hubUrl", null)
+
+    private val micPermission = registerForActivityResult(ActivityResultContracts.RequestPermission()) { granted ->
+        micGranted = granted
+        if (!granted) Toast.makeText(this, R.string.mic_denied, Toast.LENGTH_LONG).show()
+    }
+    private val notifPermission = registerForActivityResult(ActivityResultContracts.RequestPermission()) { }
+
+    @SuppressLint("SetJavaScriptEnabled")
+    override fun onCreate(savedInstanceState: Bundle?) {
+        super.onCreate(savedInstanceState)
+        web = WebView(this)
+        setContentView(web)
+        with(web.settings) {
+            javaScriptEnabled = true
+            domStorageEnabled = true
+            databaseEnabled = true
+            mediaPlaybackRequiresUserGesture = false
+            allowFileAccess = false
+            userAgentString = "$userAgentString FlowVoiceAndroid/${BuildConfig.VERSION_NAME}"
+        }
+        CookieManager.getInstance().setAcceptCookie(true)
+        CookieManager.getInstance().setAcceptThirdPartyCookies(web, true)
+        web.addJavascriptInterface(Bridge(), "FlowVoiceAndroid")
+        web.webChromeClient = object : WebChromeClient() {
+            override fun onPermissionRequest(request: PermissionRequest) {
+                // the PWA streams PCM to the hub when STT runs server-side (STT_ENDPOINT); grant the mic
+                runOnUiThread {
+                    if (request.resources.contains(PermissionRequest.RESOURCE_AUDIO_CAPTURE) && micGranted) request.grant(arrayOf(PermissionRequest.RESOURCE_AUDIO_CAPTURE))
+                    else request.deny()
+                }
+            }
+        }
+        web.webViewClient = object : WebViewClient() {
+            override fun shouldOverrideUrlLoading(view: WebView, request: WebResourceRequest): Boolean {
+                val u = request.url
+                // keep the hub (and the identity provider it redirects to) inside the WebView; hand everything else to the system
+                if (u.scheme == "flowvoice") {
+                    view.loadUrl(hubUrl ?: return true)
+                    return true
+                }
+                return false
+            }
+        }
+        web.setBackgroundColor(ContextCompat.getColor(this, R.color.bg))
+        web.setOnLongClickListener { showMenu(); true }
+
+        tts = TextToSpeech(this) { status ->
+            ttsReady = status == TextToSpeech.SUCCESS
+            tts?.setOnUtteranceProgressListener(object : UtteranceProgressListener() {
+                override fun onStart(utteranceId: String?) {}
+                override fun onDone(utteranceId: String?) = js("window.flowVoiceBridge&&window.flowVoiceBridge.onSpoken(${q(utteranceId ?: "")})")
+                @Deprecated("Deprecated in Java")
+                override fun onError(utteranceId: String?) = js("window.flowVoiceBridge&&window.flowVoiceBridge.onSpoken(${q(utteranceId ?: "")})")
+            })
+        }
+
+        micGranted = ContextCompat.checkSelfPermission(this, Manifest.permission.RECORD_AUDIO) == PackageManager.PERMISSION_GRANTED
+        if (!micGranted) micPermission.launch(Manifest.permission.RECORD_AUDIO)
+        if (Build.VERSION.SDK_INT >= 33 && ContextCompat.checkSelfPermission(this, Manifest.permission.POST_NOTIFICATIONS) != PackageManager.PERMISSION_GRANTED) notifPermission.launch(Manifest.permission.POST_NOTIFICATIONS)
+
+        if (savedInstanceState == null) load() else web.restoreState(savedInstanceState)
+    }
+
+    override fun onNewIntent(intent: Intent) {
+        super.onNewIntent(intent)
+        if (intent.data?.scheme == "flowvoice") hubUrl?.let { web.loadUrl(it) }
+    }
+
+    private fun load() {
+        val url = hubUrl
+        if (url.isNullOrBlank()) askHubUrl(first = true) else web.loadUrl(url)
+    }
+
+    private fun askHubUrl(first: Boolean) {
+        val layout = LinearLayout(this).apply { orientation = LinearLayout.VERTICAL; setPadding(48, 24, 48, 0) }
+        val input = EditText(this).apply {
+            inputType = InputType.TYPE_TEXT_VARIATION_URI
+            hint = getString(R.string.hub_url_hint)
+            setText(hubUrl ?: "")
+        }
+        layout.addView(input)
+        layout.addView(TextView(this).apply { text = getString(R.string.hub_url_help); setPadding(0, 16, 0, 0) })
+        AlertDialog.Builder(this)
+            .setTitle(R.string.hub_url_title)
+            .setView(layout)
+            .setCancelable(!first)
+            .setPositiveButton(R.string.save) { _, _ ->
+                var v = input.text.toString().trim()
+                if (v.isNotEmpty() && !v.startsWith("http")) v = "http://$v"
+                prefs.edit().putString("hubUrl", v).apply()
+                if (v.isNotEmpty()) web.loadUrl(v)
+            }
+            .apply { if (!first) setNegativeButton(R.string.cancel, null) }
+            .show()
+    }
+
+    private fun showMenu() {
+        val items = arrayOf(getString(R.string.menu_hub), getString(R.string.menu_reload), getString(R.string.menu_ptt_hint))
+        AlertDialog.Builder(this).setItems(items) { _, which ->
+            when (which) {
+                0 -> askHubUrl(first = false)
+                1 -> web.reload()
+            }
+        }.show()
+    }
+
+    // ---- hardware push-to-talk: volume-up or a headset button, held while speaking
+    override fun onKeyDown(keyCode: Int, event: KeyEvent): Boolean {
+        if (isPttKey(keyCode)) {
+            if (event.repeatCount == 0 && !pttDown) {
+                pttDown = true
+                js("window.flowVoiceBridge&&window.flowVoiceBridge.onPtt(true)")
+            }
+            return true
+        }
+        return super.onKeyDown(keyCode, event)
+    }
+
+    override fun onKeyUp(keyCode: Int, event: KeyEvent): Boolean {
+        if (isPttKey(keyCode)) {
+            pttDown = false
+            js("window.flowVoiceBridge&&window.flowVoiceBridge.onPtt(false)")
+            return true
+        }
+        return super.onKeyUp(keyCode, event)
+    }
+
+    private fun isPttKey(keyCode: Int) = keyCode == KeyEvent.KEYCODE_VOLUME_UP || keyCode == KeyEvent.KEYCODE_HEADSETHOOK || keyCode == KeyEvent.KEYCODE_MEDIA_PLAY_PAUSE
+
+    override fun onBackPressed() {
+        if (web.canGoBack()) web.goBack() else super.onBackPressed()
+    }
+
+    override fun onSaveInstanceState(outState: Bundle) {
+        super.onSaveInstanceState(outState)
+        web.saveState(outState)
+    }
+
+    override fun onDestroy() {
+        recognizer?.destroy()
+        tts?.shutdown()
+        VoiceService.stop(this)
+        super.onDestroy()
+    }
+
+    private fun js(code: String) = runOnUiThread { web.evaluateJavascript(code, null) }
+    private fun q(s: String): String = JSONObject.quote(s)
+
+    private fun localeOf(language: String): Locale = when (language.lowercase().take(2)) {
+        "no", "nb" -> Locale("nb", "NO")
+        "sv" -> Locale("sv", "SE")
+        "de" -> Locale.GERMANY
+        "fr" -> Locale.FRANCE
+        "da" -> Locale("da", "DK")
+        else -> Locale.UK
+    }
+
+    /** Called by the PWA (web/src/audio.ts). Every method runs on a WebView thread; hop to the UI thread for Android APIs. */
+    inner class Bridge {
+        /** The page's theme (light / dark) → status and navigation bar colours follow it. */
+        @JavascriptInterface
+        fun setTheme(theme: String) = runOnUiThread {
+            val dark = theme == "dark"
+            val color = ContextCompat.getColor(this@MainActivity, if (dark) R.color.bg_dark else R.color.bg)
+            web.setBackgroundColor(color)
+            window.statusBarColor = color
+            window.navigationBarColor = color
+            if (Build.VERSION.SDK_INT >= 30) {
+                window.insetsController?.setSystemBarsAppearance(if (dark) 0 else android.view.WindowInsetsController.APPEARANCE_LIGHT_STATUS_BARS or android.view.WindowInsetsController.APPEARANCE_LIGHT_NAVIGATION_BARS, android.view.WindowInsetsController.APPEARANCE_LIGHT_STATUS_BARS or android.view.WindowInsetsController.APPEARANCE_LIGHT_NAVIGATION_BARS)
+            } else {
+                @Suppress("DEPRECATION")
+                window.decorView.systemUiVisibility = if (dark) 0 else View.SYSTEM_UI_FLAG_LIGHT_STATUS_BAR
+            }
+        }
+
+        @JavascriptInterface
+        fun version(): String = BuildConfig.VERSION_NAME
+
+        @JavascriptInterface
+        fun hasLocalStt(): Boolean = SpeechRecognizer.isRecognitionAvailable(this@MainActivity)
+
+        @JavascriptInterface
+        fun speak(text: String, language: String, promptId: String) = runOnUiThread {
+            val t = tts
+            if (t == null || !ttsReady) {
+                js("window.flowVoiceBridge&&window.flowVoiceBridge.onSpoken(${q(promptId)})")
+                return@runOnUiThread
+            }
+            t.language = localeOf(language)
+            t.setSpeechRate(0.95f)
+            t.speak(text, TextToSpeech.QUEUE_FLUSH, null, promptId)
+        }
+
+        @JavascriptInterface
+        fun stopSpeaking() = runOnUiThread { tts?.stop() }
+
+        @JavascriptInterface
+        fun startListening(language: String, maxMs: Int, promptId: String) = runOnUiThread {
+            if (!micGranted) {
+                js("window.flowVoiceBridge&&window.flowVoiceBridge.onListenEnd('cancel')")
+                return@runOnUiThread
+            }
+            if (recognizer == null) recognizer = SpeechRecognizer.createSpeechRecognizer(this@MainActivity).also { it.setRecognitionListener(listener) }
+            tts?.stop()
+            val intent = Intent(RecognizerIntent.ACTION_RECOGNIZE_SPEECH).apply {
+                putExtra(RecognizerIntent.EXTRA_LANGUAGE_MODEL, RecognizerIntent.LANGUAGE_MODEL_FREE_FORM)
+                putExtra(RecognizerIntent.EXTRA_LANGUAGE, localeOf(language).toLanguageTag())
+                putExtra(RecognizerIntent.EXTRA_PARTIAL_RESULTS, true)
+                putExtra(RecognizerIntent.EXTRA_MAX_RESULTS, 1)
+                putExtra(RecognizerIntent.EXTRA_CALLING_PACKAGE, packageName)
+                putExtra(RecognizerIntent.EXTRA_SPEECH_INPUT_COMPLETE_SILENCE_LENGTH_MILLIS, 1200L)
+                putExtra(RecognizerIntent.EXTRA_SPEECH_INPUT_POSSIBLY_COMPLETE_SILENCE_LENGTH_MILLIS, 1200L)
+                if (Build.VERSION.SDK_INT >= 33) putExtra(RecognizerIntent.EXTRA_PREFER_OFFLINE, true)
+            }
+            listening = true
+            recognizer?.startListening(intent)
+        }
+
+        @JavascriptInterface
+        fun stopListening() = runOnUiThread {
+            if (listening) recognizer?.stopListening()
+        }
+
+        @JavascriptInterface
+        fun setForeground(active: Boolean, text: String) = runOnUiThread {
+            if (active) VoiceService.start(this@MainActivity, text) else VoiceService.stop(this@MainActivity)
+            web.keepScreenOn = active
+        }
+    }
+
+    private val listener = object : RecognitionListener {
+        override fun onReadyForSpeech(params: Bundle?) {}
+        override fun onBeginningOfSpeech() {}
+        override fun onRmsChanged(rmsdB: Float) {}
+        override fun onBufferReceived(buffer: ByteArray?) {}
+        override fun onEndOfSpeech() {}
+        override fun onEvent(eventType: Int, params: Bundle?) {}
+
+        override fun onPartialResults(partialResults: Bundle?) {
+            val text = partialResults?.getStringArrayList(SpeechRecognizer.RESULTS_RECOGNITION)?.firstOrNull() ?: return
+            if (text.isNotBlank()) js("window.flowVoiceBridge&&window.flowVoiceBridge.onTranscript(${q(text)},0,false)")
+        }
+
+        override fun onResults(results: Bundle?) {
+            listening = false
+            val text = results?.getStringArrayList(SpeechRecognizer.RESULTS_RECOGNITION)?.firstOrNull()
+            val conf = results?.getFloatArray(SpeechRecognizer.CONFIDENCE_SCORES)?.firstOrNull() ?: 0.9f
+            if (text.isNullOrBlank()) js("window.flowVoiceBridge&&window.flowVoiceBridge.onListenEnd('silence')")
+            else js("window.flowVoiceBridge&&window.flowVoiceBridge.onTranscript(${q(text)},${if (conf < 0) 0.9f else conf},true)")
+        }
+
+        override fun onError(error: Int) {
+            listening = false
+            val reason = when (error) {
+                SpeechRecognizer.ERROR_NO_MATCH, SpeechRecognizer.ERROR_SPEECH_TIMEOUT -> "silence"
+                SpeechRecognizer.ERROR_CLIENT -> "cancel"
+                else -> "timeout"
+            }
+            js("window.flowVoiceBridge&&window.flowVoiceBridge.onListenEnd(${q(reason)})")
+            if (error == SpeechRecognizer.ERROR_INSUFFICIENT_PERMISSIONS) Toast.makeText(this@MainActivity, R.string.mic_denied, Toast.LENGTH_LONG).show()
+        }
+    }
+}

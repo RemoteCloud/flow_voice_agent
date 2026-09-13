@@ -1,0 +1,1 @@
+-keepclassmembers class com.maranics.flowvoice.MainActivity$Bridge { @android.webkit.JavascriptInterface <methods>; }

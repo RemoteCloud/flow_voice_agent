@@ -1,0 +1,43 @@
+{
+  "name": "flow-voice",
+  "version": "0.1.0",
+  "private": true,
+  "description": "Flow Voice — closed-loop voice service for Maranics Flow checklists: hub server + PWA + Android agent.",
+  "type": "module",
+  "engines": {
+    "node": ">=20"
+  },
+  "scripts": {
+    "typecheck": "tsc -p server/tsconfig.json --noEmit && tsc -p web/tsconfig.json --noEmit",
+    "smoke": "node scripts/run-smoke.mjs",
+    "build:server": "node scripts/build-server.mjs",
+    "build:web": "vite build web",
+    "build": "npm run build:server && npm run build:web",
+    "dev": "node scripts/dev.mjs",
+    "dev:maranics": "node scripts/dev-maranics.mjs",
+    "start": "node dist/server.mjs",
+    "mock": "node scripts/mock-e2e.mjs",
+    "check": "npm run typecheck && npm run smoke && npm run build",
+    "start:env": "node scripts/start.mjs"
+  },
+  "dependencies": {
+    "@hono/node-server": "^1.13.7",
+    "hono": "^4.6.14",
+    "ws": "^8.18.0"
+  },
+  "devDependencies": {
+    "@tailwindcss/vite": "^4.1.4",
+    "@types/node": "^20.17.10",
+    "@types/react": "^19.0.2",
+    "@types/react-dom": "^19.0.2",
+    "@types/ws": "^8.5.13",
+    "@vitejs/plugin-react": "^4.3.4",
+    "esbuild": "^0.24.2",
+    "react": "^19.0.0",
+    "react-dom": "^19.0.0",
+    "tailwindcss": "^4.1.4",
+    "typescript": "^5.7.2",
+    "vite": "^6.0.7",
+    "vite-plugin-pwa": "^0.21.1"
+  }
+}

@@ -1,0 +1,4 @@
+[
+  { "on": "vessel.event.ata", "start": "NauticAI/ArrivalChecklist", "station": "bridge-01", "debounceMin": 30, "autoStart": false, "trusted": true },
+  { "on": "vessel.event.atd", "start": "NauticAI/DepartureChecklist", "station": "bridge-01", "debounceMin": 30, "autoStart": false, "trusted": true }
+]

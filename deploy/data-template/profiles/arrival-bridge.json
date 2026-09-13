@@ -1,0 +1,26 @@
+{
+  "profileId": "arrival-bridge",
+  "name": "Arrival - Bridge",
+  "templateId": "NauticAI/ArrivalChecklist",
+  "language": "en",
+  "bindings": [
+    {
+      "bindingId": "pilot-on-board",
+      "dataId": "NauticAI/ArrivalChecklist/PilotOperations/PilotOnBoard",
+      "spokenPrompt": "Pilot on board?",
+      "expect": { "type": "DateAndTime" },
+      "phrases": ["pilot on board", "pilot embarked", "lots ombord"],
+      "confirmation": "required",
+      "defaultValue": "now"
+    },
+    {
+      "bindingId": "main-engine-started",
+      "dataId": "NauticAI/ArrivalChecklist/Machinery/MainEngineStarted",
+      "spokenPrompt": "Main engine started?",
+      "expect": { "type": "DateAndTime" },
+      "phrases": ["main engine started", "engine started", "hovedmotor startet"],
+      "confirmation": "required",
+      "defaultValue": "now"
+    }
+  ]
+}

@@ -1,0 +1,346 @@
+/**
+ * Persistent hub state: one JSON document in `/data/hub.json`, written atomically (tmp + rename)
+ * after every `update()`. Same pattern as the FlowDeck hub. Audio never lands here; the audit
+ * record is text (section 15 of the spec).
+ */
+import { mkdirSync, readFileSync, readdirSync, renameSync, writeFileSync, existsSync } from "node:fs";
+import path from "node:path";
+import type { RunItem, RunState, ExchangeState } from "../protocol.js";
+
+export interface HubUser {
+	sub: string;
+	email?: string;
+	name?: string;
+	positionId?: string;
+	positionName?: string;
+	firstSeenAt: string;
+	lastLoginAt: string;
+	logins: number;
+	isAdmin: boolean;
+}
+
+/** Sealed Maranics tokens of one signed-in user (per session, not per hub — every write is attributed). */
+export interface HubCredential {
+	sub: string;
+	accessTokenEnc: string;
+	refreshTokenEnc?: string;
+	idTokenEnc?: string;
+	accessExp: string;
+	obtainedAt: string;
+	state: "ok" | "refresh_failed" | "expired";
+	lastError?: string;
+}
+
+export interface HubSession {
+	id: string;
+	sidHash: string;
+	sub: string;
+	createdAt: string;
+	lastSeenAt: string;
+	/** Station the browser / device selected. */
+	stationId?: string;
+	deviceId?: string;
+	credential?: HubCredential;
+}
+
+export interface Station {
+	stationId: string;
+	name: string;
+	defaultProfile?: string | null;
+	language: string;
+	audioPolicy: "ptt" | "open";
+	autoStartAllowed: boolean;
+	verbosity?: "full" | "short" | "silent";
+	/** Complete / discard may be confirmed by voice (two-step). Default true; false = screen only (spec 21.3). */
+	voiceActions?: boolean;
+}
+
+export interface Device {
+	deviceId: string;
+	name: string;
+	tokenHash: string;
+	tokenHint: string;
+	enrolledAt: string;
+	lastSeenAt?: string;
+	stationId?: string;
+	kind: "pwa" | "android" | "pi" | "other";
+	revoked?: boolean;
+}
+
+export interface PendingEnrollment {
+	code: string;
+	deviceName: string;
+	kind: Device["kind"];
+	requestedAt: string;
+	/** Set once an admin approves; the device collects it with the code. */
+	token?: string;
+	deviceId?: string;
+	approvedAt?: string;
+}
+
+export interface VoiceBinding {
+	bindingId: string;
+	dataId: string;
+	spokenPrompt?: string;
+	expect?: { type: string };
+	phrases?: string[];
+	confirmation?: "required" | "optional" | "none";
+	defaultValue?: string;
+}
+
+export interface VoiceProfile {
+	profileId: string;
+	name: string;
+	templateId?: string;
+	language?: string;
+	bindings: VoiceBinding[];
+}
+
+export interface EventMapping {
+	on: string;
+	start: string;
+	station: string;
+	debounceMin?: number;
+	autoStart?: boolean;
+	trusted?: boolean;
+	lastFiredAt?: string;
+}
+
+export interface OutboxEntry {
+	id: string;
+	createdAt: string;
+	kind: "value" | "state" | "callback" | "status";
+	instanceId: string;
+	taskId?: string;
+	dataId?: string;
+	/** Session (user) whose token is used; the write is attributed to them. */
+	sessionId: string;
+	sub: string;
+	payload: Record<string, unknown>;
+	attempts: number;
+	nextAt: string;
+	lastError?: string;
+	state: "queued" | "sent" | "failed";
+	sentAt?: string;
+	runId?: string;
+	promptId?: string;
+}
+
+export interface RunRecord {
+	runId: string;
+	stationId: string;
+	instanceId: string;
+	templateId?: string;
+	templateName: string;
+	state: RunState;
+	exchange: ExchangeState;
+	currentTaskId?: string;
+	items: RunItem[];
+	startedAt: string;
+	updatedAt: string;
+	completedAt?: string;
+	users: { sub: string; name?: string; sessionId: string }[];
+	language: string;
+	verbosity: "full" | "short" | "silent";
+	attempts: number;
+	lastSpoken?: string;
+	pendingReadback?: { taskId: string; value: string; valueText: string; transcript: string; confidence: number };
+	pendingReason?: string;
+	trigger?: { type: string; at?: string; source?: string };
+	callbackUrl?: string;
+	/** Task ids the user skipped, offered again in the sweep. */
+	skipped: string[];
+	/** A spoken complete / discard waiting for its confirmation. */
+	pendingAction?: { kind: "complete" | "discard"; reasonCode?: string; reasonTitle?: string; step: "reason" | "confirm" };
+	sweepOffered?: boolean;
+}
+
+export interface PromptRecord {
+	promptId: string;
+	createdAt: string;
+	stationId: string;
+	instanceId: string;
+	templateId?: string;
+	templateName?: string;
+	item: { dataId?: string; taskId?: string; prompt: string; expect: { type: string }; language?: string; options?: { title: string; value: string }[] };
+	policy: { confirmation: "required" | "none"; priority: "normal" | "high"; timeoutSec: number; retries: number };
+	callbackUrl?: string;
+	state: "queued" | "speaking" | "listening" | "confirming" | "committed" | "queued_offline" | "escalated" | "failed" | "cancelled";
+	result?: { value?: string; transcript?: string; confidence?: number; utteredAt?: string; committedAt?: string; user?: { id: string; name?: string }; attempts: number; error?: string };
+	idempotencyKey?: string;
+}
+
+export interface AuditEntry {
+	at: string;
+	kind: string;
+	stationId?: string;
+	runId?: string;
+	promptId?: string;
+	taskId?: string;
+	dataId?: string;
+	sub?: string;
+	transcript?: string;
+	value?: string;
+	confidence?: number;
+	attempts?: number;
+	text?: string;
+}
+
+export interface HubData {
+	version: 1;
+	/** Bumped on "sign everyone out"; sessions carry the epoch they were minted with. */
+	sessionEpoch: number;
+	users: HubUser[];
+	sessions: HubSession[];
+	devices: Device[];
+	pendingEnrollments: PendingEnrollment[];
+	stations: Station[];
+	profiles: VoiceProfile[];
+	mappings: EventMapping[];
+	runs: RunRecord[];
+	prompts: PromptRecord[];
+	outbox: OutboxEntry[];
+	audit: AuditEntry[];
+	idempotency: Record<string, { at: string; result: string }>;
+	settings: { readNotices: boolean; tzMode: "utc" | "local"; confirmation: "required" | "optional" };
+}
+
+export function emptyData(): HubData {
+	return {
+		version: 1,
+		sessionEpoch: 1,
+		users: [],
+		sessions: [],
+		devices: [],
+		pendingEnrollments: [],
+		stations: [
+			{ stationId: "bridge-01", name: "Bridge", defaultProfile: null, language: "en", audioPolicy: "ptt", autoStartAllowed: true, verbosity: "full" },
+			{ stationId: "ecr-01", name: "Engine Control Room", defaultProfile: null, language: "en", audioPolicy: "ptt", autoStartAllowed: true, verbosity: "full" },
+			{ stationId: "roaming", name: "Roaming — rounds", defaultProfile: null, language: "en", audioPolicy: "ptt", autoStartAllowed: false, verbosity: "short" },
+		],
+		profiles: [],
+		mappings: [],
+		runs: [],
+		prompts: [],
+		outbox: [],
+		audit: [],
+		idempotency: {},
+		settings: { readNotices: false, tzMode: "utc", confirmation: "required" },
+	};
+}
+
+export interface HubStore {
+	get(): HubData;
+	update(fn: (d: HubData) => void): Promise<HubData>;
+}
+
+const MAX_AUDIT = 5000;
+const MAX_RUNS = 200;
+const MAX_PROMPTS = 500;
+
+function trim(d: HubData): void {
+	if (d.audit.length > MAX_AUDIT) d.audit = d.audit.slice(-MAX_AUDIT);
+	if (d.runs.length > MAX_RUNS) {
+		const finished = d.runs.filter((r) => r.state === "completed" || r.state === "abandoned");
+		const drop = new Set(finished.slice(0, d.runs.length - MAX_RUNS).map((r) => r.runId));
+		d.runs = d.runs.filter((r) => !drop.has(r.runId));
+	}
+	if (d.prompts.length > MAX_PROMPTS) d.prompts = d.prompts.slice(-MAX_PROMPTS);
+	const cutoff = Date.now() - 7 * 24 * 3600 * 1000;
+	for (const [k, v] of Object.entries(d.idempotency)) if (Date.parse(v.at) < cutoff) delete d.idempotency[k];
+}
+
+export class MemoryHubStore implements HubStore {
+	private data: HubData;
+	constructor(initial?: Partial<HubData>) {
+		this.data = { ...emptyData(), ...(initial ?? {}) };
+	}
+	get(): HubData {
+		return this.data;
+	}
+	async update(fn: (d: HubData) => void): Promise<HubData> {
+		fn(this.data);
+		trim(this.data);
+		return this.data;
+	}
+}
+
+/**
+ * JSON file store. Reads on construction, writes atomically on every update. Updates are
+ * serialised through a promise chain so two concurrent `update()` calls never interleave.
+ */
+export class JsonHubStore implements HubStore {
+	private data: HubData;
+	private chain: Promise<unknown> = Promise.resolve();
+	readonly file: string;
+
+	constructor(dataDir: string, private readonly log?: { warn(m: string): void; info(m: string): void }) {
+		mkdirSync(dataDir, { recursive: true });
+		this.file = path.join(dataDir, "hub.json");
+		this.data = emptyData();
+		if (existsSync(this.file)) {
+			try {
+				const raw = JSON.parse(readFileSync(this.file, "utf8")) as Partial<HubData>;
+				this.data = { ...emptyData(), ...raw };
+				// stations.json / profiles / mappings on the volume are the portable "files"; hub.json mirrors them
+			} catch (err) {
+				this.log?.warn(`hub.json unreadable (${err instanceof Error ? err.message : String(err)}); starting empty`);
+			}
+		}
+		this.loadPortableFiles(dataDir);
+	}
+
+	/** `stations.json`, `profiles/*.json`, `mappings.json` next to hub.json override what hub.json holds — author once, copy to the next vessel. */
+	private loadPortableFiles(dataDir: string): void {
+		const stationsFile = path.join(dataDir, "stations.json");
+		if (existsSync(stationsFile)) {
+			try {
+				const list = JSON.parse(readFileSync(stationsFile, "utf8")) as Station[];
+				if (Array.isArray(list) && list.every((x) => x && typeof x.stationId === "string")) this.data.stations = list.map((x) => ({ ...x, audioPolicy: x.audioPolicy ?? "ptt", autoStartAllowed: x.autoStartAllowed ?? false, language: x.language ?? "en" }));
+			} catch (err) {
+				this.log?.warn(`stations.json ignored: ${err instanceof Error ? err.message : String(err)}`);
+			}
+		}
+		const mappingsFile = path.join(dataDir, "mappings.json");
+		if (existsSync(mappingsFile)) {
+			try {
+				const list = JSON.parse(readFileSync(mappingsFile, "utf8")) as EventMapping[];
+				if (Array.isArray(list)) this.data.mappings = list.filter((m) => m && typeof m.on === "string" && typeof m.start === "string" && typeof m.station === "string");
+			} catch (err) {
+				this.log?.warn(`mappings.json ignored: ${err instanceof Error ? err.message : String(err)}`);
+			}
+		}
+		const profilesDir = path.join(dataDir, "profiles");
+		if (existsSync(profilesDir)) {
+			try {
+				for (const f of readdirSync(profilesDir).filter((x: string) => x.endsWith(".json"))) {
+					const p = JSON.parse(readFileSync(path.join(profilesDir, f), "utf8")) as VoiceProfile;
+					if (p && typeof p.profileId === "string" && Array.isArray(p.bindings)) {
+						this.data.profiles = this.data.profiles.filter((x) => x.profileId !== p.profileId);
+						this.data.profiles.push(p);
+					}
+				}
+			} catch (err) {
+				this.log?.warn(`profiles/ ignored: ${err instanceof Error ? err.message : String(err)}`);
+			}
+		}
+	}
+
+	get(): HubData {
+		return this.data;
+	}
+
+	update(fn: (d: HubData) => void): Promise<HubData> {
+		const run = async () => {
+			fn(this.data);
+			trim(this.data);
+			const tmp = `${this.file}.tmp`;
+			writeFileSync(tmp, JSON.stringify(this.data, null, 1), "utf8");
+			renameSync(tmp, this.file);
+			return this.data;
+		};
+		const p = this.chain.then(run, run);
+		this.chain = p.catch(() => undefined);
+		return p;
+	}
+}
