@@ -135,6 +135,7 @@ export function App() {
 				provider={boot?.provider}
 				hubVersion={boot?.hubVersion}
 				vesselId={boot?.vesselId}
+				hubUrl={boot?.hubUrl}
 				authError={authError}
 				notice={notice}
 				probeError={bootError}

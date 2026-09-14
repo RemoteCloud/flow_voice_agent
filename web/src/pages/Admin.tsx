@@ -4,6 +4,7 @@ import { api, toApiError } from "../api.js";
 import { useApp } from "../context.js";
 import { navigate } from "../router.js";
 import { StationsTab } from "./AdminStations.js";
+import { HubQr } from "./Login.js";
 
 type Tab = "status" | "stations" | "devices" | "profiles" | "outbox" | "audit";
 
@@ -53,6 +54,7 @@ export function AdminPage() {
 }
 
 function StatusTab({ s }: { s: StatusResponse }) {
+	const { boot } = useApp();
 	return (
 		<div className="grid gap-4 md:grid-cols-2">
 			<section className="card">
@@ -78,6 +80,14 @@ function StatusTab({ s }: { s: StatusResponse }) {
 						{s.outbox.queued} queued · {s.outbox.failed} failed
 					</dd>
 				</dl>
+			</section>
+			<section className="card">
+				<div className="card-head">
+					<h2 className="card-title">Pair the Android app</h2>
+				</div>
+				<div className="card-body">
+					<HubQr hubUrl={boot.hubUrl} compact />
+				</div>
 			</section>
 			<section className="card">
 				<div className="card-head">

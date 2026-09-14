@@ -31,6 +31,8 @@ import androidx.activity.result.contract.ActivityResultContracts
 import androidx.appcompat.app.AlertDialog
 import androidx.appcompat.app.AppCompatActivity
 import androidx.core.content.ContextCompat
+import com.journeyapps.barcodescanner.ScanContract
+import com.journeyapps.barcodescanner.ScanOptions
 import org.json.JSONObject
 import java.util.Locale
 
@@ -58,6 +60,16 @@ class MainActivity : AppCompatActivity() {
         if (!granted) Toast.makeText(this, R.string.mic_denied, Toast.LENGTH_LONG).show()
     }
     private val notifPermission = registerForActivityResult(ActivityResultContracts.RequestPermission()) { }
+    /** "Scan QR": the hub shows its own address as a QR code (Login page / Admin → Status). */
+    private val scanQr = registerForActivityResult(ScanContract()) { result ->
+        val text = result.contents?.trim()
+        if (text.isNullOrEmpty()) return@registerForActivityResult
+        val url = hubUrlFromQr(text)
+        if (url == null) {
+            Toast.makeText(this, getString(R.string.qr_not_hub, text.take(60)), Toast.LENGTH_LONG).show()
+            askHubUrl(first = hubUrl.isNullOrBlank())
+        } else saveHubUrl(url)
+    }
 
     @SuppressLint("SetJavaScriptEnabled")
     override fun onCreate(savedInstanceState: Bundle?) {
@@ -125,6 +137,30 @@ class MainActivity : AppCompatActivity() {
         if (url.isNullOrBlank()) askHubUrl(first = true) else web.loadUrl(url)
     }
 
+    /** Accepts a plain http(s) URL or a flowvoice://hub?url=… link; anything else is not a hub. */
+    private fun hubUrlFromQr(text: String): String? {
+        val u = runCatching { Uri.parse(text) }.getOrNull() ?: return null
+        val candidate = if (u.scheme == "flowvoice") u.getQueryParameter("url") ?: return null else text
+        val c = runCatching { Uri.parse(candidate) }.getOrNull() ?: return null
+        if (c.scheme != "http" && c.scheme != "https" || c.host.isNullOrBlank()) return null
+        return candidate.trimEnd('/')
+    }
+
+    private fun saveHubUrl(v: String) {
+        prefs.edit().putString("hubUrl", v).apply()
+        if (v.isNotEmpty()) web.loadUrl(v)
+    }
+
+    private fun startScan() {
+        scanQr.launch(
+            ScanOptions()
+                .setDesiredBarcodeFormats(ScanOptions.QR_CODE)
+                .setPrompt(getString(R.string.scan_prompt))
+                .setBeepEnabled(false)
+                .setOrientationLocked(false)
+        )
+    }
+
     private fun askHubUrl(first: Boolean) {
         val layout = LinearLayout(this).apply { orientation = LinearLayout.VERTICAL; setPadding(48, 24, 48, 0) }
         val input = EditText(this).apply {
@@ -141,19 +177,20 @@ class MainActivity : AppCompatActivity() {
             .setPositiveButton(R.string.save) { _, _ ->
                 var v = input.text.toString().trim()
                 if (v.isNotEmpty() && !v.startsWith("http")) v = "http://$v"
-                prefs.edit().putString("hubUrl", v).apply()
-                if (v.isNotEmpty()) web.loadUrl(v)
+                saveHubUrl(v)
             }
+            .setNeutralButton(R.string.scan_qr) { _, _ -> startScan() }
             .apply { if (!first) setNegativeButton(R.string.cancel, null) }
             .show()
     }
 
     private fun showMenu() {
-        val items = arrayOf(getString(R.string.menu_hub), getString(R.string.menu_reload), getString(R.string.menu_ptt_hint))
+        val items = arrayOf(getString(R.string.menu_hub), getString(R.string.menu_scan), getString(R.string.menu_reload), getString(R.string.menu_ptt_hint))
         AlertDialog.Builder(this).setItems(items) { _, which ->
             when (which) {
                 0 -> askHubUrl(first = false)
-                1 -> web.reload()
+                1 -> startScan()
+                2 -> web.reload()
             }
         }.show()
     }

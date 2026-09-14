@@ -15,9 +15,10 @@ const AUTH_ERROR_TEXT: Record<string, string> = {
 	not_configured: "Sign-in is not configured on this hub.",
 };
 
-export function LoginPage(p: { provider?: AuthProviderView; hubVersion?: string; vesselId?: string; authError?: string; notice?: string; probeError?: ApiClientError; joinStation?: { name: string; location?: string }; joinError?: string; onRetry: () => void; onDevSignedIn: (me: MeResponse) => void }) {
+export function LoginPage(p: { provider?: AuthProviderView; hubVersion?: string; vesselId?: string; hubUrl?: string; authError?: string; notice?: string; probeError?: ApiClientError; joinStation?: { name: string; location?: string }; joinError?: string; onRetry: () => void; onDevSignedIn: (me: MeResponse) => void }) {
 	const [busy, setBusy] = useState(false);
 	const [err, setErr] = useState<string | undefined>();
+	const [showQr, setShowQr] = useState(false);
 	const oidc = p.provider?.kind === "oidc" && p.provider.configured;
 	const dev = !!p.provider?.devUserName;
 
@@ -97,9 +98,29 @@ export function LoginPage(p: { provider?: AuthProviderView; hubVersion?: string;
 					<button type="button" className="underline" onClick={() => navigate({ page: "enroll" })}>
 						Enroll this device
 					</button>
+					{p.hubUrl && (
+						<>
+							{" · "}
+							<button type="button" className="underline" onClick={() => setShowQr((v) => !v)}>
+								{showQr ? "Hide QR" : "Pair the Android app"}
+							</button>
+						</>
+					)}
 					{p.hubVersion ? ` · hub ${p.hubVersion}` : ""}
 				</p>
+				{showQr && p.hubUrl && <HubQr hubUrl={p.hubUrl} />}
 			</div>
 		</main>
+	);
+}
+
+/** The hub address as a QR code (rendered by the hub at /api/qr.svg). Scan it with "Scan QR" in the Android app. */
+export function HubQr(p: { hubUrl: string; compact?: boolean }) {
+	return (
+		<div className={`flex flex-col items-center gap-2 ${p.compact ? "" : "card mt-4 p-4"}`}>
+			<img src="/api/qr.svg" width={176} height={176} alt={`QR code for ${p.hubUrl}`} className="rounded bg-white p-1" />
+			<code className="break-all text-center text-xs text-fg-muted">{p.hubUrl}</code>
+			<p className="text-center text-xs text-fg-faint">Flow Voice Android app → Hub address → Scan QR</p>
+		</div>
 	);
 }

@@ -5,6 +5,7 @@
 import { readFileSync, existsSync } from "node:fs";
 import { createHmac, timingSafeEqual } from "node:crypto";
 import { Hono, type Context } from "hono";
+import QRCode from "qrcode";
 import { getCookie } from "hono/cookie";
 import type { ApiError, EnrollPollResponse, EnrollRequest, EnrollResponse, HealthResponse, JoinRequest, JoinResponse, JoinTokenResponse, LogoutResponse, MeResponse, SessionProbeResponse, StationView, StatusResponse } from "../api.js";
 import { isJoinToken } from "../protocol.js";
@@ -162,10 +163,26 @@ export function createApp(deps: AppDeps): Hono {
 		return c.json(res);
 	});
 
+	// ----- pairing: the hub's own address as a QR code, scanned by the Android app on first launch
+	/** HUB_PUBLIC_URL, or the origin this request arrived on (behind a proxy: X-Forwarded-Proto/Host when HUB_TRUST_PROXY). */
+	const hubUrlOf = (c: Context): string => {
+		if (env.publicUrl) return env.publicUrl;
+		const u = new URL(c.req.url);
+		const proto = (env.trustProxy && c.req.header("x-forwarded-proto")?.split(",")[0].trim()) || u.protocol.replace(":", "");
+		const host = (env.trustProxy && c.req.header("x-forwarded-host")?.split(",")[0].trim()) || c.req.header("host") || u.host;
+		return `${proto}://${host}`;
+	};
+	api.get("/qr.svg", async (c) => {
+		const svg = await QRCode.toString(hubUrlOf(c), { type: "svg", errorCorrectionLevel: "M", margin: 1 });
+		c.header("Content-Type", "image/svg+xml; charset=utf-8");
+		c.header("Cache-Control", "no-cache");
+		return c.body(svg);
+	});
+
 	// ----- auth
 	api.get("/auth/session", async (c) => {
 		const row = await sessionFromRequest(c);
-		const res: SessionProbeResponse = { authenticated: !!row, me: row ? meOf(row) : undefined, provider: auth.providerView(), hubVersion: deps.version, vesselId: env.vesselId, stations: store.get().stations, speech: { stt: env.speech.sttMode, tts: env.speech.ttsMode }, maranicsConfigured: !!env.maranics };
+		const res: SessionProbeResponse = { authenticated: !!row, me: row ? meOf(row) : undefined, provider: auth.providerView(), hubVersion: deps.version, vesselId: env.vesselId, hubUrl: hubUrlOf(c), stations: store.get().stations, speech: { stt: env.speech.sttMode, tts: env.speech.ttsMode }, maranicsConfigured: !!env.maranics };
 		return c.json(res);
 	});
 

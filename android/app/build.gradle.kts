@@ -57,4 +57,6 @@ dependencies {
     implementation("androidx.core:core-ktx:1.13.1")
     implementation("androidx.webkit:webkit:1.11.0")
     implementation("androidx.activity:activity-ktx:1.9.1")
+    // QR scanner for the hub address (offline; no Play Services needed on vessel devices)
+    implementation("com.journeyapps:zxing-android-embedded:4.3.0")
 }

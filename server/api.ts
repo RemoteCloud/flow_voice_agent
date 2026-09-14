@@ -24,6 +24,8 @@ export interface SessionProbeResponse {
 	provider: AuthProviderView;
 	hubVersion: string;
 	vesselId: string;
+	/** The address the Android app pairs with (also rendered at GET /api/qr.svg). */
+	hubUrl: string;
 	stations: Station[];
 	speech: { stt: "endpoint" | "http"; tts: "endpoint" | "http" };
 	maranicsConfigured: boolean;
