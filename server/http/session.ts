@@ -15,6 +15,10 @@ import type { HubSession } from "../store/HubStore.js";
 export const SESSION_COOKIE = "fd_session";
 export const LOGIN_COOKIE = "fd_login";
 export const LOGIN_COOKIE_PATH = "/api/auth";
+/** Station QR join: set by `POST /api/auth/join` before sign-in, consumed by the callback / dev login. */
+export const JOIN_COOKIE = "fv_join";
+export const JOIN_COOKIE_PATH = LOGIN_COOKIE_PATH;
+export const JOIN_MAX_AGE_SEC = 15 * 60;
 export const SLIDING_MS = 12 * 60 * 60 * 1000;
 export const ABSOLUTE_MS = 7 * 24 * 60 * 60 * 1000;
 export const RENEW_BELOW_MS = 6 * 60 * 60 * 1000;
@@ -40,6 +44,12 @@ export interface SessionClaims {
 export interface LoginCookie {
 	state: string;
 	nonce: string;
+	/** ms since epoch. */
+	iat: number;
+}
+
+export interface JoinCookie {
+	stationId: string;
 	/** ms since epoch. */
 	iat: number;
 }
@@ -141,6 +151,36 @@ export async function readLoginCookie(c: Context, secret: string): Promise<Login
 
 export function clearLoginCookie(c: Context, secure: boolean): void {
 	deleteCookie(c, LOGIN_COOKIE, { path: LOGIN_COOKIE_PATH, secure });
+}
+
+// ----- station join cookie -----
+
+export function encodeJoinCookie(v: JoinCookie): string {
+	return Buffer.from(JSON.stringify(v), "utf8").toString("base64url");
+}
+
+export function decodeJoinCookie(text: string): JoinCookie | undefined {
+	try {
+		const v = JSON.parse(Buffer.from(text, "base64url").toString("utf8")) as Partial<JoinCookie>;
+		if (!v || typeof v !== "object" || typeof v.stationId !== "string" || !v.stationId || typeof v.iat !== "number") return undefined;
+		return { stationId: v.stationId, iat: v.iat };
+	} catch {
+		return undefined;
+	}
+}
+
+export async function writeJoinCookie(c: Context, v: JoinCookie, secret: string, secure: boolean): Promise<void> {
+	await setSignedCookie(c, JOIN_COOKIE, encodeJoinCookie(v), secret, { httpOnly: true, sameSite: "Lax", path: JOIN_COOKIE_PATH, secure, maxAge: JOIN_MAX_AGE_SEC });
+}
+
+export async function readJoinCookie(c: Context, secret: string): Promise<JoinCookie | undefined> {
+	const v = await getSignedCookie(c, secret, JOIN_COOKIE);
+	if (!v) return undefined;
+	return decodeJoinCookie(v);
+}
+
+export function clearJoinCookie(c: Context, secure: boolean): void {
+	deleteCookie(c, JOIN_COOKIE, { path: JOIN_COOKIE_PATH, secure });
 }
 
 // ----- middleware -----

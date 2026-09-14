@@ -39,6 +39,8 @@ export interface HubSession {
 	lastSeenAt: string;
 	/** Station the browser / device selected. */
 	stationId?: string;
+	/** "join" = bound by scanning a station QR code (the client hides the station picker); "pick" = chosen on screen. */
+	stationSource?: "join" | "pick";
 	deviceId?: string;
 	credential?: HubCredential;
 }
@@ -46,6 +48,8 @@ export interface HubSession {
 export interface Station {
 	stationId: string;
 	name: string;
+	/** Free text shown before the station name on phones: "Location 1 · Bridge". Portable (stations.json). */
+	location?: string;
 	defaultProfile?: string | null;
 	language: string;
 	audioPolicy: "ptt" | "open";
@@ -53,6 +57,19 @@ export interface Station {
 	verbosity?: "full" | "short" | "silent";
 	/** Complete / discard may be confirmed by voice (two-step). Default true; false = screen only (spec 21.3). */
 	voiceActions?: boolean;
+}
+
+/**
+ * One live QR join token per station (hash only). Minting again replaces it (rotate); revoking deletes it.
+ * Lives in hub.json, not in the portable stations.json, so it survives restarts but never travels to the next vessel.
+ */
+export interface StationJoin {
+	stationId: string;
+	/** sha256 hex of the `fvj_` token. */
+	tokenHash: string;
+	tokenHint: string;
+	createdAt: string;
+	createdBy?: string;
 }
 
 export interface Device {
@@ -195,6 +212,8 @@ export interface HubData {
 	devices: Device[];
 	pendingEnrollments: PendingEnrollment[];
 	stations: Station[];
+	/** Keyed by stationId. */
+	stationJoins: Record<string, StationJoin>;
 	profiles: VoiceProfile[];
 	mappings: EventMapping[];
 	runs: RunRecord[];
@@ -218,6 +237,7 @@ export function emptyData(): HubData {
 			{ stationId: "ecr-01", name: "Engine Control Room", defaultProfile: null, language: "en", audioPolicy: "ptt", autoStartAllowed: true, verbosity: "full" },
 			{ stationId: "roaming", name: "Roaming — rounds", defaultProfile: null, language: "en", audioPolicy: "ptt", autoStartAllowed: false, verbosity: "short" },
 		],
+		stationJoins: {},
 		profiles: [],
 		mappings: [],
 		runs: [],

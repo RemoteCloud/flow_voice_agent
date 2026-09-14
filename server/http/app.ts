@@ -6,19 +6,20 @@ import { readFileSync, existsSync } from "node:fs";
 import { createHmac, timingSafeEqual } from "node:crypto";
 import { Hono, type Context } from "hono";
 import { getCookie } from "hono/cookie";
-import type { ApiError, EnrollPollResponse, EnrollRequest, EnrollResponse, HealthResponse, LogoutResponse, MeResponse, SessionProbeResponse, StationView, StatusResponse } from "../api.js";
+import type { ApiError, EnrollPollResponse, EnrollRequest, EnrollResponse, HealthResponse, JoinRequest, JoinResponse, JoinTokenResponse, LogoutResponse, MeResponse, SessionProbeResponse, StationView, StatusResponse } from "../api.js";
+import { isJoinToken } from "../protocol.js";
 import type { HubEnv } from "../env.js";
 import type { Logger } from "../core/log.js";
 import type { SttAdapter } from "../speech/stt.js";
-import { hashDeckToken, newDeckId, newDeckToken, tokenHint, verifyDeckToken } from "../store/crypto.js";
+import { hashDeckToken, newDeckId, newDeckToken, newJoinToken, tokenHint, verifyDeckToken } from "../store/crypto.js";
 import type { Credentials } from "../store/credentials.js";
-import type { Device, HubSession, HubStore, PendingEnrollment, PromptRecord, Station, VoiceProfile, EventMapping } from "../store/HubStore.js";
+import type { Device, HubSession, HubStore, PendingEnrollment, PromptRecord, Station, StationJoin, VoiceProfile, EventMapping } from "../store/HubStore.js";
 import { DISCARD_REASONS, EngineError, type RunEngine } from "../voice/RunEngine.js";
 import type { Outbox } from "../voice/Outbox.js";
 import type { Gateway } from "../ws/Gateway.js";
 import { OidcAuth } from "./auth.js";
-import { LOGIN_LIMITS, RateLimiter } from "./rateLimit.js";
-import { clearLoginCookie, clearSession, LOGIN_COOKIE, newSession, readLoginCookie, readSession, requireSession, sidHash, validSession, writeLoginCookie, writeSession, type SessionEnv } from "./session.js";
+import { JOIN_LIMITS, LOGIN_LIMITS, RateLimiter } from "./rateLimit.js";
+import { clearJoinCookie, clearLoginCookie, clearSession, JOIN_MAX_AGE_SEC, LOGIN_COOKIE, newSession, readJoinCookie, readLoginCookie, readSession, requireSession, sidHash, validSession, writeJoinCookie, writeLoginCookie, writeSession, type SessionEnv } from "./session.js";
 import { resolveStatic } from "./static.js";
 
 export interface AppDeps {
@@ -59,6 +60,7 @@ export function createApp(deps: AppDeps): Hono {
 	const { env, store, auth, engine, log } = deps;
 	const secure = !!env.publicUrl && env.publicUrl.startsWith("https://");
 	const loginLimiter = new RateLimiter(LOGIN_LIMITS, deps.now);
+	const joinLimiter = new RateLimiter(JOIN_LIMITS, deps.now);
 	const app = new Hono();
 
 	const fail = (c: Context, status: 400 | 401 | 403 | 404 | 409 | 422 | 429 | 500 | 502, code: string, error: string) => c.json<ApiError>({ error, code }, status);
@@ -88,8 +90,33 @@ export function createApp(deps: AppDeps): Hono {
 
 	const meOf = (row: HubSession): MeResponse => {
 		const u = store.get().users.find((x) => x.sub === row.sub);
-		return { sub: row.sub, name: u?.name, email: u?.email, positionName: u?.positionName, isAdmin: u?.isAdmin ?? false, stationId: row.stationId, sessionId: row.id, credential: row.credential ? row.credential.state : row.sub.startsWith("dev:") ? "ok" : "none" };
+		return { sub: row.sub, name: u?.name, email: u?.email, positionName: u?.positionName, isAdmin: u?.isAdmin ?? false, stationId: row.stationId, stationSource: row.stationSource, sessionId: row.id, credential: row.credential ? row.credential.state : row.sub.startsWith("dev:") ? "ok" : "none" };
 	};
+
+	/** Bind a session to a station (store row + the live row object). */
+	const bindStation = async (row: HubSession, stationId: string, source: "join" | "pick"): Promise<void> => {
+		await store.update((d) => {
+			const s = d.sessions.find((x) => x.id === row.id);
+			if (s) {
+				s.stationId = stationId;
+				s.stationSource = source;
+			}
+		});
+		row.stationId = stationId;
+		row.stationSource = source;
+	};
+
+	/** After any successful sign-in: consume the `fv_join` cookie when it is fresh and its station still exists. */
+	const applyJoinCookie = async (c: Context, row: HubSession): Promise<void> => {
+		const j = await readJoinCookie(c, env.sessionSecret);
+		if (j && deps.now() - j.iat <= JOIN_MAX_AGE_SEC * 1000 && store.get().stations.some((s) => s.stationId === j.stationId)) {
+			await bindStation(row, j.stationId, "join");
+			log.info(`session ${row.id} joined station ${j.stationId} via QR`);
+		}
+		if (j) clearJoinCookie(c, secure);
+	};
+
+	const findJoin = (token: string): StationJoin | undefined => Object.values(store.get().stationJoins).find((j) => verifyDeckToken(token, j.tokenHash));
 
 	/** Session from cookie or a device token; used by both the HTTP API and the WebSocket upgrade. */
 	const sessionFromRequest = async (c: Context): Promise<HubSession | undefined> => {
@@ -166,6 +193,7 @@ export function createApp(deps: AppDeps): Hono {
 		};
 		if (!out.ok) return c.redirect(target(false, out.code));
 		await writeSession(c, newSession({ sid: out.sid, sub: out.user.sub, tenant: env.maranics?.tenant ?? "", epoch: store.get().sessionEpoch, nowMs: deps.now() }), env.sessionSecret, secure);
+		await applyJoinCookie(c, out.session);
 		return c.redirect(target(true));
 	});
 
@@ -174,7 +202,34 @@ export function createApp(deps: AppDeps): Hono {
 		const out = await auth.devLogin(clientIp(c, env.trustProxy));
 		if (!out.ok) return fail(c, 500, out.code, out.detail);
 		await writeSession(c, newSession({ sid: out.sid, sub: out.user.sub, tenant: env.maranics?.tenant ?? "", epoch: store.get().sessionEpoch, nowMs: deps.now() }), env.sessionSecret, secure);
+		await applyJoinCookie(c, out.session);
 		return c.json(meOf(out.session));
+	});
+
+	// ----- station QR join (no session required; the token is only ever in the JSON body, never in a URL the hub sees)
+	api.post("/auth/join", async (c) => {
+		const ip = clientIp(c, env.trustProxy);
+		const lim = joinLimiter.check(ip);
+		if (!lim.ok) {
+			c.header("Retry-After", String(lim.retryAfterSec));
+			return fail(c, 429, "RATE_LIMITED", "too many attempts");
+		}
+		const body = (await c.req.json().catch(() => ({}))) as Partial<JoinRequest>;
+		const token = str(body.token);
+		if (!isJoinToken(token)) return fail(c, 400, "BAD_REQUEST", "token is required");
+		const join = findJoin(token);
+		const station = join && store.get().stations.find((s) => s.stationId === join.stationId);
+		if (!join || !station) return fail(c, 404, "JOIN_INVALID", "this QR code is no longer valid");
+		const view = { stationId: station.stationId, name: station.name, location: station.location };
+		const row = await sessionFromRequest(c);
+		if (row) {
+			await bindStation(row, station.stationId, "join");
+			log.info(`session ${row.id} joined station ${station.stationId} via QR`);
+			return c.json<JoinResponse>({ ok: true, station: view, authenticated: true, me: meOf(row) });
+		}
+		await writeJoinCookie(c, { stationId: station.stationId, iat: deps.now() }, env.sessionSecret, secure);
+		log.info(`station ${station.stationId} QR scanned from ${ip}; awaiting sign-in`);
+		return c.json<JoinResponse>({ ok: true, station: view, authenticated: false });
 	});
 
 	api.post("/auth/logout", async (c) => {
@@ -223,11 +278,7 @@ export function createApp(deps: AppDeps): Hono {
 		const stationId = str(body.stationId);
 		if (!stationId || !store.get().stations.some((s) => s.stationId === stationId)) return fail(c, 400, "BAD_REQUEST", "unknown stationId");
 		const row = c.get("sessionRow");
-		await store.update((d) => {
-			const s = d.sessions.find((x) => x.id === row.id);
-			if (s) s.stationId = stationId;
-		});
-		row.stationId = stationId;
+		await bindStation(row, stationId, "pick");
 		return c.json(meOf(row));
 	});
 
@@ -314,6 +365,8 @@ export function createApp(deps: AppDeps): Hono {
 			const ep = eps.find((e) => e.stationId === s.stationId);
 			const run = engine.activeRun(s.stationId);
 			const v: StationView = { ...s };
+			const j = store.get().stationJoins[s.stationId];
+			if (j) v.join = { tokenHint: j.tokenHint, createdAt: j.createdAt, createdBy: j.createdBy };
 			if (ep) v.endpoint = { endpointId: ep.endpointId, user: ep.user, observers: ep.observers, aec: ep.caps.aec, pushToTalk: ep.caps.pushToTalk, localStt: ep.caps.localStt, localTts: ep.caps.localTts };
 			if (run) {
 				const view = engine.toView(run);
@@ -330,9 +383,44 @@ export function createApp(deps: AppDeps): Hono {
 		const body = (await c.req.json().catch(() => undefined)) as Station[] | undefined;
 		if (!Array.isArray(body) || !body.every((s) => isObj(s) && str(s.stationId) && str(s.name))) return fail(c, 400, "BAD_REQUEST", "array of stations expected");
 		await store.update((d) => {
-			d.stations = body.map((s) => ({ stationId: s.stationId, name: s.name, defaultProfile: s.defaultProfile ?? null, language: s.language || "en", audioPolicy: s.audioPolicy === "open" ? "open" : "ptt", autoStartAllowed: !!s.autoStartAllowed, verbosity: s.verbosity ?? "full", voiceActions: s.voiceActions !== false }));
+			d.stations = body.map((s) => ({ stationId: s.stationId, name: s.name, location: str(s.location), defaultProfile: s.defaultProfile ?? null, language: s.language || "en", audioPolicy: s.audioPolicy === "open" ? "open" : "ptt", autoStartAllowed: !!s.autoStartAllowed, verbosity: s.verbosity ?? "full", voiceActions: s.voiceActions !== false }));
+			for (const id of Object.keys(d.stationJoins)) if (!d.stations.some((s) => s.stationId === id)) delete d.stationJoins[id];
 		});
 		return c.json(stationViews());
+	});
+
+	// ----- station QR join tokens (admin). The token is returned once; only its hash is kept.
+	api.post("/stations/:id/join-token", async (c) => {
+		const denied = requireAdmin(c);
+		if (denied) return denied;
+		const id = c.req.param("id");
+		if (!store.get().stations.some((s) => s.stationId === id)) return fail(c, 404, "STATION_NOT_FOUND", "unknown station");
+		const token = newJoinToken();
+		const sub = c.get("sessionRow").sub;
+		const createdAt = new Date(deps.now()).toISOString();
+		const join: StationJoin = { stationId: id, tokenHash: hashDeckToken(token), tokenHint: tokenHint(token), createdAt, createdBy: sub };
+		await store.update((d) => {
+			d.stationJoins[id] = join;
+			d.audit.push({ at: createdAt, kind: "station.join.rotated", stationId: id, sub });
+		});
+		log.info(`station ${id} QR join token rotated by ${sub} (…${join.tokenHint})`);
+		const path = `/?mobile=1#/join/${token}`;
+		const base = env.publicUrl ? env.publicUrl.replace(/\/$/, "") : new URL(c.req.url).origin;
+		return c.json<JoinTokenResponse>({ stationId: id, token, tokenHint: join.tokenHint, createdAt, path, url: base + path }, 201);
+	});
+	api.delete("/stations/:id/join-token", async (c) => {
+		const denied = requireAdmin(c);
+		if (denied) return denied;
+		const id = c.req.param("id");
+		const sub = c.get("sessionRow").sub;
+		await store.update((d) => {
+			if (d.stationJoins[id]) {
+				delete d.stationJoins[id];
+				d.audit.push({ at: new Date(deps.now()).toISOString(), kind: "station.join.revoked", stationId: id, sub });
+			}
+		});
+		log.info(`station ${id} QR join token revoked by ${sub}`);
+		return c.json({ ok: true });
 	});
 
 	api.get("/status", async (c) => {

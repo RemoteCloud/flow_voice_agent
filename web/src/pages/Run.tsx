@@ -3,10 +3,12 @@ import type { RunView } from "../../../server/api.js";
 import type { HubEvent, RunItem } from "../../../server/protocol.js";
 import { api, toApiError } from "../api.js";
 import { useApp } from "../context.js";
+import { Icon } from "../icons.js";
 import { navigate } from "../router.js";
 import { STATE_TEXT, useVoice } from "../voice.js";
 
-export function RunPage({ runId }: { runId: string }) {
+/** `mobile` (the Android agent): current item, mic, the few run buttons, items behind a toggle. No typed input, no hands-free switch, no event log. */
+export function RunPage({ runId, mobile = false }: { runId: string; mobile?: boolean }) {
 	const { me, boot, stations } = useApp();
 	const v = useVoice();
 	const [run, setRun] = useState<RunView | undefined>();
@@ -51,6 +53,7 @@ export function RunPage({ runId }: { runId: string }) {
 	};
 
 	const current = useMemo(() => run?.items.find((i) => i.taskId === run.currentTaskId), [run]);
+	const upNext = useMemo(() => (current && run ? run.items.filter((i) => i.index > current.index && i.voice && i.state === "unanswered").slice(0, 2) : []), [run, current]);
 	const sections = useMemo(() => {
 		const out: { name: string | undefined; items: RunItem[] }[] = [];
 		for (const i of run?.items ?? []) {
@@ -85,15 +88,33 @@ export function RunPage({ runId }: { runId: string }) {
 					</div>
 					<div className="card-body">
 						<div className="mb-3 h-1.5 overflow-hidden rounded bg-panel-2">
-							<div className="h-full bg-ok transition-all" style={{ width: `${run.total ? (run.answered / run.total) * 100 : 0}%` }} />
+							<div
+								className="h-full bg-ok transition-all"
+								style={{
+									width: `${run.total ? (run.answered / run.total) * 100 : 0}%`,
+								}}
+							/>
 						</div>
 						<p className="text-xs text-fg-muted">
-							{run.answered} of {run.total} answered · {run.needsScreen} need the screen · {run.skipped} skipped{run.unsynced ? ` · ${run.unsynced} waiting to sync` : ""}
+							{run.answered} of {run.total} answered · {run.needsScreen} need the screen · {run.skipped} skipped
+							{run.unsynced ? ` · ${run.unsynced} waiting to sync` : ""}
 						</p>
 						{run.state === "pending" ? (
 							<div className="mt-4">
 								<p className="text-lg">{run.pendingReason}</p>
-								<button type="button" className="btn btn-primary btn-lg mt-3" onClick={() => void api.post<RunView>("runs", { runId: run.runId, stationId: run.stationId, templateId: run.templateId }).then(setRun, (e) => setErr(toApiError(e).message))}>
+								<button
+									type="button"
+									className="btn btn-primary btn-lg mt-3"
+									onClick={() =>
+										void api
+											.post<RunView>("runs", {
+												runId: run.runId,
+												stationId: run.stationId,
+												templateId: run.templateId,
+											})
+											.then(setRun, (e) => setErr(toApiError(e).message))
+									}
+								>
 									Start
 								</button>
 							</div>
@@ -103,7 +124,23 @@ export function RunPage({ runId }: { runId: string }) {
 									{current.sectionName ? `${current.sectionName} · ` : ""}Item {current.index}
 								</p>
 								<p className="mt-1 text-2xl font-semibold leading-snug sm:text-3xl">{current.spokenPrompt}</p>
-								<p className="mt-1 text-sm text-fg-muted">{current.type}{current.options ? `: ${current.options.map((o) => o.title).join(" · ")}` : ""}</p>
+								<p className="mt-1 text-sm text-fg-muted">
+									{current.type}
+									{current.options ? `: ${current.options.map((o) => o.title).join(" · ")}` : ""}
+								</p>
+								{mobile && upNext.length > 0 && (
+									<div className="mt-4 border-t border-line pt-3">
+										<p className="text-xs tracking-wide text-fg-faint uppercase">Up next</p>
+										<ul className="mt-1 space-y-0.5 text-sm text-fg-muted">
+											{upNext.map((i) => (
+												<li key={i.taskId} className="truncate">
+													<span className="text-fg-faint">{i.index}. </span>
+													{i.name}
+												</li>
+											))}
+										</ul>
+									</div>
+								)}
 							</div>
 						) : (
 							<p className="mt-4 text-lg text-fg-muted">{done ? `Run ${run.state}.` : run.state === "paused" ? "Paused." : run.answered >= run.total ? "All items answered — complete the checklist below." : "Waiting for the next item…"}</p>
@@ -114,7 +151,9 @@ export function RunPage({ runId }: { runId: string }) {
 								<p className="text-lg">
 									{current?.name}, <strong>{run.pendingReadback.valueText}</strong>. Confirm?
 								</p>
-								<p className="text-xs text-fg-muted">heard: “{run.pendingReadback.transcript}” · {Math.round(run.pendingReadback.confidence * 100)}%</p>
+								<p className="text-xs text-fg-muted">
+									heard: “{run.pendingReadback.transcript}” · {Math.round(run.pendingReadback.confidence * 100)}%
+								</p>
 								<div className="mt-2 flex gap-2">
 									<button type="button" className="btn btn-primary" onClick={() => void act("answer", { transcript: "confirm" })}>
 										Confirm
@@ -187,32 +226,39 @@ export function RunPage({ runId }: { runId: string }) {
 										Voice off
 									</button>
 								</div>
-								<label className="flex items-center gap-2 text-sm">
-									<input type="checkbox" checked={handsFree} onChange={(e) => v.setHandsFree(e.target.checked)} disabled={!v.handsFreeSupported} />
-									Hands-free (open mic between items: say “next”, “repeat”, “pause”, “complete”, “discard”, or answer unprompted)
-								</label>
-								<form
-									className="flex w-full gap-2"
-									onSubmit={(e) => {
-										e.preventDefault();
-										if (!typed.trim()) return;
-										if (role === "endpoint" && v.active) v.sayText(typed);
-										else void act("answer", { transcript: typed });
-										setTyped("");
-									}}
-								>
-									<input className="input" value={typed} onChange={(e) => setTyped(e.target.value)} placeholder="Type what you would say (e.g. “five minutes ago”, “confirm”, “skip”)" />
-									<button type="submit" className="btn">
-										Send
-									</button>
-								</form>
+								{!mobile && (
+									<label className="flex items-center gap-2 text-sm">
+										<input type="checkbox" checked={handsFree} onChange={(e) => v.setHandsFree(e.target.checked)} disabled={!v.handsFreeSupported} />
+										Hands-free (open mic between items: say “next”, “repeat”, “pause”, “complete”, “discard”, or answer unprompted)
+									</label>
+								)}
+								{!mobile && (
+									<form
+										className="flex w-full gap-2"
+										onSubmit={(e) => {
+											e.preventDefault();
+											if (!typed.trim()) return;
+											if (role === "endpoint" && v.active) v.sayText(typed);
+											else void act("answer", { transcript: typed });
+											setTyped("");
+										}}
+									>
+										<input className="input" value={typed} onChange={(e) => setTyped(e.target.value)} placeholder="Type what you would say (e.g. “five minutes ago”, “confirm”, “skip”)" />
+										<button type="submit" className="btn">
+											Send
+										</button>
+									</form>
+								)}
 							</div>
 						)}
 						{(err || v.error) && <p className="mt-3 text-sm text-danger">{err ?? v.error}</p>}
-						<p className="help mt-3">
-							{handsFree ? "Hands-free: the mic opens after every question and stays open between items. " : "Push-to-talk: hold the button, or hold Space. "}
-							STT runs {boot.speech.stt === "endpoint" ? "on this device" : "on the hub"}; TTS on this device.{boot.speech.stt !== "endpoint" ? " Hands-free needs on-device recognition." : ""}
-						</p>
+						{!mobile && (
+							<p className="help mt-3">
+								{handsFree ? "Hands-free: the mic opens after every question and stays open between items. " : "Push-to-talk: hold the button, or hold Space. "}
+								STT runs {boot.speech.stt === "endpoint" ? "on this device" : "on the hub"}; TTS on this device.
+								{boot.speech.stt !== "endpoint" ? " Hands-free needs on-device recognition." : ""}
+							</p>
+						)}
 					</div>
 				</section>
 
@@ -236,45 +282,16 @@ export function RunPage({ runId }: { runId: string }) {
 				</section>
 			</div>
 
-			{/* item list */}
+			{/* item list: done / now / next */}
 			<section className="card">
 				<div className="card-head">
-					<h2 className="card-title">Items</h2>
-					<span className="text-xs text-fg-faint">Tap an item to answer it by hand or jump to it.</span>
+					<h2 className="card-title">
+						Items <span className="ml-1 font-normal text-fg-muted">{run.answered}/{run.total}</span>
+					</h2>
+					{!mobile && <span className="text-xs text-fg-faint">Tap an item to answer it by hand or jump to it.</span>}
 				</div>
-				<div className="max-h-[70vh] overflow-y-auto">
-					{sections.map((s, si) => (
-						<div key={si}>
-							{s.name && <p className="bg-panel-2 px-4 py-1 text-xs font-medium tracking-wide text-fg-muted uppercase">{s.name}</p>}
-							<ul className="divide-y divide-line">
-								{s.items.map((i) => (
-									<li key={i.taskId} className={`flex items-center gap-3 px-4 py-2 ${i.state === "current" ? "bg-accent/10" : ""}`}>
-										<StateDot item={i} />
-										<button type="button" className="min-w-0 flex-1 text-left" onClick={() => setManual(i)} disabled={done || i.state === "info"}>
-											<p className="truncate text-sm">
-												<span className="text-fg-faint">{i.index}. </span>
-												{i.name}
-											</p>
-											<p className="truncate text-xs text-fg-muted">
-												{i.type}
-												{i.valueText ? ` · ${i.valueText}` : ""}
-												{i.state === "skipped" && i.skipReason ? ` · ${i.skipReason}` : ""}
-												{i.state === "unsynced" ? " · waiting to sync" : ""}
-												{i.state === "needs_screen" ? " · needs the screen" : ""}
-											</p>
-										</button>
-										{i.voice && !done && i.state !== "current" && run.state === "active" && (
-											<button type="button" className="btn btn-sm btn-ghost" title="Speak this item next" onClick={() => void act(`items/${encodeURIComponent(i.taskId)}/jump`)}>
-												▶
-											</button>
-										)}
-									</li>
-								))}
-							</ul>
-						</div>
-					))}
-				</div>
-				{events.length > 0 && (
+				<ItemList run={run} sections={sections} mobile={mobile} done={done} onManual={setManual} onJump={(taskId) => void act(`items/${encodeURIComponent(taskId)}/jump`)} />
+				{!mobile && events.length > 0 && (
 					<div className="border-t border-line px-4 py-2">
 						<p className="text-xs font-medium tracking-wide text-fg-muted uppercase">Events</p>
 						<ul className="mt-1 space-y-0.5 text-xs text-fg-faint">
@@ -289,15 +306,98 @@ export function RunPage({ runId }: { runId: string }) {
 				)}
 			</section>
 
-			{manual && <ManualDialog item={manual} onClose={() => setManual(undefined)} onSubmit={(value, valueText) => act(`items/${encodeURIComponent(manual.taskId)}/answer`, { value, valueText }).then(() => setManual(undefined))} />}
+			{manual && (
+				<ManualDialog
+					item={manual}
+					onClose={() => setManual(undefined)}
+					onSubmit={(value, valueText) =>
+						act(`items/${encodeURIComponent(manual.taskId)}/answer`, {
+							value,
+							valueText,
+						}).then(() => setManual(undefined))
+					}
+				/>
+			)}
 			{discardOpen && <DiscardDialog onClose={() => setDiscardOpen(false)} onSubmit={(reasonCode, comment) => act("discard", { reasonCode, comment }).then(() => setDiscardOpen(false))} />}
 		</div>
 	);
 }
 
-function StateDot({ item }: { item: RunItem }) {
-	const cls = { answered: "bg-ok", unsynced: "bg-warn", current: "bg-accent", skipped: "bg-danger", needs_screen: "border border-warn", unanswered: "border border-line-strong", info: "border border-line" }[item.state];
-	return <span className={`h-3 w-3 shrink-0 rounded-full ${cls}`} title={item.state} />;
+/** Sectioned list: answered rows carry a check, the current row is highlighted, upcoming rows stay muted. On phones it scrolls with the page and follows the current item. */
+function ItemList({ run, sections, mobile, done, onManual, onJump }: { run: RunView; sections: { name: string | undefined; items: RunItem[] }[]; mobile: boolean; done: boolean; onManual: (item: RunItem) => void; onJump: (taskId: string) => void }) {
+	useEffect(() => {
+		if (!mobile || !run.currentTaskId) return;
+		document.getElementById(`item-${run.currentTaskId}`)?.scrollIntoView({ block: "nearest", behavior: "smooth" });
+	}, [mobile, run.currentTaskId]);
+	const counts = (items: RunItem[]) => {
+		const total = items.filter((i) => i.state !== "info").length;
+		const answered = items.filter((i) => i.state === "answered" || i.state === "unsynced").length;
+		return total ? `${answered}/${total}` : "";
+	};
+	return (
+		<div className={mobile ? "" : "max-h-[70vh] overflow-y-auto"}>
+			{sections.map((s, si) => (
+				<div key={si}>
+					{s.name && (
+						<p className="section-sticky flex items-center justify-between px-4 py-1.5 text-xs font-medium tracking-wide text-fg-muted uppercase">
+							<span className="truncate">{s.name}</span>
+							<span className="ml-2 shrink-0 font-normal normal-case">{counts(s.items)}</span>
+						</p>
+					)}
+					<ul className="divide-y divide-line">
+						{s.items.map((i) => {
+							const isDone = i.state === "answered" || i.state === "unsynced" || i.state === "skipped";
+							const isNow = i.state === "current";
+							return (
+								<li key={i.taskId} id={`item-${i.taskId}`} className={`flex items-center gap-3 px-4 py-2.5 ${isNow ? "row-current" : ""} ${isDone ? "text-fg-muted" : ""}`}>
+									<StateMark item={i} />
+									<button type="button" className="min-w-0 flex-1 text-left" onClick={() => onManual(i)} disabled={done || i.state === "info"}>
+										<p className={`truncate text-sm ${isNow ? "font-semibold text-fg" : ""}`}>
+											<span className="text-fg-faint">{i.index}. </span>
+											{i.name}
+										</p>
+										<p className="truncate text-xs text-fg-muted">
+											{isNow ? "Now" : i.state === "answered" || i.state === "unsynced" ? (i.valueText ?? "Answered") : i.state === "skipped" ? `Skipped${i.skipReason ? ` · ${i.skipReason}` : ""}` : i.state === "needs_screen" ? "Needs the screen" : i.state === "info" ? "Information" : mobile ? "Next" : i.type}
+											{isNow && i.valueText ? ` · ${i.valueText}` : ""}
+											{i.state === "unsynced" ? " · waiting to sync" : ""}
+											{!mobile && !isNow && i.state !== "info" ? ` · ${i.type}` : ""}
+										</p>
+									</button>
+									{i.voice && !done && !isNow && run.state === "active" && (
+										<button type="button" className="btn btn-sm btn-ghost" title="Speak this item next" aria-label="Speak this item next" onClick={() => onJump(i.taskId)}>
+											<Icon name="play" size={14} />
+										</button>
+									)}
+								</li>
+							);
+						})}
+					</ul>
+				</div>
+			))}
+		</div>
+	);
+}
+
+function StateMark({ item }: { item: RunItem }) {
+	if (item.state === "answered" || item.state === "unsynced") {
+		return (
+			<span className={`flex h-6 w-6 shrink-0 items-center justify-center rounded-full ${item.state === "unsynced" ? "bg-warn/15 text-warn" : "bg-ok/15 text-ok"}`} title={item.state}>
+				<Icon name="check" size={14} strokeWidth={2.5} />
+			</span>
+		);
+	}
+	const cls = {
+		current: "bg-accent",
+		skipped: "bg-danger/70",
+		needs_screen: "border-2 border-warn",
+		unanswered: "border-2 border-line-strong",
+		info: "border border-line",
+	}[item.state];
+	return (
+		<span className="flex h-6 w-6 shrink-0 items-center justify-center" title={item.state}>
+			<span className={`h-3 w-3 rounded-full ${cls}`} />
+		</span>
+	);
 }
 
 function ManualDialog({ item, onClose, onSubmit }: { item: RunItem; onClose: () => void; onSubmit: (value: string, valueText?: string) => Promise<void> }) {
@@ -322,7 +422,10 @@ function ManualDialog({ item, onClose, onSubmit }: { item: RunItem; onClose: () 
 					</button>
 				</div>
 				<div className="card-body space-y-3">
-					<p className="text-xs text-fg-muted">{item.type}{item.dataId ? ` · ${item.dataId}` : ""}</p>
+					<p className="text-xs text-fg-muted">
+						{item.type}
+						{item.dataId ? ` · ${item.dataId}` : ""}
+					</p>
 					{item.type === "Checkbox" ? (
 						<div className="flex gap-2">
 							<button type="button" className="btn btn-primary flex-1" disabled={busy} onClick={() => void submit("true", "yes")}>

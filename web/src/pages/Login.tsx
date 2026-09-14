@@ -15,7 +15,7 @@ const AUTH_ERROR_TEXT: Record<string, string> = {
 	not_configured: "Sign-in is not configured on this hub.",
 };
 
-export function LoginPage(p: { provider?: AuthProviderView; hubVersion?: string; vesselId?: string; authError?: string; notice?: string; probeError?: ApiClientError; onRetry: () => void; onDevSignedIn: (me: MeResponse) => void }) {
+export function LoginPage(p: { provider?: AuthProviderView; hubVersion?: string; vesselId?: string; authError?: string; notice?: string; probeError?: ApiClientError; joinStation?: { name: string; location?: string }; joinError?: string; onRetry: () => void; onDevSignedIn: (me: MeResponse) => void }) {
 	const [busy, setBusy] = useState(false);
 	const [err, setErr] = useState<string | undefined>();
 	const oidc = p.provider?.kind === "oidc" && p.provider.configured;
@@ -47,6 +47,17 @@ export function LoginPage(p: { provider?: AuthProviderView; hubVersion?: string;
 					<p role="status" className="mb-4 rounded-lg border border-info/40 bg-info/10 px-3 py-2 text-sm text-info">
 						{p.notice}
 					</p>
+				)}
+				{p.joinStation && (
+					<p role="status" className="mb-4 rounded-lg border border-accent/40 bg-accent/10 px-3 py-2 text-sm">
+						Sign in to continue on <strong>{p.joinStation.location ? `${p.joinStation.location} · ` : ""}{p.joinStation.name}</strong>.
+					</p>
+				)}
+				{p.joinError && (
+					<div role="alert" className="mb-4 rounded-lg border border-warn/40 bg-warn/10 px-3 py-2 text-sm">
+						<p className="font-medium text-warn">{p.joinError}</p>
+						<p className="mt-1 text-fg-muted">Sign in and pick a station, or ask an administrator for a new code.</p>
+					</div>
 				)}
 				{p.authError && (
 					<div role="alert" className="mb-4 rounded-lg border border-danger/40 bg-danger/10 px-3 py-2 text-sm">

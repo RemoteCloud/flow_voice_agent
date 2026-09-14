@@ -1,4 +1,6 @@
 /** Light / dark / system, remembered per device, applied as data-theme on <html>. */
+import { useCallback, useState } from "react";
+
 export type Theme = "light" | "dark" | "system";
 
 export function readTheme(): Theme {
@@ -27,4 +29,15 @@ export function saveTheme(t: Theme): void {
 		/* private mode */
 	}
 	applyTheme(t);
+}
+
+/** The header toggle: system → dark → light → system. Shared by the phone and the browser chrome. */
+export function useTheme(): [Theme, () => void] {
+	const [theme, setTheme] = useState<Theme>(readTheme);
+	const cycle = useCallback(() => {
+		const next: Theme = theme === "system" ? "dark" : theme === "dark" ? "light" : "system";
+		saveTheme(next);
+		setTheme(next);
+	}, [theme]);
+	return [theme, cycle];
 }

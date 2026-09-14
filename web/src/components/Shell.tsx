@@ -1,22 +1,50 @@
-import { useState, type ReactNode } from "react";
-import { readTheme, saveTheme, type Theme } from "../theme.js";
+import type { ReactNode } from "react";
+import { Icon } from "../icons.js";
+import { useTheme } from "../theme.js";
 import { useApp } from "../context.js";
 import { navigate, type Route } from "../router.js";
 
-export function Shell({ route, children }: { route: Route; children: ReactNode }) {
+/**
+ * App chrome. `mobile` (phones / the Android agent) gets a one-line bar: logo, "location · station",
+ * theme, sign out — no Admin tab, no vessel/user detail. The browser gets the full header.
+ */
+export function Shell({ route, mobile = false, children }: { route: Route; mobile?: boolean; children: ReactNode }) {
 	const { me, boot, stations, signOut } = useApp();
-	const [theme, setTheme] = useState<Theme>(readTheme);
-	const cycle = () => {
-		const next: Theme = theme === "system" ? "dark" : theme === "dark" ? "light" : "system";
-		setTheme(next);
-		saveTheme(next);
-	};
+	const [theme, cycle] = useTheme();
 	const station = stations.find((s) => s.stationId === me.stationId);
+	const stationLabel = station ? (station.location ? `${station.location} · ${station.name}` : station.name) : "No station";
+	const themeIcon = theme === "dark" ? "moon" : theme === "light" ? "sun" : "auto";
+	const themeTitle = theme === "dark" ? "Dark" : theme === "light" ? "Light" : "Auto (follows the device)";
 	const tab = (r: Route, label: string, active: boolean) => (
 		<button type="button" onClick={() => navigate(r)} className={`rounded-lg px-3 py-1.5 text-sm font-medium ${active ? "bg-panel-2 text-fg" : "text-fg-muted hover:text-fg"}`}>
 			{label}
 		</button>
 	);
+
+	if (mobile) {
+		return (
+			<div className="flex min-h-screen flex-col">
+				<header className="sticky top-0 z-10 border-b border-line bg-bg/95 backdrop-blur">
+					<div className="flex items-center gap-2 px-3 py-2">
+						<button type="button" className="flex items-center gap-2" onClick={() => navigate({ page: "picker" })} aria-label="Checklists">
+							<img src="/icon.svg" width={24} height={24} alt="" />
+						</button>
+						<span className="pill min-w-0 truncate border-line-strong text-fg-muted" title="Station">
+							{stationLabel}
+						</span>
+						<button type="button" className="btn btn-ghost ml-auto h-10 w-10 !p-0" onClick={cycle} title={`Theme: ${themeTitle}`} aria-label="Switch theme">
+							<Icon name={themeIcon} size={20} />
+						</button>
+						<button type="button" className="btn btn-sm btn-ghost" onClick={() => void signOut()}>
+							Sign out
+						</button>
+					</div>
+				</header>
+				<main className="w-full flex-1 px-3 py-3">{children}</main>
+			</div>
+		);
+	}
+
 	return (
 		<div className="flex min-h-screen flex-col">
 			<header className="sticky top-0 z-10 border-b border-line bg-bg/95 backdrop-blur">
@@ -32,11 +60,12 @@ export function Shell({ route, children }: { route: Route; children: ReactNode }
 					</nav>
 					<div className="ml-auto flex items-center gap-3 text-sm">
 						<span className="pill border-line-strong text-fg-muted" title="Station">
-							{station ? station.name : "No station"}
+							{stationLabel}
 						</span>
 						<span className="hidden text-fg-muted sm:inline">{me.name ?? me.sub}</span>
-						<button type="button" className="btn btn-sm btn-ghost" onClick={cycle} title="Theme: light / dark / follow the device" aria-label="Switch theme">
-							{theme === "dark" ? "🌙 Dark" : theme === "light" ? "☀️ Light" : "◐ Auto"}
+						<button type="button" className="btn btn-sm btn-ghost" onClick={cycle} title={`Theme: ${themeTitle}`} aria-label="Switch theme">
+							<Icon name={themeIcon} size={16} />
+							{theme === "dark" ? "Dark" : theme === "light" ? "Light" : "Auto"}
 						</button>
 						<button type="button" className="btn btn-sm" onClick={() => void signOut()}>
 							Sign out

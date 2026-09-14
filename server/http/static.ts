@@ -50,8 +50,11 @@ export function resolveStatic(publicDir: string, urlPath: string, exists: (fileP
 	const serveIndex = (): StaticFile | undefined => (exists(index) ? { filePath: index, contentType: CONTENT_TYPES[".html"], cacheControl: "no-cache" } : undefined);
 	if (abs === root || decoded.endsWith("/")) return serveIndex();
 	const inAssets = /^assets[\\/]/.test(rel);
+	// the service worker, its workbox runtime and the manifest decide which app version a device
+	// runs: a cached sw.js keeps a phone on the old precache for max-age, so never cache them
+	const noCache = abs === index || /^(sw\.js|workbox-[^\\/]*\.js|registerSW\.js|manifest\.webmanifest)$/.test(rel);
 	if (exists(abs)) {
-		return { filePath: abs, contentType: contentTypeFor(abs), cacheControl: inAssets ? "public, max-age=31536000, immutable" : abs === index ? "no-cache" : "public, max-age=3600" };
+		return { filePath: abs, contentType: contentTypeFor(abs), cacheControl: inAssets ? "public, max-age=31536000, immutable" : noCache ? "no-cache" : "public, max-age=3600" };
 	}
 	// hashed asset that does not exist: a real 404 is more useful than index.html
 	if (inAssets || path.extname(rel)) return undefined;

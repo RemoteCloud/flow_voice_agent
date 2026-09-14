@@ -70,6 +70,15 @@ docker run -d --name flow-voice -p 8443:8443 -v flowvoice-data:/data --env-file 
 The first start seeds `/data/stations.json`, `/data/mappings.json` and `/data/profiles/` from
 `deploy/data-template`. Edit them on the volume (or in Admin) and copy them to the next vessel.
 
+**Station posters.** Admin → Stations shows one card per station (name, location, language, audio
+policy …) with a *Create QR* button. The QR carries a revocable join token; a phone that scans it
+opens Flow Voice locked to that station and then signs the user in as usual, so every value is still
+written by a real user. *Rotate* replaces the code on the posters, *Revoke* disables it; phones that
+already joined stay signed in. The token lives on this hub only (never in `stations.json`). Set
+`HUB_PUBLIC_URL` (or edit the base URL in the panel) so the printed link points at the address the
+phones use. On the Android agent, paste the same link as the hub URL; after a rotation the app shows
+"QR code no longer valid" until the URL is updated.
+
 Register Flow Voice in Maranics UserManagement as a confidential external application with the
 redirect URI `{HUB_PUBLIC_URL}/api/auth/callback` and the scopes
 `openid email profile offline_access`. Each signed-in user's tokens are sealed on their own
@@ -99,9 +108,9 @@ for the user account.
 
 ## API surface
 
-Browser / app (`/api/*`, cookie session): `auth/session|login|callback|dev|logout|me|station`,
+Browser / app (`/api/*`, cookie session): `auth/session|login|callback|dev|logout|me|station|join`,
 `devices/enroll[/{code}]`, `checklists`, `runs[/{id}[/next|answer|skip|repeat|pause|resume|complete|discard|abandon]]`,
-`runs/{id}/items/{taskId}/answer|jump`, `interpret`, `stations`, `status`, `audit`, `devices/approve`,
+`runs/{id}/items/{taskId}/answer|jump`, `interpret`, `stations`, `stations/{id}/join-token`, `status`, `audit`, `devices/approve`,
 `devices/{id}`, `sessions/{id}`, `users`, `profiles/{id}`, `mappings`, `settings`, `outbox/retry`.
 
 Integrations (`/v1/*`, `Authorization: Bearer <SERVICE_TOKENS>` or `X-Flow-Signature: sha256=<HMAC of body>`):

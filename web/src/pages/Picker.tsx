@@ -9,8 +9,13 @@ const READINESS: Record<ChecklistPick["readiness"], { label: string; cls: string
 	partial: { label: "Partial", cls: "border-warn/50 text-warn" },
 	none: { label: "Not available", cls: "border-line-strong text-fg-faint" },
 };
-const STATE: Record<ChecklistPick["state"], string> = { not_started: "Not started", in_progress: "In progress", ready_to_complete: "Ready to complete" };
+const STATE: Record<ChecklistPick["state"], string> = {
+	not_started: "Not started",
+	in_progress: "In progress",
+	ready_to_complete: "Ready to complete",
+};
 
+/** Browser picker (desktop). Phones use `HomePage`. */
 export function PickerPage({ onOpenRun }: { onOpenRun: (runId: string) => void }) {
 	const { me, stations, setStation, boot } = useApp();
 	const v = useVoice();
@@ -44,7 +49,12 @@ export function PickerPage({ onOpenRun }: { onOpenRun: (runId: string) => void }
 		setBusy(p.instanceId ?? p.templateId);
 		setErr(undefined);
 		try {
-			const run = await api.post<RunView>("runs", { instanceId: p.instanceId, templateId: p.instanceId ? undefined : p.templateId, stationId: me.stationId, runId: p.activeRunId });
+			const run = await api.post<RunView>("runs", {
+				instanceId: p.instanceId,
+				templateId: p.instanceId ? undefined : p.templateId,
+				stationId: me.stationId,
+				runId: p.activeRunId,
+			});
 			onOpenRun(run.runId);
 		} catch (e) {
 			setErr(toApiError(e).message);
@@ -67,8 +77,7 @@ export function PickerPage({ onOpenRun }: { onOpenRun: (runId: string) => void }
 				<div className="card-body text-sm text-fg-muted">
 					{v.active ? (
 						<>
-							Say <strong>list</strong> to hear the checklists, a <strong>name or number</strong> to start one, or <strong>station</strong> followed by a station name. During a run: <strong>next</strong>, <strong>repeat</strong>, <strong>skip</strong>, <strong>pause</strong>, <strong>complete</strong>, <strong>discard</strong>.
-							{v.transcript && <span className="ml-2 italic">“{v.transcript}”</span>}
+							Say <strong>list</strong> to hear the checklists, a <strong>name or number</strong> to start one, or <strong>station</strong> followed by a station name. During a run: <strong>next</strong>, <strong>repeat</strong>, <strong>skip</strong>, <strong>pause</strong>, <strong>complete</strong>, <strong>discard</strong>.{v.transcript && <span className="ml-2 italic">“{v.transcript}”</span>}
 						</>
 					) : (
 						<>Start voice to run the app without touching the screen. The hub reads the list and waits for a name.</>
@@ -103,7 +112,8 @@ export function PickerPage({ onOpenRun }: { onOpenRun: (runId: string) => void }
 								<div className="min-w-0 flex-1">
 									<p className="font-medium">{r.templateName}</p>
 									<p className="text-xs text-fg-muted">
-										{r.state} · {r.answered}/{r.total} answered{r.unsynced ? ` · ${r.unsynced} unsynced` : ""}
+										{r.state} · {r.answered}/{r.total} answered
+										{r.unsynced ? ` · ${r.unsynced} unsynced` : ""}
 										{r.pendingReason ? ` · ${r.pendingReason}` : ""}
 									</p>
 								</div>

@@ -3,6 +3,7 @@ import type { AuditEntry, Station, StatusResponse, VoiceProfile, EventMapping } 
 import { api, toApiError } from "../api.js";
 import { useApp } from "../context.js";
 import { navigate } from "../router.js";
+import { StationsTab } from "./AdminStations.js";
 
 type Tab = "status" | "stations" | "devices" | "profiles" | "outbox" | "audit";
 
@@ -156,36 +157,6 @@ function StatusTab({ s }: { s: StatusResponse }) {
 				</div>
 			</section>
 		</div>
-	);
-}
-
-function StationsTab({ s, reload, canEdit }: { s: StatusResponse; reload: () => Promise<void>; canEdit: boolean }) {
-	const [text, setText] = useState(() => JSON.stringify(s.stations.map(({ endpoint: _e, activeRun: _r, ...st }) => st), null, 2));
-	const [err, setErr] = useState<string | undefined>();
-	const save = async () => {
-		try {
-			const list = JSON.parse(text) as Station[];
-			await api.put("stations", list);
-			setErr(undefined);
-			await reload();
-		} catch (e) {
-			setErr(e instanceof SyntaxError ? `JSON: ${e.message}` : toApiError(e).message);
-		}
-	};
-	return (
-		<section className="card">
-			<div className="card-head">
-				<h2 className="card-title">Stations</h2>
-				<span className="text-xs text-fg-faint">Portable: the same list lives in /data/stations.json and can be copied to the next vessel.</span>
-			</div>
-			<div className="card-body space-y-2">
-				<textarea className="input mono" rows={14} value={text} onChange={(e) => setText(e.target.value)} disabled={!canEdit} />
-				{err && <p className="text-sm text-danger">{err}</p>}
-				<button type="button" className="btn btn-primary" onClick={() => void save()} disabled={!canEdit}>
-					Save stations
-				</button>
-			</div>
-		</section>
 	);
 }
 

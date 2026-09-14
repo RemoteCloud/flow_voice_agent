@@ -44,10 +44,18 @@ async function waitFor(fn, what, ms = 8000) {
 }
 
 let cookie = "";
-async function api(method, p, body) {
-	const res = await fetch(`${base}/api/${p}`, { method, headers: { "content-type": "application/json", cookie }, body: body ? JSON.stringify(body) : undefined });
-	const sc = res.headers.get("set-cookie");
-	if (sc) cookie = sc.split(";")[0];
+/** `jar` (a Map of cookie name → value) makes a second, independent browser — e.g. a phone that scanned a QR code. */
+async function api(method, p, body, jar) {
+	const res = await fetch(`${base}/api/${p}`, { method, headers: { "content-type": "application/json", cookie: jar ? [...jar].map(([k, v]) => `${k}=${v}`).join("; ") : cookie }, body: body ? JSON.stringify(body) : undefined });
+	for (const sc of res.headers.getSetCookie()) {
+		const [pair, ...attrs] = sc.split(";");
+		const [k, v] = pair.split("=");
+		const expired = attrs.some((a) => /^\s*max-age=0$/i.test(a));
+		if (jar) {
+			if (expired) jar.delete(k);
+			else jar.set(k, v);
+		} else if (!expired) cookie = pair;
+	}
 	const text = await res.text();
 	let json;
 	try {
@@ -66,6 +74,48 @@ try {
 	assert.equal(me.status, 200, JSON.stringify(me.body));
 	assert.equal(me.body.name, "Bridge Officer");
 	assert.equal((await api("PUT", "auth/station", { stationId: "bridge-01" })).status, 200);
+
+	// ---- station QR join: admin mints a token, a phone redeems it before sign-in, dev login binds the station
+	step = "join";
+	const minted = await api("POST", "stations/bridge-01/join-token");
+	assert.equal(minted.status, 201, JSON.stringify(minted.body));
+	assert.match(minted.body.token, /^fvj_[A-Za-z0-9_-]{40,}$/);
+	assert.ok(minted.body.url.endsWith(`/?mobile=1#/join/${minted.body.token}`), minted.body.url);
+	assert.equal(minted.body.tokenHint, minted.body.token.slice(-4));
+	const stationsAfterMint = await api("GET", "stations");
+	const bridgeView = stationsAfterMint.body.find((s) => s.stationId === "bridge-01");
+	assert.equal(bridgeView.join.tokenHint, minted.body.tokenHint);
+	assert.equal(bridgeView.join.tokenHash, undefined, "hash never leaves the hub");
+	assert.ok(!log.join("").includes(minted.body.token), "the join token is never logged");
+	const phone = new Map();
+	const joined = await api("POST", "auth/join", { token: minted.body.token }, phone);
+	assert.equal(joined.status, 200, JSON.stringify(joined.body));
+	assert.equal(joined.body.authenticated, false);
+	assert.equal(joined.body.station.name, "Bridge");
+	assert.ok(phone.has("fv_join"), "join cookie set before sign-in");
+	const phoneMe = await api("POST", "auth/dev", undefined, phone);
+	assert.equal(phoneMe.status, 200, JSON.stringify(phoneMe.body));
+	assert.equal(phoneMe.body.stationId, "bridge-01", "dev sign-in consumed the join cookie");
+	assert.equal(phoneMe.body.stationSource, "join");
+	assert.ok(!phone.has("fv_join"), "join cookie cleared after sign-in");
+	assert.equal((await api("GET", "auth/me", undefined, phone)).body.stationId, "bridge-01");
+	const bogus = await api("POST", "auth/join", { token: "fvj_" + "x".repeat(43) }, new Map());
+	assert.equal(bogus.status, 404);
+	assert.equal(bogus.body.code, "JOIN_INVALID");
+	const rejoin = await api("POST", "auth/join", { token: minted.body.token });
+	assert.equal(rejoin.status, 200);
+	assert.equal(rejoin.body.authenticated, true, "an existing session is bound immediately");
+	assert.equal(rejoin.body.me.stationSource, "join");
+	assert.equal((await api("DELETE", "stations/bridge-01/join-token")).status, 200);
+	assert.equal((await api("POST", "auth/join", { token: minted.body.token }, new Map())).status, 404, "revoked token rejected");
+	assert.equal((await api("GET", "stations")).body.find((s) => s.stationId === "bridge-01").join, undefined);
+	const repick = await api("PUT", "auth/station", { stationId: "bridge-01" });
+	assert.equal(repick.body.stationSource, "pick");
+	const stationList = (await api("GET", "stations")).body.map(({ endpoint: _e, activeRun: _r, join: _j, ...s }) => (s.stationId === "bridge-01" ? { ...s, location: "Location 1" } : s));
+	assert.equal((await api("PUT", "stations", stationList)).status, 200);
+	assert.equal((await api("GET", "auth/session")).body.stations.find((s) => s.stationId === "bridge-01").location, "Location 1");
+	const auditJoin = await api("GET", "audit?limit=20");
+	assert.ok(auditJoin.body.some((a) => a.kind === "station.join.rotated") && auditJoin.body.some((a) => a.kind === "station.join.revoked"), "join rotation and revocation audited");
 
 	step = "picker";
 	const picks = await api("GET", "checklists");

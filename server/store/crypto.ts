@@ -1,6 +1,6 @@
 /** Token sealing (AES-256-GCM under an HKDF-derived key), deck tokens and hashes. node:crypto only. */
 import { createCipheriv, createDecipheriv, createHash, hkdfSync, randomBytes, timingSafeEqual } from "node:crypto";
-import { DECK_TOKEN_PREFIX } from "../protocol.js";
+import { DECK_TOKEN_PREFIX, JOIN_TOKEN_PREFIX } from "../protocol.js";
 
 const SEAL_VERSION = "v1:";
 const IV_LEN = 12;
@@ -36,6 +36,11 @@ export function openToken(sealed: string, key: Buffer): string {
 /** `fdk_` + 32 random bytes (base64url); satisfies `isDeckToken`. */
 export function newDeckToken(): string {
 	return DECK_TOKEN_PREFIX + randomBytes(32).toString("base64url");
+}
+
+/** `fvj_` + 32 random bytes (base64url): a station QR join token; hashed with `hashDeckToken`. */
+export function newJoinToken(): string {
+	return JOIN_TOKEN_PREFIX + randomBytes(32).toString("base64url");
 }
 
 export function hashDeckToken(token: string): string {

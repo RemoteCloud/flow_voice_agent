@@ -1,14 +1,14 @@
 @import "tailwindcss";
 
-/* Light is the default: white panels on a soft grey ground. Dark follows the OS, and the header
+/* Light is the default: plain white, hairline borders. Dark follows the OS, and the header
    toggle pins either one via data-theme on <html> (remembered per device). */
 :root {
 	color-scheme: light;
-	--c-bg: #f5f7fb;
+	--c-bg: #ffffff;
 	--c-panel: #ffffff;
-	--c-panel-2: #f3f5f9;
-	--c-line: #e3e8f0;
-	--c-line-strong: #c7d0dd;
+	--c-panel-2: #f5f6f8;
+	--c-line: #e8ecf1;
+	--c-line-strong: #d3dae4;
 	--c-fg: #0f172a;
 	--c-fg-muted: #526078;
 	--c-fg-faint: #8391a7;
@@ -163,6 +163,22 @@
 	}
 	.pill {
 		@apply inline-flex items-center rounded-full border px-2 py-0.5 text-xs font-medium;
+	}
+	/* phone home: large icon tiles and the one Continue button */
+	.tile {
+		@apply flex min-h-40 flex-col items-center justify-center gap-2 rounded-2xl border border-line bg-panel px-3 py-4 text-center transition-colors select-none active:bg-panel-2 disabled:opacity-40;
+		box-shadow: var(--c-shadow);
+	}
+	.btn-hero {
+		@apply flex w-full items-center gap-4 rounded-2xl px-4 py-4 text-base;
+		min-height: 5.5rem;
+	}
+	/* run item list */
+	.row-current {
+		@apply border-l-4 border-accent bg-accent/10;
+	}
+	.section-sticky {
+		@apply sticky top-0 z-[1] bg-panel-2/95 backdrop-blur;
 	}
 	.mic-ring {
 		box-shadow: 0 0 0 0 var(--c-danger);

@@ -13,5 +13,5 @@
     "resolveJsonModule": true,
     "types": ["node", "vite/client", "vite-plugin-pwa/client"]
   },
-  "include": ["src/**/*.ts", "src/**/*.tsx", "../server/protocol.ts", "../server/api.ts"]
+  "include": ["src/**/*.ts", "src/**/*.tsx", "../server/protocol.ts", "../server/api.ts", "../server/core/qr.ts"]
 }

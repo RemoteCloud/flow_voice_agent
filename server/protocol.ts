@@ -9,6 +9,8 @@
 
 export const PROTOCOL_VERSION = 1;
 export const DEVICE_TOKEN_PREFIX = "fvd_";
+/** Station QR join tokens (`POST /api/auth/join`). */
+export const JOIN_TOKEN_PREFIX = "fvj_";
 /** Alias for the crypto helpers copied from the FlowDeck hub. */
 export const DECK_TOKEN_PREFIX = DEVICE_TOKEN_PREFIX;
 
@@ -182,6 +184,10 @@ export interface HubEvent {
 	taskId?: string;
 	text?: string;
 	data?: Record<string, unknown>;
+}
+
+export function isJoinToken(v: unknown): v is string {
+	return typeof v === "string" && v.startsWith(JOIN_TOKEN_PREFIX) && v.length > JOIN_TOKEN_PREFIX.length + 20;
 }
 
 export function isDeviceToken(v: unknown): v is string {

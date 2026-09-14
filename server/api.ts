@@ -1,9 +1,9 @@
 /** HTTP view types shared with the web app (relative import from web/src). */
 import type { AuthErrorCode, AuthProviderView } from "./http/auth.js";
 import type { ChecklistPick, RunView } from "./protocol.js";
-import type { AuditEntry, Device, EventMapping, OutboxEntry, PendingEnrollment, Station, VoiceProfile } from "./store/HubStore.js";
+import type { AuditEntry, Device, EventMapping, OutboxEntry, PendingEnrollment, Station, StationJoin, VoiceProfile } from "./store/HubStore.js";
 
-export type { AuthErrorCode, AuthProviderView, ChecklistPick, RunView, Station, Device, PendingEnrollment, VoiceProfile, EventMapping, OutboxEntry, AuditEntry };
+export type { AuthErrorCode, AuthProviderView, ChecklistPick, RunView, Station, StationJoin, Device, PendingEnrollment, VoiceProfile, EventMapping, OutboxEntry, AuditEntry };
 
 export interface MeResponse {
 	sub: string;
@@ -12,6 +12,8 @@ export interface MeResponse {
 	positionName?: string;
 	isAdmin: boolean;
 	stationId?: string;
+	/** How the station was bound: scanned QR ("join") or picked on screen ("pick"). */
+	stationSource?: "join" | "pick";
 	sessionId: string;
 	credential: "ok" | "none" | "expired" | "refresh_failed";
 }
@@ -43,6 +45,31 @@ export interface HealthResponse {
 export interface StationView extends Station {
 	endpoint?: { endpointId: string; user?: string; observers: number; aec?: boolean; pushToTalk?: boolean; localStt?: boolean; localTts?: boolean };
 	activeRun?: { runId: string; templateName: string; state: string; answered: number; total: number };
+	/** The station's live QR join token, never the hash. */
+	join?: { tokenHint: string; createdAt: string; createdBy?: string };
+}
+
+/** `POST /api/auth/join` — redeem a station QR token (no session required). */
+export interface JoinRequest {
+	token: string;
+}
+export interface JoinResponse {
+	ok: true;
+	station: { stationId: string; name: string; location?: string };
+	/** true = the caller already had a session and it is now bound; false = a join cookie was set, sign in next. */
+	authenticated: boolean;
+	me?: MeResponse;
+}
+/** `POST /api/stations/:id/join-token` — the token is shown once; the hub stores only its hash. */
+export interface JoinTokenResponse {
+	stationId: string;
+	token: string;
+	tokenHint: string;
+	createdAt: string;
+	/** `/?mobile=1#/join/<token>` — the client may prepend a different base URL before printing. */
+	path: string;
+	/** `path` on HUB_PUBLIC_URL, or on the request origin when unset. */
+	url: string;
 }
 
 export interface StatusResponse {

@@ -12,6 +12,8 @@ export type RateLimitResult = { ok: true } | { ok: false; retryAfterSec: number 
 
 /** `GET /api/hub/auth/login` starts (an OIDC redirect is cheap for the hub, so looser than a password form). */
 export const LOGIN_LIMITS: RateLimitOptions = { windowMs: 15 * 60 * 1000, perKey: 20, global: 100 };
+/** `POST /api/auth/join`: a poster is scanned by many phones behind one NAT; the 256-bit token makes this about noise, not brute force. */
+export const JOIN_LIMITS: RateLimitOptions = { windowMs: 15 * 60 * 1000, perKey: 30, global: 300 };
 
 export class RateLimiter {
 	private readonly perKey = new Map<string, number[]>();
