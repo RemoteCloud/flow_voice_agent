@@ -5,7 +5,7 @@ import { api, toApiError } from "../api.js";
 import { useApp } from "../context.js";
 import { Icon } from "../icons.js";
 import { navigate } from "../router.js";
-import { STATE_TEXT, useVoice } from "../voice.js";
+import { LanguageSelect, STATE_TEXT, useVoice } from "../voice.js";
 
 /** `mobile` (the Android agent): current item, mic, the few run buttons, items behind a toggle. No typed input, no hands-free switch, no event log. */
 export function RunPage({ runId, mobile = false }: { runId: string; mobile?: boolean }) {
@@ -227,6 +227,7 @@ export function RunPage({ runId, mobile = false }: { runId: string; mobile?: boo
 									<button type="button" className="btn btn-ghost" onClick={() => v.stop()}>
 										Voice off
 									</button>
+									<LanguageSelect />
 								</div>
 								{!mobile && (
 									<label className="flex items-center gap-2 text-sm">

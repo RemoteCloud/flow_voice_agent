@@ -31,8 +31,21 @@ export interface VoiceApi {
 	pttEnd(): void;
 	sayText(text: string): void;
 	setHandsFree(on: boolean): void;
+	/** Spoken language for this device ("" = the station's configured language). Reconnects if voice is on. */
+	language: string;
+	setLanguage(lang: string): void;
 	clearError(): void;
 }
+
+/** Languages the hub speaks and understands (server/voice/i18n.ts). "" = station default. */
+export const LANGUAGES: [string, string][] = [
+	["", "Station language"],
+	["en", "English"],
+	["no", "Norsk"],
+	["sv", "Svenska"],
+	["de", "Deutsch"],
+	["fr", "Français"],
+];
 
 const VoiceContext = createContext<VoiceApi | null>(null);
 
@@ -62,6 +75,8 @@ export function VoiceProvider({ children }: { children: ReactNode }) {
 		return saved !== null ? saved === "1" : !!window.FlowVoiceAndroid;
 	});
 	const pendingStation = useRef<string | undefined>(undefined);
+	const [language, setLanguageState] = useState<string>(() => localStorage.getItem("fv.lang") ?? "");
+	const langRef = useRef(language);
 
 	const stop = useCallback(() => {
 		ep.current?.stop();
@@ -86,7 +101,7 @@ export function VoiceProvider({ children }: { children: ReactNode }) {
 			const open = station?.audioPolicy === "open";
 			setError(undefined);
 			const endpoint = new AudioEndpoint(
-				{ stationId: sid, endpointId: endpointId(), language: station?.language ?? "en", sttOnEndpoint: boot.speech.stt === "endpoint", pushToTalk: !open, handsFree: handsFree || open },
+				{ stationId: sid, endpointId: endpointId(), language: langRef.current || station?.language || "en", sttOnEndpoint: boot.speech.stt === "endpoint", pushToTalk: !open, handsFree: handsFree || open },
 				{
 					onState: (s, t) => {
 						setState(s);
@@ -187,9 +202,21 @@ export function VoiceProvider({ children }: { children: ReactNode }) {
 				localStorage.setItem("fv.handsFree", on ? "1" : "0");
 				ep.current?.setHandsFree(on);
 			},
+			language,
+			setLanguage: (lang) => {
+				langRef.current = lang;
+				setLanguageState(lang);
+				localStorage.setItem("fv.lang", lang);
+				// the language rides in the AEP hello: reconnect so the hub (and the run) switch
+				if (ep.current && stationId) {
+					const sid = stationId;
+					stop();
+					void start(sid);
+				}
+			},
 			clearError: () => setError(undefined),
 		}),
-		[state, stateText, role, stationId, handsFree, transcript, run, events, error, start, stop, boot.speech.stt],
+		[state, stateText, role, stationId, handsFree, transcript, run, events, error, start, stop, boot.speech.stt, language],
 	);
 
 	return <VoiceContext.Provider value={api}>{children}</VoiceContext.Provider>;
@@ -202,6 +229,22 @@ export function useVoice(): VoiceApi {
 }
 
 export const STATE_TEXT: Record<EndpointState, string> = { disconnected: "Voice off", connecting: "Connecting…", observer: "Observing", ready: "Ready", speaking: "Speaking", listening: "Listening", thinking: "…" };
+
+/** Per-device spoken language. Shown wherever voice can be started. */
+export function LanguageSelect({ compact }: { compact?: boolean }) {
+	const v = useVoice();
+	const { me, stations } = useApp();
+	const station = stations.find((s) => s.stationId === (v.stationId ?? me.stationId));
+	return (
+		<select className={`input w-auto ${compact ? "py-1 text-xs" : ""}`} value={v.language} onChange={(e) => v.setLanguage(e.target.value)} aria-label="Voice language" title="Voice language">
+			{LANGUAGES.map(([code, label]) => (
+				<option key={code} value={code}>
+					{code === "" && station?.language ? `${label} (${station.language})` : label}
+				</option>
+			))}
+		</select>
+	);
+}
 
 /** The voice status pill + start/stop + hands-free, shared by the picker and the run screen. */
 export function VoiceBar({ compact }: { compact?: boolean }) {
@@ -237,6 +280,7 @@ export function VoiceBar({ compact }: { compact?: boolean }) {
 					</button>
 				</>
 			)}
+			<LanguageSelect compact />
 		</div>
 	);
 }

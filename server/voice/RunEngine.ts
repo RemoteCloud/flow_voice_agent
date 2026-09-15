@@ -15,7 +15,7 @@ import type { ChecklistPick, ExchangeState, HubEvent, HubEventType, RunItem, Run
 import type { Credentials } from "../store/credentials.js";
 import type { HubSession, HubStore, PromptRecord, RunRecord, Station, VoiceProfile } from "../store/HubStore.js";
 import { buildItems, itemAnnouncement, nextItem, previousItem, progressOf, readinessOf, spokenNumber, startAnnouncement } from "./checklist.js";
-import { controlWord, interpret, readbackText, THRESHOLDS, type ControlWord, type Interpretation } from "./interpret.js";
+import { controlWord, interpret, itemNumber, readbackText, THRESHOLDS, type ControlWord, type Interpretation } from "./interpret.js";
 import type { Outbox } from "./Outbox.js";
 import { normLang, t as tr } from "./i18n.js";
 import { normalizeTranscript, wordsToNumber } from "./interpret.js";
@@ -35,6 +35,8 @@ export interface EngineIo {
 	status(stationId: string, state: ExchangeState, text?: string): void;
 	/** Is an audio endpoint attached to the station right now? */
 	hasEndpoint(stationId: string): boolean;
+	/** Language the endpoint chose in `hello` (overrides the station / profile language while it is attached). */
+	endpointLanguage(stationId: string): string | undefined;
 	pushRun(stationId: string, run: RunView | null): void;
 	emit(event: HubEvent): void;
 	/** Move the station's screens (endpoint + observers) to a page. */
@@ -291,7 +293,7 @@ export class RunEngine {
 			startedAt: iso(now),
 			updatedAt: iso(now),
 			users: session ? [{ sub: session.sub, name: userName, sessionId: session.id }] : [],
-			language: profile?.language ?? station.language ?? this.deps.policy.defaultLanguage,
+			language: this.deps.io.endpointLanguage(station.stationId) ?? profile?.language ?? station.language ?? this.deps.policy.defaultLanguage,
 			verbosity: station.verbosity ?? "full",
 			attempts: 0,
 			skipped: [],
@@ -339,13 +341,13 @@ export class RunEngine {
 			startedAt: iso(now),
 			updatedAt: iso(now),
 			users: [],
-			language: p.language ?? station.language ?? this.deps.policy.defaultLanguage,
+			language: p.language ?? this.stationLang(station.stationId),
 			verbosity: station.verbosity ?? "full",
 			attempts: 0,
 			skipped: [],
 			trigger: p.trigger,
 			callbackUrl: p.callbackUrl,
-			pendingReason: tr(p.language ?? station.language ?? this.deps.policy.defaultLanguage, "ready", { name: templateName }),
+			pendingReason: tr(p.language ?? this.stationLang(station.stationId), "ready", { name: templateName }),
 		};
 		await this.save(run);
 		this.emit("run.pending", run, { text: run.pendingReason });
@@ -423,7 +425,7 @@ export class RunEngine {
 			startedAt: iso(now),
 			updatedAt: iso(now),
 			users: [{ sub: session.sub, name: user?.name, sessionId: session.id }],
-			language: prompt.item.language ?? station.language ?? this.deps.policy.defaultLanguage,
+			language: prompt.item.language ?? this.stationLang(station.stationId),
 			verbosity: "silent",
 			attempts: 0,
 			skipped: [],
@@ -494,8 +496,30 @@ export class RunEngine {
 		await this.deps.io.speak(stationId, newId("p"), rawText.charAt(0).toUpperCase() + rawText.slice(1), lang);
 	}
 
+	/** The endpoint's chosen language wins over the station's configured one. */
 	private stationLang(stationId: string): string {
-		return this.deps.store.get().stations.find((x) => x.stationId === stationId)?.language ?? this.deps.policy.defaultLanguage;
+		return this.deps.io.endpointLanguage(stationId) ?? this.deps.store.get().stations.find((x) => x.stationId === stationId)?.language ?? this.deps.policy.defaultLanguage;
+	}
+
+	/** "item four" while a run is active: jump to that spoken item. Returns false when the phrase is not a jump. */
+	private async tryItemJump(r: RunRecord, text: string): Promise<boolean> {
+		const n = itemNumber(text);
+		if (n === undefined) return false;
+		const target = r.items.find((i) => i.index === n);
+		if (!target || !target.voice) {
+			await this.say(r, tr(r.language, "item_unknown", { n: spokenNumber(n, r.language) }));
+			const cur = r.items.find((i) => i.taskId === r.currentTaskId);
+			if (cur && r.exchange !== "idle") await this.openListen(r, cur);
+			return true;
+		}
+		this.clearTimers(r.runId);
+		this.partial.delete(r.runId);
+		this.deps.io.stopListening(r.stationId);
+		r.pendingReadback = undefined;
+		this.emit("run.item.captured", r, { taskId: target.taskId, text });
+		if (target.state === "answered" || target.state === "unsynced") target.state = "unanswered";
+		await this.speakItem(r, target);
+		return true;
 	}
 
 	private async say(r: RunRecord, rawText: string, promptId = newId("p")): Promise<void> {
@@ -717,6 +741,7 @@ export class RunEngine {
 			if (controlWord(text) === "resume") await this.resume(r.runId);
 			return;
 		}
+		if (await this.tryItemJump(r, text)) return;
 		if (r.exchange === "idle" || r.exchange === "speaking" || r.exchange === "committing") {
 			// spoken run commands are valid while idle; a phrase-bound answer can arrive unprompted
 			const w = controlWord(text);
@@ -1503,6 +1528,11 @@ export class RunEngine {
 	/** The station's endpoint (re)connected: continue an active run from the next item. */
 	async onEndpointReady(stationId: string, session?: HubSession): Promise<void> {
 		const r = this.activeRun(stationId);
+		const lang = this.deps.io.endpointLanguage(stationId);
+		if (r && lang && r.language !== lang) {
+			r.language = lang; // the phone switched language: the rest of the run follows it
+			await this.save(r);
+		}
 		if (!r) {
 			void this.pumpPrompts(stationId);
 			const s = session ?? this.sessionOnStation(stationId);

@@ -1,5 +1,5 @@
 import assert from "node:assert/strict";
-import { controlWord, interpret, parseClock, parseRelative, wordsToNumber, type InterpretContext } from "./interpret.js";
+import { controlWord, itemNumber, interpret, parseClock, parseRelative, wordsToNumber, type InterpretContext } from "./interpret.js";
 
 const ctx: InterpretContext = { utteredAt: new Date("2026-09-09T07:47:03Z"), tzMode: "utc", maxPastHours: 12 };
 const ok = (r: ReturnType<typeof interpret>) => {
@@ -89,6 +89,17 @@ export async function run(): Promise<void> {
 	assert.equal(controlWord("where am I?"), "where");
 	assert.equal(controlWord("how many left"), "remaining");
 	assert.equal(controlWord("pilot on board five minutes ago"), undefined);
+
+	// item jumps
+	assert.equal(itemNumber("item four"), 4);
+	assert.equal(itemNumber("Go to item 12."), 12);
+	assert.equal(itemNumber("punkt fire"), 4);
+	assert.equal(itemNumber("gå til punkt tre"), 3);
+	assert.equal(itemNumber("Punkt vier"), 4);
+	assert.equal(itemNumber("point trois"), 3);
+	assert.equal(itemNumber("next item"), undefined);
+	assert.equal(itemNumber("item"), undefined);
+	assert.equal(itemNumber("five"), undefined);
 
 	// local time mode with a zone
 	const local: InterpretContext = { ...ctx, tzMode: "local", timeZone: "Europe/Oslo" };

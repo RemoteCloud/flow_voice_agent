@@ -182,6 +182,11 @@ try {
 	// item two: yes/no
 	step = "item 2";
 	await waitFor(() => spoken.some((s) => s.includes("Pilot card exchanged?")), "item two spoken");
+	// "item N" jumps: to the current item (re-asked), and an unknown number is refused
+	await say("go to item two");
+	await waitFor(() => spoken.filter((s) => s.includes("Pilot card exchanged?")).length >= 2, "item two re-asked after jump");
+	await say("item ninety nine");
+	await waitFor(() => /^There is no item/.test(lastSpoken()), "unknown item refused");
 	await say("Yes.");
 	await waitFor(() => lastSpoken() === "Pilot card exchanged, yes. Confirm?", "yes read-back");
 	await say("yes");

@@ -64,6 +64,18 @@ export function normalizeTranscript(t: string): string {
 		.trim();
 }
 
+/**
+ * "item four", "go to item 4", "punkt fire", "gå til punkt 4", "Punkt vier", "point trois" → 4 / 3.
+ * A jump target inside the active run (spoken item index); undefined when the phrase is anything else.
+ */
+export function itemNumber(transcript: string): number | undefined {
+	const t = normalizeTranscript(transcript);
+	const m = t.match(/^(?:(?:go|jump|gå|hopp|hoppa|geh|gehe|spring|aller|va|allez)\s+(?:to|til|till|zu|zum|au|à)\s+)?(?:item|point|punkt|post|élément|numéro|number|nummer)(?:\s+(?:number|nummer|numéro))?\s+(.+)$/);
+	if (!m) return undefined;
+	const n = wordsToNumber(m[1]);
+	return n !== undefined && Number.isInteger(n) && n > 0 ? n : undefined;
+}
+
 export function controlWord(transcript: string): ControlWord | undefined {
 	const t = normalizeTranscript(transcript);
 	if (!t) return undefined;

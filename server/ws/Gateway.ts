@@ -328,6 +328,12 @@ export class Gateway implements EngineIo {
 		for (const o of this.observers) if (o.stationId === stationId) this.send(o, m);
 	}
 
+	/** Language the active endpoint asked for in `hello` (the phone's picker), if any. */
+	endpointLanguage(stationId: string): string | undefined {
+		const ep = this.endpoints.get(stationId);
+		return ep && ep.ws.readyState === ep.ws.OPEN && ep.language ? ep.language : undefined;
+	}
+
 	hasEndpoint(stationId: string): boolean {
 		const ep = this.endpoints.get(stationId);
 		return !!ep && ep.ws.readyState === ep.ws.OPEN;
