@@ -211,9 +211,11 @@ export function VoiceBar({ compact }: { compact?: boolean }) {
 	const listening = v.state === "listening";
 	return (
 		<div className="flex flex-wrap items-center gap-2">
-			<span className={`pill ${listening ? "border-danger text-danger" : v.state === "speaking" ? "border-accent text-accent" : v.state === "ready" ? "border-ok/50 text-ok" : "border-line-strong text-fg-muted"}`}>
-				{STATE_TEXT[v.state]}
-				{v.stateText ? ` · ${v.stateText}` : ""}
+			<span className={`pill max-w-full ${listening ? "border-danger text-danger" : v.state === "speaking" ? "border-accent text-accent" : v.state === "ready" ? "border-ok/50 text-ok" : "border-line-strong text-fg-muted"}`}>
+				<span className="truncate">
+					{STATE_TEXT[v.state]}
+					{v.stateText ? ` · ${v.stateText}` : ""}
+				</span>
 			</span>
 			{!v.active ? (
 				<button type="button" className={`btn btn-primary ${compact ? "btn-sm" : ""}`} onClick={() => void v.start()} disabled={!me.stationId}>

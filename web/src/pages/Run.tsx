@@ -69,7 +69,7 @@ export function RunPage({ runId, mobile = false }: { runId: string; mobile?: boo
 	const listening = voice === "listening";
 
 	return (
-		<div className="grid gap-4 lg:grid-cols-[minmax(0,1.3fr)_minmax(0,1fr)]">
+		<div className="grid grid-cols-[minmax(0,1fr)] gap-4 lg:grid-cols-[minmax(0,1.3fr)_minmax(0,1fr)]">
 			<div className="space-y-4">
 				{/* current item */}
 				<section className="card">
@@ -81,9 +81,11 @@ export function RunPage({ runId, mobile = false }: { runId: string; mobile?: boo
 								{run.pendingReason ? ` · ${run.pendingReason}` : ""} · {run.users.map((u) => u.name ?? u.sub).join(", ")}
 							</p>
 						</div>
-						<span className={`pill ${voice === "listening" ? "border-danger text-danger" : voice === "speaking" ? "border-accent text-accent" : voice === "ready" ? "border-ok/50 text-ok" : "border-line-strong text-fg-muted"}`}>
-							{STATE_TEXT[voice]}
-							{voiceText ? ` · ${voiceText}` : ""}
+						<span className={`pill max-w-full ${voice === "listening" ? "border-danger text-danger" : voice === "speaking" ? "border-accent text-accent" : voice === "ready" ? "border-ok/50 text-ok" : "border-line-strong text-fg-muted"}`}>
+							<span className="truncate">
+								{STATE_TEXT[voice]}
+								{voiceText ? ` · ${voiceText}` : ""}
+							</span>
 						</span>
 					</div>
 					<div className="card-body">
