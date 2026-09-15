@@ -190,7 +190,7 @@ try {
 	await say("Yes.");
 	await waitFor(() => lastSpoken() === "Pilot card exchanged, yes. Confirm?", "yes read-back");
 	await say("yes");
-	await waitFor(() => fake.values.some((v) => v.task === "flow-arr-1:ft-arr-1b" && v.value === "true"), "checkbox true");
+	await waitFor(() => fake.values.some((v) => v.task === "flow-arr-1:ft-arr-1b" && v.value === "OK"), "checkbox checked as OK");
 
 	// item three: say again, then N/A (QuickSelect bounded to the option set)
 	step = "item 3";
@@ -251,7 +251,9 @@ try {
 	await say("no");
 	await waitFor(() => lastSpoken() === "Bow thruster tested, no. Confirm?", "read-back no");
 	await say("confirm");
-	await waitFor(() => /^Two items need the screen\. Arrival Checklist Oslo, seven of nine answered\. Open on screen to finish\.$/.test(lastSpoken()), "completion summary");
+	// a plain checkbox has no "no" in Flow: the item stays open and joins the ones that need the screen
+	await waitFor(() => spoken.includes("Not done. I will come back to Bow thruster tested."), "no on a checkbox = not done");
+	await waitFor(() => /^Two items need the screen\. Arrival Checklist Oslo, six of nine answered\. Open on screen to finish\.$/.test(lastSpoken()), "completion summary");
 	assert.ok(!spoken.includes("Recorded locally, will sync."), "values synced immediately while Flow was reachable");
 
 	// complete is blocked (signatures), answer them on screen, then complete → Flow status Completed
@@ -264,6 +266,10 @@ try {
 		const r = await api("POST", `runs/${runId}/items/${encodeURIComponent(sig.taskId)}/answer`, { value: "signed on screen" });
 		assert.equal(r.status, 422, "the fake rejects values on Sign controls, like Flow does");
 	}
+	// the not-done checkbox gets ticked on screen: a manual answer writes Flow's "OK"
+	const ticked = await api("POST", `runs/${runId}/items/${encodeURIComponent("flow-arr-1:ft-arr-2b")}/answer`, { value: "OK" });
+	assert.equal(ticked.status, 200, JSON.stringify(ticked.body));
+	await waitFor(() => fake.values.some((v) => v.task === "flow-arr-1:ft-arr-2b" && v.value === "OK"), "checkbox ticked on screen");
 	// the fake's complete only requires non-Sign tasks Done: mark the run's signature items as skipped-by-screen is not a value; complete via Flow rule
 	fake.setTaskStatus("flow-arr-1", "flow-arr-1:ft-arr-3a", "Done");
 	fake.setTaskStatus("flow-arr-1", "flow-arr-1:ft-arr-3b", "Done");

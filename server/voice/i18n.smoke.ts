@@ -81,9 +81,9 @@ export async function run(): Promise<void> {
 
 	// yes / no / N/A
 	assert.equal(ok(interpret("Checkbox", "Ja", sv)).valueText, "ja");
-	assert.equal(ok(interpret("Checkbox", "nej", sv)).value, "false");
+	assert.equal(ok(interpret("Checkbox", "nej", sv)).value, ""); // not done: nothing to write
 	assert.equal(ok(interpret("Checkbox", "oui", fr)).valueText, "oui");
-	assert.equal(ok(interpret("Checkbox", "non", fr)).value, "false");
+	assert.equal(ok(interpret("Checkbox", "non", fr)).value, "");
 	assert.equal(ok(interpret("Checkbox", "nein", de)).valueText, "nein");
 	assert.equal(interpret("Checkbox", "kanske", sv).ok, false);
 	assert.equal((interpret("Checkbox", "kanske", sv) as { message: string }).message, "Säg ja eller nej");

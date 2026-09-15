@@ -15,7 +15,7 @@ import type { ChecklistPick, ExchangeState, HubEvent, HubEventType, RunItem, Run
 import type { Credentials } from "../store/credentials.js";
 import type { HubSession, HubStore, PromptRecord, RunRecord, Station, VoiceProfile } from "../store/HubStore.js";
 import { buildItems, itemAnnouncement, nextItem, previousItem, progressOf, readinessOf, spokenNumber, startAnnouncement } from "./checklist.js";
-import { controlWord, interpret, itemNumber, readbackText, THRESHOLDS, type ControlWord, type Interpretation, type InterpretContext } from "./interpret.js";
+import { CHECKBOX_CHECKED, CHECKBOX_NOT_DONE, controlWord, interpret, itemNumber, readbackText, THRESHOLDS, type ControlWord, type Interpretation, type InterpretContext } from "./interpret.js";
 import type { Outbox } from "./Outbox.js";
 import { normLang, t as tr } from "./i18n.js";
 import { normalizeTranscript, wordsToNumber } from "./interpret.js";
@@ -979,6 +979,20 @@ export class RunEngine {
 			await this.escalate(r, item, "no signed-in user to attribute the value to");
 			return;
 		}
+		if (item.type === "Checkbox" && rb.value === CHECKBOX_NOT_DONE) {
+			// Flow knows a plain checkbox only as checked or empty, so "no" is not a value: the item stays open,
+			// comes back in the skip sweep, and finally counts as "needs the screen".
+			item.transcript = rb.transcript;
+			item.confidence = rb.confidence;
+			await this.audit(r, "item.not_done", { taskId: item.taskId, dataId: item.dataId, transcript: rb.transcript, confidence: rb.confidence, sub: user.sub, text: source });
+			if (r.runId.startsWith("prun_")) {
+				await this.finishPrompt(r, item, "failed", "not done");
+				return;
+			}
+			await this.say(r, tr(r.language, "not_done", { name: item.name }));
+			await this.skip(r.runId, item.taskId, "not done");
+			return;
+		}
 		const now = this.deps.now();
 		item.value = rb.value;
 		item.valueText = rb.valueText;
@@ -1369,7 +1383,7 @@ export class RunEngine {
 			this.deps.io.stopListening(r.stationId);
 		}
 		item.utteredAt = iso(this.deps.now());
-		const text = valueText ?? (value === "true" ? "yes" : value === "false" ? "no" : item.options?.find((o) => o.value === value)?.title ?? value);
+		const text = valueText ?? (value === CHECKBOX_CHECKED || value === "true" ? "yes" : value === "false" || (item.type === "Checkbox" && value === CHECKBOX_NOT_DONE) ? "no" : item.options?.find((o) => o.value === value)?.title ?? value);
 		if (wasCurrent && r.state === "active") {
 			await this.commit(r, item, { taskId, value, valueText: text, transcript: "", confidence: 1 }, "manual");
 			return this.view(runId);

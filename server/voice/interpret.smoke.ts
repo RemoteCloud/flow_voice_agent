@@ -55,9 +55,11 @@ export async function run(): Promise<void> {
 	assert.equal((old as { reason: string }).reason, "implausible");
 
 	// Checkbox
-	assert.equal(ok(interpret("Checkbox", "affirmative", ctx)).value, "true");
-	assert.equal(ok(interpret("Checkbox", "Yes.", ctx)).value, "true");
-	assert.equal(ok(interpret("Checkbox", "nope", ctx)).value, "false");
+	assert.equal(ok(interpret("Checkbox", "affirmative", ctx)).value, "OK"); // what Flow stores for a checked box
+	assert.equal(ok(interpret("Checkbox", "Yes.", ctx)).value, "OK");
+	assert.equal(ok(interpret("Checkbox", "nope", ctx)).value, ""); // not done: nothing to write
+	assert.equal(ok(interpret("RadioButtons", "ja", { ...ctx, options: undefined })).value, "Yes");
+	assert.equal(ok(interpret("RadioButtons", "non", { ...ctx, options: undefined })).value, "No");
 	assert.equal(interpret("Checkbox", "maybe", ctx).ok, false);
 
 	// QuickSelect bounded to the option set

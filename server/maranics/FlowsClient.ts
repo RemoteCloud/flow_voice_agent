@@ -364,7 +364,10 @@ export class FlowsClient {
 			const status = num(first.status, 200);
 			const code = str(first.code) ?? (isObj(first.error) ? str(first.error.code) : undefined);
 			const ok = status >= 200 && status < 300 && !code;
-			return { ok, code, message: str(first.message) ?? str(first.title) ?? (isObj(first.error) ? str(first.error.title) : undefined), raw: b };
+			const err = isObj(first.error) ? first.error : undefined;
+			// the real reason lives in error.detail ("The submitted value was rejected: …"); title is just the status text
+			const message = str(first.message) ?? str(first.detail) ?? (err ? (str(err.detail) ?? str(err.title)) : undefined) ?? str(first.title);
+			return { ok, code, message, raw: b };
 		});
 	}
 

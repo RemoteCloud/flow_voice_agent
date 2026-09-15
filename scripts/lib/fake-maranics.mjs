@@ -156,7 +156,7 @@ function tasksFromTemplate(template, flowId, done = []) {
 				requiresValue: !!t.requiresValue,
 				order: t.order,
 				controls: [{ controlId, dataId: control.dataId, type: control.type, quickSelectValues: control.quickSelectValues }],
-				values: isDone ? [{ controlId, dataId: control.dataId, value: control.type === "Checkbox" ? "true" : control.type === "Number" ? "42" : "done", time: "2026-09-09T05:50:00Z", source: "fixture" }] : [],
+				values: isDone ? [{ controlId, dataId: control.dataId, value: control.type === "Checkbox" ? "OK" : control.type === "Number" ? "42" : "done", time: "2026-09-09T05:50:00Z", source: "fixture" }] : [],
 			});
 		}
 	}
@@ -504,7 +504,9 @@ export async function startFakeMaranics({ token = "t0k3n", tenant = "demo", port
 				if (!t) return { task: it.task, status: 404, code: "TASK_NOT_FOUND" };
 				const c = t.controls[0];
 				if (c.type === "Sign" || c.type === "Drawing") return { task: it.task, status: 422, code: "CONTROL_NOT_VALUE_BEARING" };
-				if (c.type === "Checkbox" && !/^(true|false)$/.test(String(it.value))) return { task: it.task, status: 422, code: "VALUE_INVALID", message: "Checkbox expects true/false" };
+				// real rule (TaskValueValidation.cs): a plain checkbox is "OK" or empty; RadioButtons without options is "Yes"/"No"
+				if (c.type === "Checkbox" && String(it.value) !== "OK") return { task: it.task, status: 422, code: "VALUE_INVALID", message: "The submitted value was rejected: it is invalid for this control" };
+				if (c.type === "RadioButtons" && !c.quickSelectValues && !/^(Yes|No)$/.test(String(it.value))) return { task: it.task, status: 422, code: "VALUE_INVALID", message: "The submitted value was rejected: it is invalid for this control" };
 				if (c.type === "Number" && Number.isNaN(Number(it.value))) return { task: it.task, status: 422, code: "VALUE_INVALID", message: "Number expected" };
 				if (c.type === "QuickSelect" && c.quickSelectValues && !c.quickSelectValues.some((o) => o.value === String(it.value))) return { task: it.task, status: 422, code: "VALUE_INVALID", message: "value not in the option set" };
 				if (t.values.length && !it.overrideExistingValue) return { task: it.task, status: 409, code: "VALUE_OVERWRITE_CONFLICT", message: "value already set — retry with overrideExistingValue=true" };

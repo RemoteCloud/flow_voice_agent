@@ -205,7 +205,8 @@ Spoken control vocabulary (always available): confirm / yes · no · correction 
 | `Time` | Clock parser | "zero seven four two" | `07:42` |
 | `Date` | Date parser | "yesterday" | `2026-09-08` |
 | `Number` | Numeral + unit | "twenty point five" | `20.5` |
-| `Checkbox` | Yes/no lexicon | "affirmative" | `true` |
+| `Checkbox` | Yes/no lexicon | "affirmative" | `OK` (what Flow stores for a checked box; "no" writes nothing and leaves the item open) |
+| `RadioButtons` without `Values` | Yes/no lexicon | "ja" | `Yes` / `No` |
 | `QuickSelect` / `Dropdown` | Constrained match against `Values` | "not applicable" | `N/A` |
 | `Text` | Transcript, lightly normalised | — | string |
 | `LongText` | Transcript verbatim | — | string |

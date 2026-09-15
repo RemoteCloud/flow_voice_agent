@@ -25,6 +25,11 @@ export type Interpretation =
 
 export type ControlKind = "DateAndTime" | "Time" | "Date" | "Number" | "Checkbox" | "QuickSelect" | "Dropdown" | "RadioButtons" | "Text" | "LongText";
 
+/** What the Flow API stores for a checked plain checkbox (`TaskValueValidation.cs`: `val == "OK"`). */
+export const CHECKBOX_CHECKED = "OK";
+/** A spoken "no" on a plain checkbox: nothing to write, the item stays open. */
+export const CHECKBOX_NOT_DONE = "";
+
 export const THRESHOLDS: Record<string, number> = { DateAndTime: 0.6, Time: 0.6, Date: 0.6, Number: 0.7, Checkbox: 0.7, QuickSelect: 0.6, Dropdown: 0.6, RadioButtons: 0.6, Text: 0.3, LongText: 0.1 };
 
 // ---------------------------------------------------------------- control vocabulary (all languages)
@@ -589,9 +594,11 @@ export function interpret(type: string, transcript: string, ctx: InterpretContex
 			return { ok: false, reason: "no_match", message: msg("m_number"), confidence: 0.1 };
 		}
 		case "Checkbox": {
-			if (phraseOnly) return { ok: true, value: "true", valueText: msg("yes"), confidence: 0.8, kind: "bool" };
-			if (YES.test(t)) return { ok: true, value: "true", valueText: msg("yes"), confidence: 0.95, kind: "bool" };
-			if (NO.test(t)) return { ok: true, value: "false", valueText: msg("no"), confidence: 0.95, kind: "bool" };
+			// Flow stores a plain checkbox as "OK" (checked) or nothing (TaskValueValidation.cs); "true"/"false" are rejected.
+			// "no" therefore carries no value: the engine leaves the item open (CHECKBOX_NOT_DONE) instead of writing.
+			if (phraseOnly) return { ok: true, value: CHECKBOX_CHECKED, valueText: msg("yes"), confidence: 0.8, kind: "bool" };
+			if (YES.test(t)) return { ok: true, value: CHECKBOX_CHECKED, valueText: msg("yes"), confidence: 0.95, kind: "bool" };
+			if (NO.test(t)) return { ok: true, value: CHECKBOX_NOT_DONE, valueText: msg("no"), confidence: 0.95, kind: "bool" };
 			if (NA_WORDS.includes(t)) return { ok: false, reason: "no_match", message: msg("m_yesno_na"), confidence: 0.2 };
 			return { ok: false, reason: "no_match", message: msg("m_yesno"), confidence: 0.1 };
 		}
@@ -599,6 +606,12 @@ export function interpret(type: string, transcript: string, ctx: InterpretContex
 		case "Dropdown":
 		case "RadioButtons": {
 			const options = ctx.options ?? [];
+			if (!options.length && type === "RadioButtons") {
+				// a RadioButtons control without its own option list is Flow's yes/no: it accepts exactly "Yes" / "No"
+				if (YES.test(t)) return { ok: true, value: "Yes", valueText: msg("yes"), confidence: 0.95, kind: "bool" };
+				if (NO.test(t)) return { ok: true, value: "No", valueText: msg("no"), confidence: 0.95, kind: "bool" };
+				return { ok: false, reason: "no_match", message: msg("m_yesno"), confidence: 0.1 };
+			}
 			if (!options.length) return { ok: true, value: raw, valueText: raw, confidence: 0.5, kind: "free" };
 			const scored = options
 				.map((o) => {
