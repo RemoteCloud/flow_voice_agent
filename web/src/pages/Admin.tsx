@@ -5,6 +5,7 @@ import { useApp } from "../context.js";
 import { navigate } from "../router.js";
 import { StationsTab } from "./AdminStations.js";
 import { HubQr } from "./Login.js";
+import { versionLine } from "../build.js";
 
 type Tab = "status" | "stations" | "devices" | "profiles" | "outbox" | "audit";
 
@@ -63,7 +64,7 @@ function StatusTab({ s }: { s: StatusResponse }) {
 				</div>
 				<dl className="card-body kv">
 					<dt>Version</dt>
-					<dd>{s.hubVersion}</dd>
+					<dd>{versionLine(s.hubVersion)}</dd>
 					<dt>Uptime</dt>
 					<dd>{Math.round(s.uptimeSec / 60)} min</dd>
 					<dt>Speech</dt>

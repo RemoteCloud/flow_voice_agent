@@ -2,10 +2,12 @@ import tailwindcss from "@tailwindcss/vite";
 import react from "@vitejs/plugin-react";
 import { defineConfig } from "vite";
 import { VitePWA } from "vite-plugin-pwa";
+import { buildStamp } from "../scripts/lib/build-stamp.mjs";
 
 // Built into ../dist/public and served by the hub from the same origin as the API (spec 14.2).
 export default defineConfig({
 	root: __dirname,
+	define: { __WEB_BUILD__: JSON.stringify(buildStamp()) },
 	plugins: [
 		react(),
 		tailwindcss(),

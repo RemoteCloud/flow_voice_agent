@@ -103,7 +103,16 @@ export class AudioEndpoint {
 				else this.send({ type: "spoken", promptId });
 			},
 			onTranscript: (text, confidence, final) => this.deliverTranscript(text, confidence, final),
-			onListenEnd: (reason) => this.endListen(reason as "silence" | "ptt" | "timeout" | "cancel"),
+			onListenEnd: (reason) => {
+				// "error:<name>" comes from the Android recogniser (language pack missing, audio, server …): say so
+				// instead of letting it pass as silence — the hub would just retry and move on
+				if (reason.startsWith("error:")) {
+					this.cb.onError(`Speech recognition failed on this phone: ${reason.slice(6)} (language ${this.opts.language || "default"}). Check the phone's speech language pack or pick another voice language.`);
+					this.endListen("timeout");
+					return;
+				}
+				this.endListen(reason as "silence" | "ptt" | "timeout" | "cancel");
+			},
 			onPtt: (down) => (down ? this.pttStart() : this.pttEnd()),
 		};
 	}

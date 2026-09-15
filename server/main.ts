@@ -20,6 +20,8 @@ import { RunEngine } from "./voice/RunEngine.js";
 import { Gateway } from "./ws/Gateway.js";
 
 export const VERSION = "0.1.0";
+/** "0.1.0+04c6827 2026-09-15 20:03Z": the package version plus the build stamp, so a stale deploy is visible in the UI. */
+export const HUB_VERSION = `${VERSION}+${typeof __BUILD__ === "string" ? __BUILD__ : "dev"}`;
 
 async function main(): Promise<void> {
 	let env;
@@ -51,7 +53,7 @@ async function main(): Promise<void> {
 
 	const gateway = new Gateway({
 		log,
-		hubVersion: VERSION,
+		hubVersion: HUB_VERSION,
 		stt,
 		now,
 		authenticate: upgradeAuthenticator({ env, store, now }),
@@ -87,14 +89,14 @@ async function main(): Promise<void> {
 	engine = new RunEngine({ store, flows, credentials, outbox, log, now, policy: env.policy, io: gateway, vesselId: env.vesselId });
 	gateway.attachEngine(engine);
 
-	const app = createApp({ env, store, auth, credentials, engine, outbox, gateway, stt, log, version: VERSION, now, uptime: () => (now() - startedAt) / 1000 });
+	const app = createApp({ env, store, auth, credentials, engine, outbox, gateway, stt, log, version: HUB_VERSION, now, uptime: () => (now() - startedAt) / 1000 });
 
 	await engine.recover();
 	outbox.start();
 	gateway.start();
 
 	const server = serve({ fetch: app.fetch, hostname: env.host, port: env.port, createServer }, (info) => {
-		log.info(`Flow Voice hub ${VERSION} listening on http://${info.address}:${info.port} (data ${env.dataDir}, public ${env.publicDir})`);
+		log.info(`Flow Voice hub ${HUB_VERSION} listening on http://${info.address}:${info.port} (data ${env.dataDir}, public ${env.publicDir})`);
 		log.info(`Maranics: ${env.maranics ? `${env.maranics.host} tenant ${env.maranics.tenant}` : "NOT configured (HUB_TENANT + HUB_MARANICS_HOST)"}; sign-in: ${env.oidc ? env.oidc.issuer : env.devUser ? `dev user "${env.devUser.name}"` : "not configured"}`);
 		log.info(`speech: STT ${env.speech.sttMode}${env.speech.sttUrl ? ` (${env.speech.sttUrl})` : " (on the endpoint)"}, TTS ${env.speech.ttsMode}`);
 	});

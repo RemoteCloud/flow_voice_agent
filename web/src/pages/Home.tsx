@@ -4,6 +4,7 @@ import { api, credentialErrorText, toApiError } from "../api.js";
 import { useApp } from "../context.js";
 import { Icon, iconFor } from "../icons.js";
 import { useVoice, VoiceBar } from "../voice.js";
+import { versionLine } from "../build.js";
 
 const READINESS: Record<ChecklistPick["readiness"], { label: string; cls: string }> = {
 	full: { label: "Voice", cls: "border-ok/50 text-ok" },
@@ -18,7 +19,7 @@ const OPEN_STATES = new Set<RunView["state"]>(["active", "paused", "pending"]);
  * for every checklist. Station chips only when the phone was not locked to a station by QR.
  */
 export function HomePage({ onOpenRun }: { onOpenRun: (runId: string) => void }) {
-	const { me, stations, setStation } = useApp();
+	const { me, stations, setStation, boot } = useApp();
 	const v = useVoice();
 	const [picks, setPicks] = useState<ChecklistPick[] | undefined>();
 	const [runs, setRuns] = useState<RunView[]>([]);
@@ -140,6 +141,7 @@ export function HomePage({ onOpenRun }: { onOpenRun: (runId: string) => void }) 
 					{!tiles.length && !open && <p className="col-span-2 text-sm text-fg-muted">Nothing to run{station ? ` on ${station.name}` : ""}.</p>}
 				</div>
 			)}
+			<p className="mt-6 text-center text-[11px] text-fg-faint">{versionLine(boot.hubVersion)}</p>
 		</div>
 	);
 }

@@ -298,20 +298,7 @@ class MainActivity : AppCompatActivity() {
                 js("window.flowVoiceBridge&&window.flowVoiceBridge.onListenEnd('cancel')")
                 return@runOnUiThread
             }
-            if (recognizer == null) recognizer = SpeechRecognizer.createSpeechRecognizer(this@MainActivity).also { it.setRecognitionListener(listener) }
-            tts?.stop()
-            val intent = Intent(RecognizerIntent.ACTION_RECOGNIZE_SPEECH).apply {
-                putExtra(RecognizerIntent.EXTRA_LANGUAGE_MODEL, RecognizerIntent.LANGUAGE_MODEL_FREE_FORM)
-                putExtra(RecognizerIntent.EXTRA_LANGUAGE, localeOf(language).toLanguageTag())
-                putExtra(RecognizerIntent.EXTRA_PARTIAL_RESULTS, true)
-                putExtra(RecognizerIntent.EXTRA_MAX_RESULTS, 1)
-                putExtra(RecognizerIntent.EXTRA_CALLING_PACKAGE, packageName)
-                putExtra(RecognizerIntent.EXTRA_SPEECH_INPUT_COMPLETE_SILENCE_LENGTH_MILLIS, 1200L)
-                putExtra(RecognizerIntent.EXTRA_SPEECH_INPUT_POSSIBLY_COMPLETE_SILENCE_LENGTH_MILLIS, 1200L)
-                if (Build.VERSION.SDK_INT >= 33) putExtra(RecognizerIntent.EXTRA_PREFER_OFFLINE, true)
-            }
-            listening = true
-            recognizer?.startListening(intent)
+            beginListening(language, preferOffline = true)
         }
 
         @JavascriptInterface
@@ -324,6 +311,51 @@ class MainActivity : AppCompatActivity() {
             if (active) VoiceService.start(this@MainActivity, text) else VoiceService.stop(this@MainActivity)
             web.keepScreenOn = active
         }
+    }
+
+    /** The language of the open listen window, so a "language unavailable" error can be retried online once. */
+    private var listenLanguage = ""
+    private var listenRetriedOnline = false
+
+    /**
+     * Offline recognition first (fast, works at sea); when the phone has no offline pack for the language the
+     * recogniser answers ERROR_LANGUAGE_UNAVAILABLE / NOT_SUPPORTED and we retry once with the online recogniser.
+     */
+    private fun beginListening(language: String, preferOffline: Boolean) {
+        if (recognizer == null) recognizer = SpeechRecognizer.createSpeechRecognizer(this@MainActivity).also { it.setRecognitionListener(listener) }
+        tts?.stop()
+        val intent = Intent(RecognizerIntent.ACTION_RECOGNIZE_SPEECH).apply {
+            putExtra(RecognizerIntent.EXTRA_LANGUAGE_MODEL, RecognizerIntent.LANGUAGE_MODEL_FREE_FORM)
+            putExtra(RecognizerIntent.EXTRA_LANGUAGE, localeOf(language).toLanguageTag())
+            putExtra(RecognizerIntent.EXTRA_PARTIAL_RESULTS, true)
+            putExtra(RecognizerIntent.EXTRA_MAX_RESULTS, 1)
+            putExtra(RecognizerIntent.EXTRA_CALLING_PACKAGE, packageName)
+            putExtra(RecognizerIntent.EXTRA_SPEECH_INPUT_COMPLETE_SILENCE_LENGTH_MILLIS, 1200L)
+            putExtra(RecognizerIntent.EXTRA_SPEECH_INPUT_POSSIBLY_COMPLETE_SILENCE_LENGTH_MILLIS, 1200L)
+            if (Build.VERSION.SDK_INT >= 33 && preferOffline) putExtra(RecognizerIntent.EXTRA_PREFER_OFFLINE, true)
+        }
+        listenLanguage = language
+        listenRetriedOnline = !preferOffline
+        listening = true
+        recognizer?.startListening(intent)
+    }
+
+    private fun sttErrorName(error: Int): String = when (error) {
+        SpeechRecognizer.ERROR_NETWORK_TIMEOUT -> "network timeout"
+        SpeechRecognizer.ERROR_NETWORK -> "network"
+        SpeechRecognizer.ERROR_AUDIO -> "audio"
+        SpeechRecognizer.ERROR_SERVER -> "server"
+        SpeechRecognizer.ERROR_CLIENT -> "client"
+        SpeechRecognizer.ERROR_SPEECH_TIMEOUT -> "speech timeout"
+        SpeechRecognizer.ERROR_NO_MATCH -> "no match"
+        SpeechRecognizer.ERROR_RECOGNIZER_BUSY -> "recognizer busy"
+        SpeechRecognizer.ERROR_INSUFFICIENT_PERMISSIONS -> "microphone permission"
+        SpeechRecognizer.ERROR_TOO_MANY_REQUESTS -> "too many requests"
+        SpeechRecognizer.ERROR_SERVER_DISCONNECTED -> "server disconnected"
+        SpeechRecognizer.ERROR_LANGUAGE_NOT_SUPPORTED -> "language not supported"
+        SpeechRecognizer.ERROR_LANGUAGE_UNAVAILABLE -> "language pack not installed"
+        SpeechRecognizer.ERROR_CANNOT_CHECK_SUPPORT -> "cannot check language support"
+        else -> "error $error"
     }
 
     private val listener = object : RecognitionListener {
@@ -349,13 +381,20 @@ class MainActivity : AppCompatActivity() {
 
         override fun onError(error: Int) {
             listening = false
+            val languageProblem = error == SpeechRecognizer.ERROR_LANGUAGE_UNAVAILABLE || error == SpeechRecognizer.ERROR_LANGUAGE_NOT_SUPPORTED
+            if (languageProblem && !listenRetriedOnline && listenLanguage.isNotEmpty()) {
+                // no offline pack for this language: try the online recogniser once before giving up
+                beginListening(listenLanguage, preferOffline = false)
+                return
+            }
             val reason = when (error) {
                 SpeechRecognizer.ERROR_NO_MATCH, SpeechRecognizer.ERROR_SPEECH_TIMEOUT -> "silence"
                 SpeechRecognizer.ERROR_CLIENT -> "cancel"
-                else -> "timeout"
+                else -> "error:" + sttErrorName(error) // never "silence": the hub would retry and move on without anyone seeing why
             }
             js("window.flowVoiceBridge&&window.flowVoiceBridge.onListenEnd(${q(reason)})")
             if (error == SpeechRecognizer.ERROR_INSUFFICIENT_PERMISSIONS) Toast.makeText(this@MainActivity, R.string.mic_denied, Toast.LENGTH_LONG).show()
+            else if (reason.startsWith("error:")) Toast.makeText(this@MainActivity, getString(R.string.stt_failed, sttErrorName(error), localeOf(listenLanguage).displayName), Toast.LENGTH_LONG).show()
         }
     }
 }

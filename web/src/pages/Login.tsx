@@ -1,6 +1,7 @@
 import { useState } from "react";
 import type { AuthProviderView, MeResponse } from "../../../server/api.js";
 import { api, AUTH_LOGIN_URL, toApiError, type ApiClientError } from "../api.js";
+import { versionLine } from "../build.js";
 import { navigate } from "../router.js";
 
 const AUTH_ERROR_TEXT: Record<string, string> = {
@@ -106,7 +107,7 @@ export function LoginPage(p: { provider?: AuthProviderView; hubVersion?: string;
 							</button>
 						</>
 					)}
-					{p.hubVersion ? ` · hub ${p.hubVersion}` : ""}
+					{` · ${versionLine(p.hubVersion)}`}
 				</p>
 				{showQr && p.hubUrl && <HubQr hubUrl={p.hubUrl} />}
 			</div>
