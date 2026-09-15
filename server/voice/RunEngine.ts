@@ -15,7 +15,7 @@ import type { ChecklistPick, ExchangeState, HubEvent, HubEventType, RunItem, Run
 import type { Credentials } from "../store/credentials.js";
 import type { HubSession, HubStore, PromptRecord, RunRecord, Station, VoiceProfile } from "../store/HubStore.js";
 import { buildItems, itemAnnouncement, nextItem, previousItem, progressOf, readinessOf, spokenNumber, startAnnouncement } from "./checklist.js";
-import { controlWord, interpret, itemNumber, readbackText, THRESHOLDS, type ControlWord, type Interpretation } from "./interpret.js";
+import { controlWord, interpret, itemNumber, readbackText, THRESHOLDS, type ControlWord, type Interpretation, type InterpretContext } from "./interpret.js";
 import type { Outbox } from "./Outbox.js";
 import { normLang, t as tr } from "./i18n.js";
 import { normalizeTranscript, wordsToNumber } from "./interpret.js";
@@ -134,6 +134,10 @@ export class RunEngine {
 
 	activeRun(stationId: string): RunRecord | undefined {
 		return this.deps.store.get().runs.find((r) => r.stationId === stationId && (r.state === "active" || r.state === "paused" || r.state === "pending"));
+	}
+
+	private interpretCtx(r: RunRecord, item: RunItem, utteredAt: Date): InterpretContext {
+		return { utteredAt, tzMode: this.deps.store.get().settings.tzMode, timeZone: this.deps.policy.timeZone, maxPastHours: this.deps.policy.maxPastHours, options: item.options, language: normLang(r.language) };
 	}
 
 	runsForUser(sub: string): RunRecord[] {
@@ -797,7 +801,13 @@ export class RunEngine {
 				await this.handleCommand(r, word, session);
 				return;
 			}
-			// a new value instead of yes/no: treat as a correction
+			// Repeating the value the hub just read back ("42" → "…, 42. Confirm?" → "42") is a confirmation, not a
+			// correction: otherwise the read-back would echo forever. Any other value is a correction.
+			const again = interpret(item.type, text, this.interpretCtx(r, item, utteredAt), this.phrasesFor(r, item));
+			if (again.ok && (again.value === r.pendingReadback.value || again.valueText === r.pendingReadback.valueText)) {
+				await this.commit(r, item, r.pendingReadback, "voice");
+				return;
+			}
 			r.pendingReadback = undefined;
 		}
 
@@ -809,7 +819,7 @@ export class RunEngine {
 
 		r.exchange = "interpreting";
 		await this.save(r);
-		const result = interpret(item.type, text, { utteredAt, tzMode: this.deps.store.get().settings.tzMode, timeZone: this.deps.policy.timeZone, maxPastHours: this.deps.policy.maxPastHours, options: item.options, language: normLang(r.language) }, this.phrasesFor(r, item));
+		const result = interpret(item.type, text, this.interpretCtx(r, item, utteredAt), this.phrasesFor(r, item));
 		await this.audit(r, "item.captured", { taskId: item.taskId, dataId: item.dataId, transcript: text, confidence, sub: session?.sub });
 		const threshold = THRESHOLDS[item.type] ?? 0.6;
 		const sttFactor = confidence === undefined ? 1 : Math.max(0.5, confidence);

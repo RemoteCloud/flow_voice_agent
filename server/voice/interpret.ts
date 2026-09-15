@@ -34,7 +34,7 @@ export type ControlWord = "list" | "help" | "confirm" | "no" | "correction" | "r
 const CONTROL: [RegExp, ControlWord][] = [
 	[/^(list|checklists|list checklists|what can i run|which checklists|lista|checklistor|liste|sjekklister|liste des listes|quelles listes|checklisten|welche checklisten)$/i, "list"],
 	[/^(help|what can i say|hjälp|hjelp|aide|hilfe|was kann ich sagen)$/i, "help"],
-	[/^(confirm(ed)?|yes|yep|yeah|correct|affirmative|roger|ok(ay)?|that'?s right|right|ja|jo|jepp|jaha|bekreft(et)?|bekräfta(t)?|bekräftar|stimmt|richtig|bestätigt?|genau|oui|ouais|d'accord|confirm[ée]|exact|c'est ça|affirmatif)$/i, "confirm"],
+	[/^(confirm(ed)?|yes|yep|yeah|yup|correct|affirmative|roger|ok(ay)?|that'?s right|right|good|fine|sure|ja|jo|jepp|japp|jaha|jada|javisst|okej|okay|ok[eé]|greit|stemmer|det stemmer|riktig|precis|stämmer|det stämmer|bekreft(et)?|bekräfta(t)?|bekräftar|stimmt|richtig|bestätigt?|bestätige|genau|jawohl|passt|korrekt|oui|ouais|d'accord|confirm[ée]|exact|c'est ça|c'est bon|affirmatif|voilà|très bien)$/i, "confirm"],
 	[/^(no|nope|negative|wrong|incorrect|nei|nej|nein|falsch|feil|fel|non|négatif|faux|nicht richtig)$/i, "no"],
 	[/^(correction|correct that|change that|redo|rett|rettelse|ändra|rättelse|korrektur|korrigieren|ändern|corriger|changer|modifier)$/i, "correction"],
 	[/^(say again|repeat|again|pardon|what|gjenta|si igjen|igjen|upprepa|säg igen|igen|wiederholen|nochmal|wie bitte|répéter|répète|encore|comment)$/i, "repeat"],

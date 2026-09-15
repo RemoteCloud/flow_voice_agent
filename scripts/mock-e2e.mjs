@@ -341,9 +341,11 @@ try {
 		const view = (await api("GET", `runs/${erRun.runId}`)).body;
 		const cur = view.items.find((x) => x.taskId === view.currentTaskId);
 		if (!cur) break;
-		await say(cur.type === "Number" ? "forty two" : cur.type === "QuickSelect" ? "normal" : "yes");
+		const answer = cur.type === "Number" ? "forty two" : cur.type === "QuickSelect" ? "normal" : "yes";
+		await say(answer);
 		await waitFor(() => /Confirm\?$/.test(lastSpoken()), `read-back for ${cur.name}`);
-		await say("confirm");
+		// confirm three ways: the control word, "ok", or by repeating the answer (must not re-open the read-back)
+		await say(i % 3 === 0 ? "confirm" : i % 3 === 1 ? "ok" : answer);
 		await waitFor(async () => (await api("GET", `runs/${erRun.runId}`)).body.items.find((x) => x.taskId === cur.taskId).state !== "current", `item ${cur.name} left current`);
 		if ((await api("GET", `runs/${erRun.runId}`)).body.answered >= (await api("GET", `runs/${erRun.runId}`)).body.total) break;
 	}

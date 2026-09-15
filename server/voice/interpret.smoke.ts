@@ -83,6 +83,7 @@ export async function run(): Promise<void> {
 	// control vocabulary
 	assert.equal(controlWord("Confirmed."), "confirm");
 	assert.equal(controlWord("yes"), "confirm");
+	for (const w of ["ok", "okej", "greit", "det stemmer", "jawohl", "c'est bon", "stämmer", "passt"]) assert.equal(controlWord(w), "confirm", w);
 	assert.equal(controlWord("No"), "no");
 	assert.equal(controlWord("say again"), "repeat");
 	assert.equal(controlWord("skip"), "skip");
