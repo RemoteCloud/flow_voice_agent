@@ -1,6 +1,6 @@
 import { useCallback, useEffect, useState } from "react";
 import type { ChecklistPick, RunView } from "../../../server/api.js";
-import { api, toApiError } from "../api.js";
+import { api, credentialErrorText, toApiError } from "../api.js";
 import { useApp } from "../context.js";
 import { useVoice, VoiceBar } from "../voice.js";
 
@@ -32,7 +32,7 @@ export function PickerPage({ onOpenRun }: { onOpenRun: (runId: string) => void }
 			setRuns(r);
 		} catch (e) {
 			const a = toApiError(e);
-			setErr(a.code === "NO_CREDENTIAL" ? "No Maranics token for this session — sign out and in again." : a.message);
+			setErr(credentialErrorText(a));
 			setPicks([]);
 		}
 	}, []);
