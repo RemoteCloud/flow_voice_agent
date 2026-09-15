@@ -337,6 +337,7 @@ try {
 	step = "voice complete";
 	// answer everything by voice, then complete by voice with a two-step confirmation
 	for (let i = 0; i < 12 && (await api("GET", `runs/${erRun.runId}`)).body.state === "active"; i++) {
+		await waitFor(() => listenOpen, "next item's listen window"); // the hub says "Confirmed." and the next item before it listens again
 		const view = (await api("GET", `runs/${erRun.runId}`)).body;
 		const cur = view.items.find((x) => x.taskId === view.currentTaskId);
 		if (!cur) break;

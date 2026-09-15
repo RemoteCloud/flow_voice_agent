@@ -65,6 +65,11 @@ export class EngineError extends Error {
 	}
 }
 
+/** The hub session is valid but holds no usable Maranics token. 403, not 401: a 401 makes the web client drop to the login screen. */
+function noCredential(): EngineError {
+	return new EngineError(403, "NO_CREDENTIAL", "no usable Maranics token for this session — sign out and in again");
+}
+
 interface Timers {
 	listen?: NodeJS.Timeout;
 	confirm?: NodeJS.Timeout;
@@ -174,9 +179,17 @@ export class RunEngine {
 
 	async listPicks(session: HubSession): Promise<ChecklistPick[]> {
 		const api = await this.deps.credentials.apiSettings(session);
-		if (!api) throw new EngineError(401, "NO_CREDENTIAL", "sign in again — no usable Maranics token");
+		if (!api) throw noCredential();
 		const flows = await this.deps.flows.listFlows(api, "Active", 1, 200);
-		if (!flows.ok) throw new EngineError(flows.status === 401 ? 401 : 502, "MARANICS", `Maranics flows: ${flows.message}`);
+		if (!flows.ok) {
+			// Never 401 here: to the client 401 means "hub session gone" and it would bounce to the login screen
+			// (and straight back, since the hub session is fine). A Maranics-side refusal is an upstream problem.
+			if (flows.status === 401 || flows.status === 403) {
+				this.deps.log.warn(`Maranics refused the token of ${session.sub}: ${flows.message}`);
+				throw new EngineError(502, "MARANICS_UNAUTHORIZED", `Maranics rejected this session's token (${flows.message}) — the sign-in client may lack Flow API access`);
+			}
+			throw new EngineError(502, "MARANICS", `Maranics flows: ${flows.message}`);
+		}
 		const picks: ChecklistPick[] = [];
 		const settings = this.deps.store.get().settings;
 		for (const f of flows.data.items) {
@@ -224,7 +237,7 @@ export class RunEngine {
 	async start(session: HubSession, p: { instanceId?: string; templateId?: string; stationId: string; runId?: string }): Promise<RunView> {
 		const station = this.station(p.stationId);
 		const api = await this.deps.credentials.apiSettings(session);
-		if (!api) throw new EngineError(401, "NO_CREDENTIAL", "sign in again — no usable Maranics token");
+		if (!api) throw noCredential();
 		const user = this.deps.store.get().users.find((u) => u.sub === session.sub);
 
 		// resume a pending (triggered) run on this station, or an existing run for the instance
@@ -1001,6 +1014,7 @@ export class RunEngine {
 		}
 		if (row?.state === "failed") await this.say(r, tr(r.language, "flow_rejected", { name: item.name }));
 		else if (!sent) await this.say(r, tr(r.language, "recorded_locally"));
+		else await this.say(r, tr(r.language, "confirmed")); // the crew hears that the value went in before the next item
 		await this.advance(r, item);
 	}
 
@@ -1450,7 +1464,7 @@ export class RunEngine {
 		const p = progressOf(r.items);
 		if (p.answered < p.total) throw new EngineError(409, "ITEMS_OPEN", `${p.total - p.answered} item(s) still open`);
 		const api = await this.deps.credentials.apiSettings(session);
-		if (!api) throw new EngineError(401, "NO_CREDENTIAL", "sign in again");
+		if (!api) throw noCredential();
 		const res = await this.deps.flows.setStatus(api, r.instanceId, "complete");
 		if (!res.ok) throw new EngineError(res.status === 422 ? 422 : 502, "MARANICS", `complete checklist: ${res.message}`);
 		this.clearTimers(r.runId);
@@ -1472,7 +1486,7 @@ export class RunEngine {
 	async discard(runId: string, session: HubSession, reasonCode: string, comment?: string): Promise<RunView> {
 		const r = this.record(runId);
 		const api = await this.deps.credentials.apiSettings(session);
-		if (!api) throw new EngineError(401, "NO_CREDENTIAL", "sign in again");
+		if (!api) throw noCredential();
 		if (r.instanceId) {
 			const res = await this.deps.flows.setStatus(api, r.instanceId, "discard", { reasonId: reasonCode, reason: reasonCode, comment });
 			if (!res.ok) throw new EngineError(res.status === 422 ? 422 : 502, "MARANICS", `discard checklist: ${res.message}`);
