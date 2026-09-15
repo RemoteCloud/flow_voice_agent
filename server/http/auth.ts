@@ -8,7 +8,7 @@
  */
 import type { OidcEnv } from "../env.js";
 import type { Logger } from "../core/log.js";
-import type { OidcProvider, TokenSet, UserInfo } from "../oidc/OidcClient.js";
+import { OidcError, toUserInfo, type OidcProvider, type TokenSet, type UserInfo } from "../oidc/OidcClient.js";
 import { pkcePair, randomToken, type RandomBytes } from "../oidc/pkce.js";
 import { constantTimeEqual, sealToken } from "../store/crypto.js";
 import type { HubCredential, HubSession, HubStore, HubUser } from "../store/HubStore.js";
@@ -156,21 +156,27 @@ export class OidcAuth {
 		}
 		if (!tokens.idToken) return failed("invalid_token", "token response has no id_token (is the openid scope granted?)");
 		let sub: string;
-		let idEmail: string | undefined;
-		let idName: string | undefined;
+		let idInfo: UserInfo | undefined;
 		try {
 			const claims = await this.deps.provider.validateIdToken(tokens.idToken, flow.nonce);
 			sub = claims.sub;
-			idEmail = typeof claims.email === "string" ? claims.email.toLowerCase() : undefined;
-			idName = typeof claims.name === "string" ? claims.name : undefined;
+			idInfo = toUserInfo(claims);
 		} catch (err) {
 			return failed("invalid_token", err instanceof Error ? err.message : String(err));
 		}
+		const idEmail = idInfo?.email;
+		const idName = idInfo?.name;
 		let info: UserInfo;
 		try {
 			info = await this.deps.provider.userinfo(tokens.accessToken);
 		} catch (err) {
-			return failed("userinfo_failed", err instanceof Error ? err.message : String(err));
+			const detail = err instanceof Error ? err.message : String(err);
+			const refused = err instanceof OidcError && (err.status === 401 || err.status === 403);
+			// UserManagement sometimes refuses userinfo (HTTP 403) for a token it just issued. The id_token is
+			// already verified (signature, issuer, audience, nonce, tenant), so its claims identify the user.
+			if (!refused || !idInfo) return failed("userinfo_failed", detail);
+			this.deps.log.warn(`login from ${ip}: ${detail}; using the verified id_token claims`);
+			info = idInfo;
 		}
 		if (!constantTimeEqual(info.sub, sub)) return failed("userinfo_failed", "userinfo sub differs from the id_token sub");
 		info = { ...info, email: info.email ?? idEmail, name: info.name ?? idName ?? info.email ?? idEmail };

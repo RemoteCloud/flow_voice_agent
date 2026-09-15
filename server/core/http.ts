@@ -4,13 +4,16 @@ export class HttpError extends Error {
 	readonly status: number;
 	readonly retryAfterMs?: number;
 	readonly bodyText?: string;
+	/** `WWW-Authenticate` of a 401/403 (the OAuth reason, e.g. `error="insufficient_scope"`). */
+	readonly wwwAuthenticate?: string;
 
-	constructor(status: number, message: string, opts: { retryAfterMs?: number; bodyText?: string } = {}) {
+	constructor(status: number, message: string, opts: { retryAfterMs?: number; bodyText?: string; wwwAuthenticate?: string } = {}) {
 		super(message);
 		this.name = "HttpError";
 		this.status = status;
 		this.retryAfterMs = opts.retryAfterMs;
 		this.bodyText = opts.bodyText;
+		this.wwwAuthenticate = opts.wwwAuthenticate;
 	}
 }
 
@@ -63,7 +66,8 @@ export async function fetchJsonFull<T = unknown>(url: string, init: RequestInit 
 			}
 			const ra = res.headers.get("retry-after");
 			const retryAfterMs = ra && /^\d+$/.test(ra) ? Number(ra) * 1000 : undefined;
-			throw new HttpError(res.status, `HTTP ${res.status}`, { retryAfterMs, bodyText });
+			const wwwAuthenticate = res.headers.get("www-authenticate")?.slice(0, 300) || undefined;
+			throw new HttpError(res.status, `HTTP ${res.status}`, { retryAfterMs, bodyText, wwwAuthenticate });
 		}
 		if (res.status === 204) return { body: undefined as T, status: res.status, headers: res.headers };
 		const text = await res.text();

@@ -304,7 +304,8 @@ export class OidcClient implements OidcProvider {
 			body = (await fetchJsonFull<unknown>(doc.userinfo_endpoint, { headers: { Authorization: `Bearer ${accessToken}`, Accept: "application/json" } }, { fetchImpl: this.deps.fetchImpl, timeoutMs: this.cfg.httpTimeoutMs })).body;
 		} catch (err) {
 			const status = err instanceof HttpError ? err.status : undefined;
-			throw new OidcError("userinfo_failed", `userinfo ${status ? `HTTP ${status}` : err instanceof Error ? err.message : String(err)}`, status);
+			const reason = err instanceof HttpError ? (err.wwwAuthenticate ?? err.bodyText?.slice(0, 200)) : undefined;
+			throw new OidcError("userinfo_failed", `userinfo ${status ? `HTTP ${status}` : err instanceof Error ? err.message : String(err)}${reason ? ` (${reason})` : ""}`, status);
 		}
 		if (!isObj(body)) throw new OidcError("userinfo_failed", "userinfo returned no JSON object");
 		const info = toUserInfo(body);
