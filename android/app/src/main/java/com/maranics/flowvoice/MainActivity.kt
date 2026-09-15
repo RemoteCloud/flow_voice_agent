@@ -81,6 +81,9 @@ class MainActivity : AppCompatActivity() {
             domStorageEnabled = true
             databaseEnabled = true
             mediaPlaybackRequiresUserGesture = false
+            // honour the PWA's <meta name="viewport" width=device-width>; without these the page lays out wider than the phone
+            useWideViewPort = true
+            loadWithOverviewMode = true
             allowFileAccess = false
             userAgentString = "$userAgentString FlowVoiceAndroid/${BuildConfig.VERSION_NAME}"
         }
@@ -114,9 +117,11 @@ class MainActivity : AppCompatActivity() {
             ttsReady = status == TextToSpeech.SUCCESS
             tts?.setOnUtteranceProgressListener(object : UtteranceProgressListener() {
                 override fun onStart(utteranceId: String?) {}
-                override fun onDone(utteranceId: String?) = js("window.flowVoiceBridge&&window.flowVoiceBridge.onSpoken(${q(utteranceId ?: "")})")
+                override fun onDone(utteranceId: String?) = spoken(utteranceId)
+                override fun onStop(utteranceId: String?, interrupted: Boolean) = spoken(utteranceId)
                 @Deprecated("Deprecated in Java")
-                override fun onError(utteranceId: String?) = js("window.flowVoiceBridge&&window.flowVoiceBridge.onSpoken(${q(utteranceId ?: "")})")
+                override fun onError(utteranceId: String?) = spoken(utteranceId)
+                override fun onError(utteranceId: String?, errorCode: Int) = spoken(utteranceId)
             })
         }
 
@@ -235,6 +240,8 @@ class MainActivity : AppCompatActivity() {
     }
 
     private fun js(code: String) = runOnUiThread { web.evaluateJavascript(code, null) }
+    /** Tell the page an utterance is over (done, flushed, failed) so the hub can open the mic. */
+    private fun spoken(utteranceId: String?) = js("window.flowVoiceBridge&&window.flowVoiceBridge.onSpoken(${q(utteranceId ?: "")})")
     private fun q(s: String): String = JSONObject.quote(s)
 
     private fun localeOf(language: String): Locale = when (language.lowercase().take(2)) {
@@ -279,7 +286,7 @@ class MainActivity : AppCompatActivity() {
             }
             t.language = localeOf(language)
             t.setSpeechRate(0.95f)
-            t.speak(text, TextToSpeech.QUEUE_FLUSH, null, promptId)
+            if (t.speak(text, TextToSpeech.QUEUE_FLUSH, null, promptId) != TextToSpeech.SUCCESS) spoken(promptId)
         }
 
         @JavascriptInterface

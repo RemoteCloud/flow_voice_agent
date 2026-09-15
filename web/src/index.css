@@ -90,6 +90,7 @@
 	body {
 		@apply bg-bg text-fg antialiased;
 		padding-bottom: env(safe-area-inset-bottom);
+		overflow-x: clip; /* never a sideways scroll on a phone */
 	}
 	:focus-visible {
 		@apply outline-2 outline-offset-2 outline-accent;

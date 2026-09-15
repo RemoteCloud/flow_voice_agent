@@ -82,6 +82,9 @@ export class AudioEndpoint {
 	private handsFree = false;
 	private idleTimer: number | undefined;
 	private speakingNow = false;
+	private speakSeq = 0;
+	/** Android: the utterance in flight; resolved by flowVoiceBridge.onSpoken (or a safety timeout). */
+	private pendingSpoken: { promptId: string; finish: () => void } | undefined;
 	private lastSpokenText = "";
 	private lastSpokenAt = 0;
 	readonly capabilities: EndpointCapabilities;
@@ -94,7 +97,11 @@ export class AudioEndpoint {
 		this.handsFree = !!opts.handsFree;
 		this.capabilities = { input: [hasAndroid() ? "android-mic" : "browser-mic"], sampleRate: 16000, aec: false, pushToTalk: opts.pushToTalk && !this.handsFree, wakeWord: false, localTts: true, localStt };
 		window.flowVoiceBridge = {
-			onSpoken: (promptId) => this.send({ type: "spoken", promptId }),
+			onSpoken: (promptId) => {
+				const p = this.pendingSpoken;
+				if (p && (!promptId || p.promptId === promptId)) p.finish();
+				else this.send({ type: "spoken", promptId });
+			},
 			onTranscript: (text, confidence, final) => this.deliverTranscript(text, confidence, final),
 			onListenEnd: (reason) => this.endListen(reason as "silence" | "ptt" | "timeout" | "cancel"),
 			onPtt: (down) => (down ? this.pttStart() : this.pttEnd()),
@@ -308,8 +315,24 @@ export class AudioEndpoint {
 
 	private speak(text: string, language: string, promptId: string): Promise<void> {
 		if (hasAndroid()) {
-			window.FlowVoiceAndroid!.speak(text, language, promptId);
-			return Promise.resolve(); // Android calls flowVoiceBridge.onSpoken
+			// Resolve only when Android reports the utterance done (flowVoiceBridge.onSpoken); resolving
+			// early would re-arm the idle mic, whose startListening() stops TTS mid-sentence.
+			this.pendingSpoken?.finish();
+			return new Promise((resolve) => {
+				let done = false;
+				let timer: number | undefined;
+				const finish = () => {
+					if (done) return;
+					done = true;
+					if (timer) window.clearTimeout(timer);
+					if (this.pendingSpoken?.promptId === promptId) this.pendingSpoken = undefined;
+					this.send({ type: "spoken", promptId });
+					resolve();
+				};
+				this.pendingSpoken = { promptId, finish };
+				timer = window.setTimeout(finish, 4000 + text.length * 120); // safety net if the engine never calls back
+				window.FlowVoiceAndroid!.speak(text, language, promptId);
+			});
 		}
 		return new Promise((resolve) => {
 			if (!("speechSynthesis" in window)) {
@@ -321,7 +344,10 @@ export class AudioEndpoint {
 			const u = new SpeechSynthesisUtterance(text);
 			u.lang = language.length === 2 ? { en: "en-GB", no: "nb-NO", nb: "nb-NO", sv: "sv-SE", de: "de-DE", fr: "fr-FR", da: "da-DK" }[language] ?? language : language;
 			u.rate = 0.95;
+			let finished = false;
 			const done = () => {
+				if (finished) return;
+				finished = true;
 				this.send({ type: "spoken", promptId });
 				resolve();
 			};
@@ -329,7 +355,7 @@ export class AudioEndpoint {
 			u.onerror = done;
 			window.speechSynthesis.speak(u);
 			// Chrome sometimes never fires onend for long utterances
-			window.setTimeout(done, 1500 + text.length * 80);
+			window.setTimeout(done, 3000 + text.length * 120);
 		});
 	}
 
