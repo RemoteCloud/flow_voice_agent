@@ -13,6 +13,9 @@ export interface HubUser {
 	name?: string;
 	positionId?: string;
 	positionName?: string;
+	/** Location from the sign-in claims: the Maranics location new flows are created at (the token decides). */
+	locationId?: string;
+	locationName?: string;
 	firstSeenAt: string;
 	lastLoginAt: string;
 	logins: number;

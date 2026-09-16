@@ -44,6 +44,9 @@ export interface UserInfo {
 	name?: string;
 	positionId?: string;
 	positionName?: string;
+	/** The Maranics location the sign-in is scoped to (UserManagement claim); flows the user starts land there. */
+	locationId?: string;
+	locationName?: string;
 }
 
 export interface AuthorizeParams {
@@ -125,7 +128,9 @@ export function toUserInfo(raw: Record<string, unknown>): UserInfo | undefined {
 	const name = str(raw.name) ?? (given || family ? [given, family].filter(Boolean).join(" ") : undefined) ?? email;
 	const positionId = str(raw.position_id) ?? str(raw.positionId);
 	const positionName = str(raw.position_name) ?? str(raw.positionName);
-	return { sub, email, name, positionId, positionName };
+	const locationId = str(raw.location_id) ?? str(raw.locationId);
+	const locationName = str(raw.location_name) ?? str(raw.locationName) ?? str(raw.location);
+	return { sub, email, name, positionId, positionName, locationId, locationName };
 }
 
 export class OidcClient implements OidcProvider {

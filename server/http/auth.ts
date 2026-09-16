@@ -185,7 +185,7 @@ export class OidcAuth {
 
 		const cred = buildCredential(info, tokens, this.deps.sealKey, now);
 		const out = await this.provision(info, cred, ip);
-		this.deps.log.info(`login from ${ip}: ${info.email ?? sub}${info.positionName ? ` (${info.positionName})` : ""}${tokens.refreshToken ? "" : " (no refresh token — access ends when the token expires)"}`);
+		this.deps.log.info(`login from ${ip}: ${info.email ?? sub}${info.positionName ? ` (${info.positionName})` : ""}${info.locationName ?? info.locationId ? ` at ${info.locationName ?? info.locationId}` : ""}${tokens.refreshToken ? "" : " (no refresh token — access ends when the token expires)"}`);
 		return { ...out, returnTo: flow.returnTo };
 	}
 
@@ -214,6 +214,8 @@ export class OidcAuth {
 			u.name = info.name;
 			u.positionId = info.positionId;
 			u.positionName = info.positionName;
+			u.locationId = info.locationId;
+			u.locationName = info.locationName;
 			u.lastLoginAt = nowIso;
 			u.logins += 1;
 			user = { ...u };

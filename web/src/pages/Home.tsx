@@ -93,6 +93,13 @@ export function HomePage({ onOpenRun }: { onOpenRun: (runId: string) => void }) 
 					))}
 				</div>
 			)}
+			{(me.name || me.locationName) && (
+				<p className="text-xs text-fg-faint">
+					{me.name}
+					{me.locationName ? ` · ${me.locationName}` : ""}
+					{me.positionName ? ` · ${me.positionName}` : ""}
+				</p>
+			)}
 			{!stations.length && <p className="text-sm text-warn">No station configured on this hub. Set one up in the browser.</p>}
 			{stations.length > 0 && !me.stationId && <p className="text-sm text-warn">Pick a station to start a checklist.</p>}
 

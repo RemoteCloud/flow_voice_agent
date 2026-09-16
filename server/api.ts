@@ -10,6 +10,8 @@ export interface MeResponse {
 	name?: string;
 	email?: string;
 	positionName?: string;
+	/** Maranics location of the sign-in (name, or id when the claim has no name). Flows start there. */
+	locationName?: string;
 	isAdmin: boolean;
 	stationId?: string;
 	/** How the station was bound: scanned QR ("join") or picked on screen ("pick"). */

@@ -91,7 +91,7 @@ export function createApp(deps: AppDeps): Hono {
 
 	const meOf = (row: HubSession): MeResponse => {
 		const u = store.get().users.find((x) => x.sub === row.sub);
-		return { sub: row.sub, name: u?.name, email: u?.email, positionName: u?.positionName, isAdmin: u?.isAdmin ?? false, stationId: row.stationId, stationSource: row.stationSource, sessionId: row.id, credential: row.credential ? row.credential.state : row.sub.startsWith("dev:") ? "ok" : "none" };
+		return { sub: row.sub, name: u?.name, email: u?.email, positionName: u?.positionName, locationName: u?.locationName ?? u?.locationId, isAdmin: u?.isAdmin ?? false, stationId: row.stationId, stationSource: row.stationSource, sessionId: row.id, credential: row.credential ? row.credential.state : row.sub.startsWith("dev:") ? "ok" : "none" };
 	};
 
 	/** Bind a session to a station (store row + the live row object). */
