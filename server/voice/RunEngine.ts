@@ -860,7 +860,10 @@ export class RunEngine {
 		const result = interpret(item.type, text, this.interpretCtx(r, item, utteredAt), this.phrasesFor(r, item));
 		await this.audit(r, "item.captured", { taskId: item.taskId, dataId: item.dataId, transcript: text, confidence, sub: session?.sub });
 		const threshold = THRESHOLDS[item.type] ?? 0.6;
-		const sttFactor = confidence === undefined ? 1 : Math.max(0.5, confidence);
+		// The phone's confidence score is a weak signal (Android reports 0.6 for a clean "ja"). An exact lexicon or
+		// option hit is trusted on its own; for parsed values (times, numbers, text) only a really poor score counts.
+		const exact = result.ok && (result.kind === "bool" || result.kind === "option" || result.kind === "now");
+		const sttFactor = confidence === undefined || exact ? 1 : Math.max(0.8, confidence);
 		if (isSideTalk(item, text, result)) {
 			// a sentence that fits nothing on a yes/no, number or time item is the room, not the crew: no retry counted,
 			// no "say yes or no", the mic simply re-arms
