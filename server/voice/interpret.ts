@@ -27,6 +27,13 @@ export type ControlKind = "DateAndTime" | "Time" | "Date" | "Number" | "Checkbox
 
 /** What the Flow API stores for a checked plain checkbox (`TaskValueValidation.cs`: `val == "OK"`). */
 export const CHECKBOX_CHECKED = "OK";
+/**
+ * What a "yes" writes for a checkbox: a checkbox authored with one option ("Utført::completed") stores that
+ * option's key, a plain one stores "OK". Several options make it a multi-select (see `interpret`).
+ */
+export function checkboxCheckedValue(options: { title: string; value: string }[] | undefined): { value: string; title?: string } {
+	return options?.length === 1 ? { value: options[0].value, title: options[0].title } : { value: CHECKBOX_CHECKED };
+}
 /** A spoken "no" on a plain checkbox: nothing to write, the item stays open. */
 export const CHECKBOX_NOT_DONE = "";
 
@@ -595,9 +602,16 @@ export function interpret(type: string, transcript: string, ctx: InterpretContex
 		}
 		case "Checkbox": {
 			// Flow stores a plain checkbox as "OK" (checked) or nothing (TaskValueValidation.cs); "true"/"false" are rejected.
+			// A checkbox authored with options ("Utført::completed") stores the option key instead: one option is still a
+			// yes/no question, several make it a multi-select answered like a Dropdown.
 			// "no" therefore carries no value: the engine leaves the item open (CHECKBOX_NOT_DONE) instead of writing.
-			if (phraseOnly) return { ok: true, value: CHECKBOX_CHECKED, valueText: msg("yes"), confidence: 0.8, kind: "bool" };
-			if (YES.test(t)) return { ok: true, value: CHECKBOX_CHECKED, valueText: msg("yes"), confidence: 0.95, kind: "bool" };
+			const opts = ctx.options ?? [];
+			if (opts.length > 1) return interpret("Dropdown", transcript, ctx, phrases);
+			const checked = checkboxCheckedValue(opts);
+			const yesText = checked.title ?? msg("yes");
+			if (phraseOnly) return { ok: true, value: checked.value, valueText: yesText, confidence: 0.8, kind: "bool" };
+			if (YES.test(t)) return { ok: true, value: checked.value, valueText: yesText, confidence: 0.95, kind: "bool" };
+			if (checked.title && fuzzyScore(t, normalizeTranscript(checked.title)) >= 0.7) return { ok: true, value: checked.value, valueText: yesText, confidence: 0.9, kind: "bool" };
 			if (NO.test(t)) return { ok: true, value: CHECKBOX_NOT_DONE, valueText: msg("no"), confidence: 0.95, kind: "bool" };
 			if (NA_WORDS.includes(t)) return { ok: false, reason: "no_match", message: msg("m_yesno_na"), confidence: 0.2 };
 			return { ok: false, reason: "no_match", message: msg("m_yesno"), confidence: 0.1 };

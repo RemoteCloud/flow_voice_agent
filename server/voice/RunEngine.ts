@@ -10,12 +10,12 @@
  */
 import type { Logger } from "../core/log.js";
 import type { PolicyEnv } from "../env.js";
-import type { FlowDetail, FlowsClient } from "../maranics/FlowsClient.js";
+import type { FlowDetail, FlowsClient, TemplateDetail } from "../maranics/FlowsClient.js";
 import type { ChecklistPick, ExchangeState, HubEvent, HubEventType, RunItem, RunView } from "../protocol.js";
 import type { Credentials } from "../store/credentials.js";
 import type { HubSession, HubStore, PromptRecord, RunRecord, Station, VoiceProfile } from "../store/HubStore.js";
 import { buildItems, itemAnnouncement, nextItem, previousItem, progressOf, readinessOf, spokenNumber, startAnnouncement } from "./checklist.js";
-import { CHECKBOX_CHECKED, CHECKBOX_NOT_DONE, controlWord, interpret, itemNumber, readbackText, THRESHOLDS, type ControlWord, type Interpretation, type InterpretContext } from "./interpret.js";
+import { CHECKBOX_CHECKED, CHECKBOX_NOT_DONE, checkboxCheckedValue, controlWord, interpret, itemNumber, readbackText, THRESHOLDS, type ControlWord, type Interpretation, type InterpretContext } from "./interpret.js";
 import type { Outbox } from "./Outbox.js";
 import { normLang, t as tr } from "./i18n.js";
 import { normalizeTranscript, wordsToNumber } from "./interpret.js";
@@ -285,7 +285,7 @@ export class RunEngine {
 		}
 		const detail = await this.deps.flows.getFlow(api, instanceId);
 		if (!detail.ok) throw new EngineError(502, "MARANICS", `read checklist: ${detail.message}`);
-		const run = this.newRun(detail.data, station, session, user?.name);
+		const run = this.newRun(detail.data, station, session, user?.name, await this.templateDetail(api, detail.data.templateId));
 		await this.save(run);
 		this.emit("run.started", run, { text: run.templateName });
 		await this.audit(run, "run.started", { sub: session.sub, text: run.templateName });
@@ -293,10 +293,10 @@ export class RunEngine {
 		return this.toView(run);
 	}
 
-	private newRun(flow: FlowDetail, station: Station, session: HubSession | undefined, userName: string | undefined): RunRecord {
+	private newRun(flow: FlowDetail, station: Station, session: HubSession | undefined, userName: string | undefined, template?: TemplateDetail): RunRecord {
 		const settings = this.deps.store.get().settings;
 		const profile = this.profileFor(flow.templateId, station);
-		const items = buildItems(flow, { profile, readNotices: settings.readNotices });
+		const items = buildItems(flow, { profile, template, readNotices: settings.readNotices });
 		const now = this.deps.now();
 		return {
 			runId: newId("run"),
@@ -323,7 +323,7 @@ export class RunEngine {
 		const detail = await this.deps.flows.getFlow(api, r.instanceId);
 		if (!detail.ok) return;
 		const profile = this.profileFor(detail.data.templateId, station);
-		const fresh = buildItems(detail.data, { profile, readNotices: this.deps.store.get().settings.readNotices });
+		const fresh = buildItems(detail.data, { profile, template: await this.templateDetail(api, detail.data.templateId), readNotices: this.deps.store.get().settings.readNotices });
 		const local = new Map(r.items.map((i) => [i.taskId, i]));
 		for (const f of fresh) {
 			const l = local.get(f.taskId);
@@ -383,6 +383,26 @@ export class RunEngine {
 	private sessionOnStation(stationId: string): HubSession | undefined {
 		const sessions = this.deps.store.get().sessions.filter((s) => s.stationId === stationId && (s.credential || s.sub.startsWith("dev:")));
 		return sessions.sort((a, b) => Date.parse(b.lastSeenAt) - Date.parse(a.lastSeenAt))[0];
+	}
+
+	private readonly templates = new Map<string, { at: number; detail: TemplateDetail }>();
+
+	/**
+	 * The template behind a flow, cached briefly. The v3 flow read does not carry a checkbox's option list
+	 * ("Utført::completed"), so without the template the hub would write "OK" where Flow expects "completed".
+	 */
+	private async templateDetail(api: NonNullable<Awaited<ReturnType<Credentials["apiSettings"]>>>, templateId: string | undefined): Promise<TemplateDetail | undefined> {
+		if (!templateId) return undefined;
+		const hit = this.templates.get(templateId);
+		const now = Number(this.deps.now());
+		if (hit && now - hit.at < 5 * 60_000) return hit.detail;
+		const t = await this.deps.flows.getTemplate(api, templateId);
+		if (!t.ok) {
+			this.deps.log.warn(`template ${templateId} unavailable (${t.message}); checkbox options unknown`);
+			return hit?.detail;
+		}
+		this.templates.set(templateId, { at: now, detail: t.data });
+		return t.data;
 	}
 
 	private async templateName(templateId: string): Promise<string> {
@@ -839,8 +859,10 @@ export class RunEngine {
 		item.transcript = text;
 		item.confidence = Math.min(result.confidence, confidence ?? 1);
 		item.utteredAt = utteredAt.toISOString();
-		const policy = this.confirmationFor(r, item);
+		const policy = this.confirmationFor(r, item, result);
 		if (policy === "none") {
+			// the answer is the confirmation: repeat item and value so the crew hears what goes in, then write it
+			if (!(item.type === "Checkbox" && result.value === CHECKBOX_NOT_DONE)) await this.say(r, tr(r.language, "echo", { name: item.name, value: result.valueText }));
 			await this.commit(r, item, { taskId: item.taskId, value: result.value, valueText: result.valueText, transcript: text, confidence: item.confidence }, "voice");
 			return;
 		}
@@ -860,12 +882,19 @@ export class RunEngine {
 		return phrases;
 	}
 
-	private confirmationFor(r: RunRecord, item: RunItem): "required" | "none" {
+	/**
+	 * Whether a value needs a spoken "confirm" before it is written. A binding decides for its item; otherwise the
+	 * hub setting: "optional" never asks (the hub repeats item and value and moves on), "required" asks only when
+	 * the answer was not a plain yes/no — "yes" to "Charging plug verified?" is its own confirmation.
+	 */
+	private confirmationFor(r: RunRecord, item: RunItem, result: Extract<Interpretation, { ok: true }>): "required" | "none" {
 		const station = this.deps.store.get().stations.find((s) => s.stationId === r.stationId);
 		const profile = station ? this.profileFor(r.templateId, station) : undefined;
 		const b = profile?.bindings.find((x) => x.dataId === item.dataId);
 		if (b?.confirmation === "none") return "none";
-		return "required";
+		if (b?.confirmation === "required") return "required";
+		if (this.deps.store.get().settings.confirmation === "optional") return "none";
+		return result.kind === "bool" ? "none" : "required";
 	}
 
 	/** "Pilot on board five minutes ago" said while nothing was asked: bind by phrase to an unanswered item. */
@@ -1383,10 +1412,26 @@ export class RunEngine {
 			this.deps.io.stopListening(r.stationId);
 		}
 		item.utteredAt = iso(this.deps.now());
+		if (item.type === "Checkbox") {
+			// the screen sends "true" / "false"; Flow wants "OK" (or the option key) / nothing
+			const checked = checkboxCheckedValue(item.options);
+			if (value === "true" || value === "yes" || value === CHECKBOX_CHECKED || value === checked.value) {
+				value = checked.value;
+				valueText = valueText ?? checked.title ?? "yes";
+			} else if (value === "false" || value === "no" || value === CHECKBOX_NOT_DONE) {
+				value = CHECKBOX_NOT_DONE;
+				valueText = valueText ?? "no";
+			}
+		}
 		const text = valueText ?? (value === CHECKBOX_CHECKED || value === "true" ? "yes" : value === "false" || (item.type === "Checkbox" && value === CHECKBOX_NOT_DONE) ? "no" : item.options?.find((o) => o.value === value)?.title ?? value);
 		if (wasCurrent && r.state === "active") {
 			await this.commit(r, item, { taskId, value, valueText: text, transcript: "", confidence: 1 }, "manual");
 			return this.view(runId);
+		}
+		if (item.type === "Checkbox" && value === CHECKBOX_NOT_DONE) {
+			// "no" on a checkbox is not a value Flow can store: the item stays open
+			await this.audit(r, "item.not_done", { taskId, dataId: item.dataId, transcript: "", confidence: 1, sub: session.sub, text: "manual" });
+			return this.skip(runId, taskId, "not done");
 		}
 		// answer out of order: commit without touching the spoken flow
 		const user = r.users[r.users.length - 1];

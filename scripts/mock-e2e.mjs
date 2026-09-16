@@ -188,9 +188,10 @@ try {
 	await say("item ninety nine");
 	await waitFor(() => /^There is no item/.test(lastSpoken()), "unknown item refused");
 	await say("Yes.");
-	await waitFor(() => lastSpoken() === "Pilot card exchanged, yes. Confirm?", "yes read-back");
-	await say("yes");
+	// a yes/no answer is its own confirmation: the hub repeats item and value, writes it, says "Confirmed."
+	await waitFor(() => spoken.includes("Pilot card exchanged, yes."), "yes echoed without a confirm question");
 	await waitFor(() => fake.values.some((v) => v.task === "flow-arr-1:ft-arr-1b" && v.value === "OK"), "checkbox checked as OK");
+	assert.ok(!spoken.includes("Pilot card exchanged, yes. Confirm?"), "no read-back question for a yes/no answer");
 
 	// item three: say again, then N/A (QuickSelect bounded to the option set)
 	step = "item 3";
@@ -234,14 +235,13 @@ try {
 	await say("next item");
 	await waitFor(() => spoken.some((s) => s.includes("Steering gear tested?")), "item six spoken after next item");
 	await say("affirmative");
-	await waitFor(() => lastSpoken() === "Steering gear tested, yes. Confirm?", "read-back six");
-	await say("confirm");
+	await waitFor(() => spoken.includes("Steering gear tested, yes."), "yes echoed for item six");
 	step = "item 7";
 	await waitFor(() => spoken.some((s) => s.includes("Anchor ready for letting go?")), "item seven");
 	await say("where am I");
 	await waitFor(() => /Arrival Checklist.*item seven.*answered/.test(lastSpoken()), "where am I answered");
 	await say("yes");
-	await waitFor(() => lastSpoken() === "Anchor ready for letting go, Yes. Confirm?", "read-back seven");
+	await waitFor(() => lastSpoken() === "Anchor ready for letting go, Yes. Confirm?", "read-back seven"); // an option pick (Yes/No/N/A) still gets read back
 	await say("confirmed");
 
 	// sweep: the skipped bow thruster comes back, then completion text
@@ -249,8 +249,6 @@ try {
 	await waitFor(() => spoken.some((s) => /One item skipped\. Going back to it\./.test(s)), "skip sweep offered");
 	await waitFor(() => spoken.filter((s) => s.includes("Bow thruster tested?")).length >= 2, "skipped item re-asked");
 	await say("no");
-	await waitFor(() => lastSpoken() === "Bow thruster tested, no. Confirm?", "read-back no");
-	await say("confirm");
 	// a plain checkbox has no "no" in Flow: the item stays open and joins the ones that need the screen
 	await waitFor(() => spoken.includes("Not done. I will come back to Bow thruster tested."), "no on a checkbox = not done");
 	await waitFor(() => /^Two items need the screen\. Arrival Checklist Oslo, six of nine answered\. Open on screen to finish\.$/.test(lastSpoken()), "completion summary");
@@ -267,7 +265,7 @@ try {
 		assert.equal(r.status, 422, "the fake rejects values on Sign controls, like Flow does");
 	}
 	// the not-done checkbox gets ticked on screen: a manual answer writes Flow's "OK"
-	const ticked = await api("POST", `runs/${runId}/items/${encodeURIComponent("flow-arr-1:ft-arr-2b")}/answer`, { value: "OK" });
+	const ticked = await api("POST", `runs/${runId}/items/${encodeURIComponent("flow-arr-1:ft-arr-2b")}/answer`, { value: "true" }); // the screen sends "true"
 	assert.equal(ticked.status, 200, JSON.stringify(ticked.body));
 	await waitFor(() => fake.values.some((v) => v.task === "flow-arr-1:ft-arr-2b" && v.value === "OK"), "checkbox ticked on screen");
 	// the fake's complete only requires non-Sign tasks Done: mark the run's signature items as skipped-by-screen is not a value; complete via Flow rule
@@ -349,13 +347,21 @@ try {
 		if (!cur) break;
 		const answer = cur.type === "Number" ? "forty two" : cur.type === "QuickSelect" ? "normal" : "yes";
 		await say(answer);
-		await waitFor(() => /Confirm\?$/.test(lastSpoken()), `read-back for ${cur.name}`);
-		// confirm three ways: the control word, "ok", or by repeating the answer (must not re-open the read-back)
-		await say(i % 3 === 0 ? "confirm" : i % 3 === 1 ? "ok" : answer);
+		if (cur.type === "Checkbox") {
+			// yes/no needs no second confirmation: the hub echoes "item, value." and writes
+			await waitFor(() => spoken.some((s) => s.startsWith(`${cur.name}, `) && !s.endsWith("Confirm?")), `echo for ${cur.name}`);
+		} else {
+			await waitFor(() => /Confirm\?$/.test(lastSpoken()), `read-back for ${cur.name}`);
+			// confirm three ways: the control word, "ok", or by repeating the answer (must not re-open the read-back)
+			await say(i % 3 === 0 ? "confirm" : i % 3 === 1 ? "ok" : answer);
+		}
 		await waitFor(async () => (await api("GET", `runs/${erRun.runId}`)).body.items.find((x) => x.taskId === cur.taskId).state !== "current", `item ${cur.name} left current`);
 		if ((await api("GET", `runs/${erRun.runId}`)).body.answered >= (await api("GET", `runs/${erRun.runId}`)).body.total) break;
 	}
 	await waitFor(() => /Complete it on screen\.$/.test(lastSpoken()), "all answered");
+	// "Check generator 2" is a checkbox authored as "Done::completed": the option list comes from the template, the key is written
+	assert.ok(spoken.includes("Check generator 2, Done."), "option title read back for a keyed checkbox");
+	assert.ok(fake.values.some((v) => v.task.endsWith(":ft-er-2b") && v.value === "completed"), "keyed checkbox writes the option key, not OK");
 	send({ type: "transcript", text: "complete", confidence: 1, final: true });
 	await waitFor(() => /^Complete .*\? Say confirm\.$/.test(lastSpoken()), "complete confirmation asked");
 	await say("confirm");

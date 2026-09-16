@@ -66,7 +66,8 @@ function templateFixtures() {
 					order: 2,
 					taskTemplates: [
 						{ id: "tt-er-2a", name: "Check generator 1", order: 1, control: { type: "Checkbox", dataId: "ER/Aux/Gen1" } },
-						{ id: "tt-er-2b", name: "Check generator 2", order: 2, control: { type: "Checkbox", dataId: "ER/Aux/Gen2" } },
+						// a checkbox authored with an option ("Title::key"): Flow stores the key, and the v3 flow read hides the list
+						{ id: "tt-er-2b", name: "Check generator 2", order: 2, control: { type: "Checkbox", dataId: "ER/Aux/Gen2", values: "Done::completed" } },
 						{ id: "tt-er-2c", name: "Check bilge level", order: 3, control: { type: "QuickSelect", dataId: "ER/Aux/Bilge", quickSelectValues: [{ title: "Normal", value: "Normal" }, { title: "High", value: "High" }, { title: "Alarm", value: "Alarm" }] } },
 					],
 				},
@@ -155,7 +156,7 @@ function tasksFromTemplate(template, flowId, done = []) {
 				sectionId: s.id,
 				requiresValue: !!t.requiresValue,
 				order: t.order,
-				controls: [{ controlId, dataId: control.dataId, type: control.type, quickSelectValues: control.quickSelectValues }],
+				controls: [{ controlId, dataId: control.dataId, type: control.type, quickSelectValues: control.quickSelectValues, values: control.values }],
 				values: isDone ? [{ controlId, dataId: control.dataId, value: control.type === "Checkbox" ? "OK" : control.type === "Number" ? "42" : "done", time: "2026-09-09T05:50:00Z", source: "fixture" }] : [],
 			});
 		}
@@ -169,6 +170,8 @@ function tasksFromTemplate(template, flowId, done = []) {
 /** Wire shape of a task in the v3 detail responses (`FlowDto.sections[].tasks[]`, `/tasks`). */
 function taskDto(t) {
 	const { requiresValue: _rv, ...rest } = t;
+	// like the real v3 read: a checkbox's "Title::key" list stays in the template, the flow shows only type + dataId
+	rest.controls = rest.controls?.map(({ values: _v, ...c }) => c);
 	return { ...rest, state: { status: t.status, processingState: t.status === "Done" ? "Finished" : "Pending", confirmed: t.status === "Done", overridden: false } };
 }
 
@@ -504,8 +507,11 @@ export async function startFakeMaranics({ token = "t0k3n", tenant = "demo", port
 				if (!t) return { task: it.task, status: 404, code: "TASK_NOT_FOUND" };
 				const c = t.controls[0];
 				if (c.type === "Sign" || c.type === "Drawing") return { task: it.task, status: 422, code: "CONTROL_NOT_VALUE_BEARING" };
-				// real rule (TaskValueValidation.cs): a plain checkbox is "OK" or empty; RadioButtons without options is "Yes"/"No"
-				if (c.type === "Checkbox" && String(it.value) !== "OK") return { task: it.task, status: 422, code: "VALUE_INVALID", message: "The submitted value was rejected: it is invalid for this control" };
+				// real rule (TaskValueValidation.cs): a plain checkbox is "OK" or empty; one with `values` takes the keys of its
+				// "Title::key" lines (newline-joined for multi-select); RadioButtons without options is "Yes"/"No"
+				const listKeys = c.values ? String(c.values).split("\n").filter(Boolean).map((l) => { const a = l.split("::"); return (a.length > 1 && a[1].trim() ? a[1] : a[0]).trim(); }) : undefined;
+				if (c.type === "Checkbox" && !listKeys && String(it.value) !== "OK") return { task: it.task, status: 422, code: "VALUE_INVALID", message: "The submitted value was rejected: it is invalid for this control" };
+				if (c.type === "Checkbox" && listKeys && !String(it.value).split("\n").filter(Boolean).every((v) => listKeys.includes(v.trim()))) return { task: it.task, status: 422, code: "VALUE_INVALID", message: "The submitted value was rejected: it is invalid for this control" };
 				if (c.type === "RadioButtons" && !c.quickSelectValues && !/^(Yes|No)$/.test(String(it.value))) return { task: it.task, status: 422, code: "VALUE_INVALID", message: "The submitted value was rejected: it is invalid for this control" };
 				if (c.type === "Number" && Number.isNaN(Number(it.value))) return { task: it.task, status: 422, code: "VALUE_INVALID", message: "Number expected" };
 				if (c.type === "QuickSelect" && c.quickSelectValues && !c.quickSelectValues.some((o) => o.value === String(it.value))) return { task: it.task, status: 422, code: "VALUE_INVALID", message: "value not in the option set" };

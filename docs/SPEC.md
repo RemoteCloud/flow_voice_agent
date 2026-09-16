@@ -205,7 +205,7 @@ Spoken control vocabulary (always available): confirm / yes · no · correction 
 | `Time` | Clock parser | "zero seven four two" | `07:42` |
 | `Date` | Date parser | "yesterday" | `2026-09-08` |
 | `Number` | Numeral + unit | "twenty point five" | `20.5` |
-| `Checkbox` | Yes/no lexicon | "affirmative" | `OK` (what Flow stores for a checked box; "no" writes nothing and leaves the item open) |
+| `Checkbox` | Yes/no lexicon; option title when authored with `values` | "affirmative", "utført" | `OK` for a plain box; the option key (`Utført::completed` → `completed`) when the template authored one — the hub reads the list from the template because the v3 flow read hides it; "no" writes nothing and leaves the item open. A yes/no answer is echoed ("Ladeplugg, Utført.") and written without a second "Confirm?" |
 | `RadioButtons` without `Values` | Yes/no lexicon | "ja" | `Yes` / `No` |
 | `QuickSelect` / `Dropdown` | Constrained match against `Values` | "not applicable" | `N/A` |
 | `Text` | Transcript, lightly normalised | — | string |

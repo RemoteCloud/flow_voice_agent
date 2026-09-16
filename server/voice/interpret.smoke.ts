@@ -61,6 +61,16 @@ export async function run(): Promise<void> {
 	assert.equal(ok(interpret("RadioButtons", "ja", { ...ctx, options: undefined })).value, "Yes");
 	assert.equal(ok(interpret("RadioButtons", "non", { ...ctx, options: undefined })).value, "No");
 	assert.equal(interpret("Checkbox", "maybe", ctx).ok, false);
+	// a checkbox authored with one option ("Utført::completed") stores the option key; the title is what is read back
+	const keyed = { ...ctx, options: [{ title: "Utført", value: "completed" }] };
+	assert.equal(ok(interpret("Checkbox", "ja", keyed)).value, "completed");
+	assert.equal(ok(interpret("Checkbox", "ja", keyed)).valueText, "Utført");
+	assert.equal(ok(interpret("Checkbox", "utført", keyed)).value, "completed");
+	assert.equal(ok(interpret("Checkbox", "nei", keyed)).value, "");
+	// several options: a multi-select answered like a Dropdown
+	const multi = { ...ctx, options: [{ title: "Port", value: "port" }, { title: "Starboard", value: "stbd" }] };
+	assert.equal(ok(interpret("Checkbox", "starboard", multi)).value, "stbd");
+	assert.equal(interpret("Checkbox", "yes", multi).ok, false);
 
 	// QuickSelect bounded to the option set
 	const opts = { ...ctx, options: [{ title: "Yes", value: "Yes" }, { title: "No", value: "No" }, { title: "Not applicable", value: "N/A" }] };

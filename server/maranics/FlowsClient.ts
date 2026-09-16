@@ -178,7 +178,15 @@ export function parseOptions(raw: unknown): { title: string; value: string }[] |
 			.split(/\r?\n|;/)
 			.map((x) => x.trim())
 			.filter(Boolean);
-		return parts.length ? parts.map((p) => ({ title: p, value: p })) : undefined;
+		// Flow's list controls store "Title::key" per line and validate the key (DataValidation.IsListValid:
+		// the part after "::" when present, else the whole line), so the key is the value we write back.
+		return parts.length
+			? parts.map((p) => {
+					const arr = p.split("::");
+					const key = arr.length > 1 && arr[1].trim() ? arr[1].trim() : arr[0].trim();
+					return { title: arr[0].trim() || key, value: key };
+				})
+			: undefined;
 	}
 	return undefined;
 }

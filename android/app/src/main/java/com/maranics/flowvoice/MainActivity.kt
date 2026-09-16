@@ -298,7 +298,7 @@ class MainActivity : AppCompatActivity() {
                 js("window.flowVoiceBridge&&window.flowVoiceBridge.onListenEnd('cancel')")
                 return@runOnUiThread
             }
-            beginListening(language, preferOffline = true)
+            beginListening(language, preferOffline = language !in offlineUnavailable)
         }
 
         @JavascriptInterface
@@ -316,6 +316,8 @@ class MainActivity : AppCompatActivity() {
     /** The language of the open listen window, so a "language unavailable" error can be retried online once. */
     private var listenLanguage = ""
     private var listenRetriedOnline = false
+    /** Languages this phone has no offline pack for (recogniser error 12/13): go straight to the online recogniser. */
+    private val offlineUnavailable = mutableSetOf<String>()
 
     /**
      * Offline recognition first (fast, works at sea); when the phone has no offline pack for the language the
@@ -383,7 +385,8 @@ class MainActivity : AppCompatActivity() {
             listening = false
             val languageProblem = error == SpeechRecognizer.ERROR_LANGUAGE_UNAVAILABLE || error == SpeechRecognizer.ERROR_LANGUAGE_NOT_SUPPORTED
             if (languageProblem && !listenRetriedOnline && listenLanguage.isNotEmpty()) {
-                // no offline pack for this language: try the online recogniser once before giving up
+                // no offline pack for this language: try the online recogniser, and skip offline for it from now on
+                offlineUnavailable.add(listenLanguage)
                 beginListening(listenLanguage, preferOffline = false)
                 return
             }
