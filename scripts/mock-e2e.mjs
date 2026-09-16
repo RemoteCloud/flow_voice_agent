@@ -176,7 +176,7 @@ try {
 	await waitFor(() => fake.values.some((v) => v.task === "flow-arr-1:ft-arr-1a"), "value written to Flow");
 	const pilot = fake.values.find((v) => v.task === "flow-arr-1:ft-arr-1a");
 	assert.equal(pilot.bearer, "t0k3n", "written with the signed-in user's token");
-	const pilotAt = Date.parse(pilot.value);
+	const pilotAt = Date.parse(`${pilot.value}:00Z`); // Flow format "yyyy-MM-ddTHH:mm", UTC
 	assert.ok(Math.abs(Date.now() - 5 * 60000 - pilotAt) < 60000, `pilot time ≈ 5 min ago (${pilot.value})`);
 
 	// item two: yes/no

@@ -35,14 +35,14 @@ export async function run(): Promise<void> {
 
 	// DateAndTime: the spec's worked example
 	const pilot = ok(interpret("DateAndTime", "Pilot on board five minutes ago.", ctx, ["pilot on board"]));
-	assert.equal(pilot.value, "2026-09-09T07:42:03.000Z");
+	assert.equal(pilot.value, "2026-09-09T07:42"); // Flow's own DateAndTime format, never a full ISO stamp
 	assert.equal(pilot.valueText, "07:42 UTC");
 	const engine = ok(interpret("DateAndTime", "Engine started.", ctx, ["engine started"]));
 	assert.equal(engine.kind, "now");
 	// Appendix A: said at 08:14, "at zero eight zero five" resolves to 08:05 today; utteredAt stays 08:14
 	const later: InterpretContext = { ...ctx, utteredAt: new Date("2026-09-09T08:14:00Z") };
 	const at = ok(interpret("DateAndTime", "at zero eight zero five", later));
-	assert.equal(at.value, "2026-09-09T08:05:00.000Z");
+	assert.equal(at.value, "2026-09-09T08:05");
 	assert.equal(at.valueText, "08:05 UTC");
 	// a clock time in the future (by more than 5 min) rolls back a day and is then implausible → clarify
 	const future = interpret("DateAndTime", "at zero eight zero five", ctx);
@@ -117,6 +117,6 @@ export async function run(): Promise<void> {
 	// local time mode with a zone
 	const local: InterpretContext = { ...ctx, tzMode: "local", timeZone: "Europe/Oslo" };
 	const l = ok(interpret("DateAndTime", "at zero nine four two", local));
-	assert.equal(l.value, "2026-09-09T07:42:00.000Z", "09:42 Oslo (CEST) = 07:42 UTC");
+	assert.equal(l.value, "2026-09-09T07:42", "09:42 Oslo (CEST) = 07:42 UTC");
 	assert.equal(l.valueText, "09:42 local time");
 }

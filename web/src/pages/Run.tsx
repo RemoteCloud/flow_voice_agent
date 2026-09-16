@@ -452,7 +452,7 @@ function ManualDialog({ item, onClose, onSubmit }: { item: RunItem; onClose: () 
 							onSubmit={(e) => {
 								e.preventDefault();
 								const d = new Date(value);
-								if (!Number.isNaN(d.getTime())) void submit(d.toISOString(), `${d.toISOString().slice(11, 16)} UTC`);
+								if (!Number.isNaN(d.getTime())) void submit(d.toISOString().slice(0, 16), `${d.toISOString().slice(11, 16)} UTC`); // Flow stores "yyyy-MM-ddTHH:mm" UTC
 							}}
 						>
 							<input type="datetime-local" className="input" value={value.slice(0, 16)} onChange={(e) => setValue(e.target.value)} />

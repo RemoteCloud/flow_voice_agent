@@ -252,6 +252,15 @@ export function formatClock(d: Date, ctx: InterpretContext): string {
 	return `${pad(p.h)}:${pad(p.min)} ${ctx.tzMode === "utc" ? tr(lang, "utc") : tr(lang, "local_time")}`;
 }
 
+/**
+ * What Flow stores for a DateAndTime: UTC "yyyy-MM-ddTHH:mm" (the app's own rules parse exactly that, and
+ * OutputFormatHelper appends the UTC zone). Never a full ISO stamp: the v3 bulk endpoint's JSON parser turns
+ * "…:52.418Z" into a date token and then rejects it as "value must be a JSON string".
+ */
+export function flowDateTime(d: Date): string {
+	return d.toISOString().slice(0, 16);
+}
+
 export function formatDate(d: Date, ctx: InterpretContext): string {
 	const p = partsIn(d, ctx);
 	return `${p.y}-${pad(p.m)}-${pad(p.d)}`;
@@ -564,19 +573,19 @@ export function interpret(type: string, transcript: string, ctx: InterpretContex
 	const nowText = () => `${msg("now")}, ${formatClock(ctx.utteredAt, ctx)}`;
 	switch (type) {
 		case "DateAndTime": {
-			if (phraseOnly) return { ok: true, value: ctx.utteredAt.toISOString(), valueText: nowText(), confidence: 0.85, kind: "now" };
+			if (phraseOnly) return { ok: true, value: flowDateTime(ctx.utteredAt), valueText: nowText(), confidence: 0.85, kind: "now" };
 			const rel = parseRelative(t, ctx);
 			if (rel) {
 				if (rel.confidence < 0.5) return { ok: false, reason: "implausible", message: msg("m_implausible", { value: rel.text, hours: ctx.maxPastHours }), confidence: rel.confidence };
-				return { ok: true, value: rel.at.toISOString(), valueText: rel.text === "now" ? nowText() : formatClock(rel.at, ctx), confidence: rel.confidence, kind: "relative" };
+				return { ok: true, value: flowDateTime(rel.at), valueText: rel.text === "now" ? nowText() : formatClock(rel.at, ctx), confidence: rel.confidence, kind: "relative" };
 			}
 			const clock = parseClock(t);
 			if (clock) {
 				const at = resolveClock(clock, ctx);
 				if (ctx.utteredAt.getTime() - at.getTime() > ctx.maxPastHours * 3600000) return { ok: false, reason: "implausible", message: msg("m_implausible", { value: formatClock(at, ctx), hours: ctx.maxPastHours }), confidence: 0.3 };
-				return { ok: true, value: at.toISOString(), valueText: formatClock(at, ctx), confidence: clock.confidence, kind: "clock" };
+				return { ok: true, value: flowDateTime(at), valueText: formatClock(at, ctx), confidence: clock.confidence, kind: "clock" };
 			}
-			if (YES.test(t)) return { ok: true, value: ctx.utteredAt.toISOString(), valueText: nowText(), confidence: 0.85, kind: "now" };
+			if (YES.test(t)) return { ok: true, value: flowDateTime(ctx.utteredAt), valueText: nowText(), confidence: 0.85, kind: "now" };
 			return { ok: false, reason: "no_match", message: msg("m_when"), confidence: 0.1 };
 		}
 		case "Time": {

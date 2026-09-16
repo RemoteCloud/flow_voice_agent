@@ -261,7 +261,7 @@ export function LanguageSelect({ compact }: { compact?: boolean }) {
 	const station = stations.find((s) => s.stationId === (v.stationId ?? me.stationId));
 	const cls = `input w-auto ${compact ? "py-1 text-xs" : ""}`;
 	return (
-		<span className="inline-flex items-center gap-1">
+		<span className="flex max-w-full flex-wrap items-center gap-1">
 			<select className={cls} value={v.language} onChange={(e) => v.setLanguage(e.target.value)} aria-label="Checklist language" title="Checklist language (spoken prompts)">
 				{LANGUAGES.map(([code, label]) => (
 					<option key={code} value={code}>
@@ -272,7 +272,7 @@ export function LanguageSelect({ compact }: { compact?: boolean }) {
 			<select className={cls} value={v.answerLanguage} onChange={(e) => v.setAnswerLanguage(e.target.value)} aria-label="Answer language" title="Language you answer in (speech recognition)">
 				{LANGUAGES.map(([code, label]) => (
 					<option key={code} value={code}>
-						{code === "" ? "Answer in checklist language" : `Answer in ${label}`}
+						{code === "" ? "Answer: same" : `Answer: ${label}`}
 					</option>
 				))}
 			</select>

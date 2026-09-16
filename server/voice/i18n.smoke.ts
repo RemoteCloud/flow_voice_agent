@@ -67,13 +67,13 @@ export async function run(): Promise<void> {
 	// full interpretations per language, with read-back text in that language
 	const sv = { ...base, language: "sv" };
 	const pilot = ok(interpret("DateAndTime", "Lots ombord för fem minuter sedan", sv, ["lots ombord"]));
-	assert.equal(pilot.value, "2026-09-09T07:42:03.000Z");
+	assert.equal(pilot.value, "2026-09-09T07:42");
 	assert.equal(pilot.valueText, "07:42 UTC");
 	const de = { ...base, language: "de" };
-	assert.equal(ok(interpret("DateAndTime", "Lotse an Bord vor zehn Minuten", de, ["lotse an bord"])).value, "2026-09-09T07:37:03.000Z");
+	assert.equal(ok(interpret("DateAndTime", "Lotse an Bord vor zehn Minuten", de, ["lotse an bord"])).value, "2026-09-09T07:37");
 	const fr = { ...base, language: "fr", tzMode: "local" as const, timeZone: "Europe/Paris" };
 	const eng = ok(interpret("DateAndTime", "moteur démarré à neuf heures quarante-deux", fr, ["moteur démarré"]));
-	assert.equal(eng.value, "2026-09-09T07:42:00.000Z");
+	assert.equal(eng.value, "2026-09-09T07:42");
 	assert.equal(eng.valueText, "09:42 heure locale");
 	const no = { ...base, language: "no" };
 	assert.equal(ok(interpret("DateAndTime", "hovedmotor startet", no, ["hovedmotor startet"])).kind, "now");

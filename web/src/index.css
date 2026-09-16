@@ -86,11 +86,16 @@
 	html {
 		font-variant-numeric: tabular-nums;
 		-webkit-tap-highlight-color: transparent;
+		overflow-x: clip; /* the WebView scrolls the root element: clip there, or a wide control drags the page sideways */
 	}
 	body {
 		@apply bg-bg text-fg antialiased;
 		padding-bottom: env(safe-area-inset-bottom);
 		overflow-x: clip; /* never a sideways scroll on a phone */
+		max-width: 100vw;
+	}
+	select.input {
+		max-width: 100%;
 	}
 	:focus-visible {
 		@apply outline-2 outline-offset-2 outline-accent;
