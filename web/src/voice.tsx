@@ -37,6 +37,9 @@ export interface VoiceApi {
 	/** Language the crew answers in ("" = the checklist language). The hub understands all of them; this only steers the recogniser. */
 	answerLanguage: string;
 	setAnswerLanguage(lang: string): void;
+	/** Noisy bridge: the mic opens only while push-to-talk is held, never on its own after a prompt. */
+	holdToAnswer: boolean;
+	setHoldToAnswer(on: boolean): void;
 	clearError(): void;
 }
 
@@ -82,6 +85,8 @@ export function VoiceProvider({ children }: { children: ReactNode }) {
 	const langRef = useRef(language);
 	const [answerLanguage, setAnswerLanguageState] = useState<string>(() => localStorage.getItem("fv.answerLang") ?? "");
 	const answerLangRef = useRef(answerLanguage);
+	const [holdToAnswer, setHoldState] = useState<boolean>(() => localStorage.getItem("fv.hold") === "1");
+	const holdRef = useRef(holdToAnswer);
 
 	const stop = useCallback(() => {
 		ep.current?.stop();
@@ -106,7 +111,7 @@ export function VoiceProvider({ children }: { children: ReactNode }) {
 			const open = station?.audioPolicy === "open";
 			setError(undefined);
 			const endpoint = new AudioEndpoint(
-				{ stationId: sid, endpointId: endpointId(), language: langRef.current || station?.language || "en", answerLanguage: answerLangRef.current, sttOnEndpoint: boot.speech.stt === "endpoint", pushToTalk: !open, handsFree: handsFree || open },
+				{ stationId: sid, endpointId: endpointId(), language: langRef.current || station?.language || "en", answerLanguage: answerLangRef.current, holdToAnswer: holdRef.current, sttOnEndpoint: boot.speech.stt === "endpoint", pushToTalk: !open, handsFree: handsFree || open },
 				{
 					onState: (s, t) => {
 						setState(s);
@@ -226,9 +231,16 @@ export function VoiceProvider({ children }: { children: ReactNode }) {
 				localStorage.setItem("fv.answerLang", lang);
 				ep.current?.setAnswerLanguage(lang);
 			},
+			holdToAnswer,
+			setHoldToAnswer: (on) => {
+				holdRef.current = on;
+				setHoldState(on);
+				localStorage.setItem("fv.hold", on ? "1" : "0");
+				ep.current?.setHoldToAnswer(on);
+			},
 			clearError: () => setError(undefined),
 		}),
-		[state, stateText, role, stationId, handsFree, transcript, run, events, error, start, stop, boot.speech.stt, language, answerLanguage],
+		[state, stateText, role, stationId, handsFree, transcript, run, events, error, start, stop, boot.speech.stt, language, answerLanguage, holdToAnswer],
 	);
 
 	return <VoiceContext.Provider value={api}>{children}</VoiceContext.Provider>;
@@ -296,6 +308,10 @@ export function VoiceBar({ compact }: { compact?: boolean }) {
 					<label className="flex items-center gap-1.5 text-xs text-fg-muted">
 						<input type="checkbox" checked={v.handsFree} onChange={(e) => v.setHandsFree(e.target.checked)} disabled={!v.handsFreeSupported} />
 						Hands-free
+					</label>
+					<label className="flex items-center gap-1.5 text-xs text-fg-muted" title="Noisy bridge: the mic opens only while you hold the button">
+						<input type="checkbox" checked={v.holdToAnswer} onChange={(e) => v.setHoldToAnswer(e.target.checked)} disabled={v.handsFree} />
+						Hold to answer
 					</label>
 					<button type="button" className="btn btn-sm btn-ghost" onClick={v.stop}>
 						Voice off

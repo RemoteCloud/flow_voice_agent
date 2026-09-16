@@ -20,6 +20,8 @@ declare global {
 			startListening(language: string, maxMs: number, promptId: string): void;
 			/** Newer app builds: recognise `language` and also switch to `extraLanguage` (comma-separated tags) when the speaker uses it. */
 			startListeningIn?(language: string, extraLanguages: string, maxMs: number, promptId: string): void;
+			/** Newest app builds: like startListeningIn plus bias words (comma-separated) the recogniser should favour. */
+			startListeningWith?(language: string, extraLanguages: string, bias: string, maxMs: number, promptId: string): void;
 			stopListening(): void;
 			setForeground(active: boolean, text: string): void;
 			hasLocalStt(): boolean;
@@ -61,6 +63,8 @@ export interface EndpointOptions {
 	observer?: boolean;
 	/** Open-mic loop between prompts: spoken commands and unprompted answers work without touching the screen. */
 	handsFree?: boolean;
+	/** Noisy bridge: the mic opens only while push-to-talk is held, never on its own after a prompt. */
+	holdToAnswer?: boolean;
 }
 
 const IDLE = "idle";
@@ -139,6 +143,30 @@ export class AudioEndpoint {
 		this.opts.answerLanguage = lang;
 	}
 
+	/** Hold-to-answer: a prompt arms the window, the mic opens only while push-to-talk is held. */
+	setHoldToAnswer(on: boolean): void {
+		this.opts.holdToAnswer = on;
+		if (!on && this.armed) this.startArmed();
+	}
+
+	get isHoldToAnswer(): boolean {
+		return !!this.opts.holdToAnswer;
+	}
+
+	/** A prompt window the hub opened that waits for push-to-talk (hold-to-answer). */
+	private armed: { maxMs: number } | undefined;
+	/** Bias words of the current window, forwarded to the phone's recogniser. */
+	private bias: string[] = [];
+
+	private startArmed(): void {
+		const a = this.armed;
+		if (!a || !this.listenPromptId) return;
+		this.armed = undefined;
+		this.cb.onState("listening");
+		if (this.capabilities.localStt) this.startRecognition(a.maxMs);
+		else void this.startStreaming(a.maxMs);
+	}
+
 	setHandsFree(on: boolean): void {
 		this.handsFree = on && this.handsFreeSupported;
 		if (this.handsFree) this.scheduleIdle(200);
@@ -209,8 +237,9 @@ export class AudioEndpoint {
 		if (this.role !== "endpoint" || this.pttDown) return;
 		this.pttDown = true;
 		this.send({ type: "ptt", state: "down" });
-		// PTT opens the mic immediately even if the hub has not asked yet (unprompted phrase)
-		if (!this.listenPromptId || this.listenPromptId === IDLE) this.openListen("ptt", 15000);
+		// an armed prompt window (hold-to-answer) opens now; otherwise PTT opens the mic even if the hub has not asked yet
+		if (this.armed) this.startArmed();
+		else if (!this.listenPromptId || this.listenPromptId === IDLE) this.openListen("ptt", 15000);
 	}
 
 	pttEnd(): void {
@@ -302,6 +331,7 @@ export class AudioEndpoint {
 				return;
 			case "listen.open":
 				if (this.role !== "endpoint") return;
+				this.bias = m.bias ?? [];
 				this.openListen(m.promptId, m.maxMs);
 				return;
 			case "listen.close":
@@ -384,6 +414,13 @@ export class AudioEndpoint {
 		this.stopListen("cancel");
 		this.listenPromptId = promptId;
 		this.lastFinal = "";
+		if (this.opts.holdToAnswer && !this.handsFree && promptId !== IDLE && !this.pttDown) {
+			// noisy bridge: wait for the crew to hold the button instead of listening to the room
+			this.armed = { maxMs };
+			this.cb.onState("ready", "hold to talk to answer");
+			return;
+		}
+		this.armed = undefined;
 		this.cb.onState("listening");
 		if (this.capabilities.localStt) this.startRecognition(maxMs);
 		else void this.startStreaming(maxMs);
@@ -394,6 +431,12 @@ export class AudioEndpoint {
 		this.listenTimer = undefined;
 		if (!this.listenPromptId) return;
 		this.listenPromptId = undefined;
+		if (this.armed) {
+			// the window closed before anyone held the button: nothing to stop
+			this.armed = undefined;
+			void reason;
+			return;
+		}
 		if (this.capabilities.localStt) {
 			if (hasAndroid()) window.FlowVoiceAndroid!.stopListening();
 			else {
@@ -457,7 +500,8 @@ export class AudioEndpoint {
 			const a = window.FlowVoiceAndroid!;
 			// English is always understood by the hub: let the recogniser switch to it when the checklist is in another language
 			const extra = /^en/i.test(stt) ? "" : "en-US";
-			if (a.startListeningIn) a.startListeningIn(stt, extra, maxMs, this.listenPromptId ?? "");
+			if (a.startListeningWith) a.startListeningWith(stt, extra, this.bias.join(","), maxMs, this.listenPromptId ?? "");
+			else if (a.startListeningIn) a.startListeningIn(stt, extra, maxMs, this.listenPromptId ?? "");
 			else a.startListening(stt, maxMs, this.listenPromptId ?? "");
 			return;
 		}

@@ -303,12 +303,17 @@ class MainActivity : AppCompatActivity() {
 
         /** Like startListening, but on Android 14+ the recogniser may switch to any of `extraLanguages` (comma-separated tags). */
         @JavascriptInterface
-        fun startListeningIn(language: String, extraLanguages: String, maxMs: Int, promptId: String) = runOnUiThread {
+        fun startListeningIn(language: String, extraLanguages: String, maxMs: Int, promptId: String) = startListeningWith(language, extraLanguages, "", maxMs, promptId)
+
+        /** Like startListeningIn, plus words the hub expects (item name, yes/no, options) as recogniser bias (Android 13+). */
+        @JavascriptInterface
+        fun startListeningWith(language: String, extraLanguages: String, bias: String, maxMs: Int, promptId: String) = runOnUiThread {
             if (!micGranted) {
                 js("window.flowVoiceBridge&&window.flowVoiceBridge.onListenEnd('cancel')")
                 return@runOnUiThread
             }
             listenExtraLanguages = extraLanguages.split(',').map { it.trim() }.filter { it.isNotEmpty() }
+            listenBias = bias.split(',').map { it.trim() }.filter { it.isNotEmpty() }.take(40)
             beginListening(language, preferOffline = language !in offlineUnavailable)
         }
 
@@ -329,6 +334,8 @@ class MainActivity : AppCompatActivity() {
     private var listenRetriedOnline = false
     /** Extra languages the recogniser may switch to (Android 14+ language switch; English for a Norwegian checklist). */
     private var listenExtraLanguages: List<String> = emptyList()
+    /** Words the hub expects for the open window; a biased recogniser picks "utført" over "utfor" in noise. */
+    private var listenBias: List<String> = emptyList()
     /** Languages this phone has no offline pack for (recogniser error 12/13): go straight to the online recogniser. */
     private val offlineUnavailable = mutableSetOf<String>()
 
@@ -348,6 +355,7 @@ class MainActivity : AppCompatActivity() {
             putExtra(RecognizerIntent.EXTRA_SPEECH_INPUT_COMPLETE_SILENCE_LENGTH_MILLIS, 1200L)
             putExtra(RecognizerIntent.EXTRA_SPEECH_INPUT_POSSIBLY_COMPLETE_SILENCE_LENGTH_MILLIS, 1200L)
             if (Build.VERSION.SDK_INT >= 33 && preferOffline) putExtra(RecognizerIntent.EXTRA_PREFER_OFFLINE, true)
+            if (Build.VERSION.SDK_INT >= 33 && listenBias.isNotEmpty()) putStringArrayListExtra(RecognizerIntent.EXTRA_BIASING_STRINGS, ArrayList(listenBias))
             if (Build.VERSION.SDK_INT >= 34 && listenExtraLanguages.isNotEmpty()) {
                 // crew may answer a Norwegian checklist in English: let the (on-device) recogniser switch languages
                 val allowed = ArrayList(listOf(localeOf(language).toLanguageTag()) + listenExtraLanguages)

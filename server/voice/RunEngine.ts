@@ -83,6 +83,14 @@ const newId = (prefix: string) => `${prefix}_${Date.now().toString(36)}${Math.ra
  * Background talk caught by an open mic: a longer utterance that matches nothing on an item with a narrow answer
  * set (yes/no, option, number, time). Free-text items accept anything, so they are never gated.
  */
+/** Spoken control words per language, handed to the recogniser as bias (on top of the English defaults). */
+const BIAS_WORDS: Record<string, string[]> = {
+	sv: ["bekräfta", "okej", "utfört", "klart", "hoppa över", "säg igen", "nästa", "rättelse"],
+	no: ["bekreft", "greit", "utført", "ferdig", "hopp over", "gjenta", "neste", "rettelse"],
+	de: ["bestätigen", "erledigt", "fertig", "überspringen", "wiederholen", "weiter", "korrektur"],
+	fr: ["confirmer", "fait", "terminé", "passer", "répéter", "suivant", "corriger"],
+};
+
 export function isSideTalk(item: RunItem, text: string, result: Interpretation): boolean {
 	if (result.ok) return false;
 	if (item.type === "Text" || item.type === "LongText") return false;
@@ -95,6 +103,8 @@ export class RunEngine {
 	private readonly timers = new Map<string, Timers>();
 	/** Live transcript per run while a capture window is open. */
 	private readonly partial = new Map<string, string>();
+	/** Consecutive room-talk utterances ignored on the current item, per run: every third one gets a short reminder. */
+	private readonly ignored = new Map<string, number>();
 	/** Item index → section name already announced, per run. */
 	private readonly lastSection = new Map<string, string | undefined>();
 	private readonly speaking = new Set<string>();
@@ -617,7 +627,9 @@ export class RunEngine {
 	}
 
 	private biasFor(r: RunRecord, item: RunItem): string[] {
+		const lang = normLang(r.language);
 		const out = ["confirm", "yes", "no", "correction", "say again", "skip", "not applicable", item.name];
+		if (lang !== "en") out.push(tr(lang, "yes"), tr(lang, "no"), ...(BIAS_WORDS[lang] ?? []));
 		if (item.type === "DateAndTime" || item.type === "Time") out.push("minutes ago", "now", "just now", "zero", "hundred");
 		if (item.options) out.push(...item.options.map((o) => o.title));
 		const station = this.deps.store.get().stations.find((s) => s.stationId === r.stationId);
@@ -866,13 +878,18 @@ export class RunEngine {
 		const sttFactor = confidence === undefined || exact ? 1 : Math.max(0.8, confidence);
 		if (isSideTalk(item, text, result)) {
 			// a sentence that fits nothing on a yes/no, number or time item is the room, not the crew: no retry counted,
-			// no "say yes or no", the mic simply re-arms
+			// no "say yes or no", the mic simply re-arms. Every third one in a row earns a short reminder so a crew
+			// member who is being drowned out knows the item is still open.
+			const n = (this.ignored.get(r.runId) ?? 0) + 1;
+			this.ignored.set(r.runId, n);
 			await this.audit(r, "item.ignored", { taskId: item.taskId, dataId: item.dataId, transcript: text, confidence, sub: session?.sub, text: "side talk" });
 			r.exchange = "listening";
 			await this.save(r);
+			if (n % 3 === 0) await this.say(r, `${result.ok ? "" : `${result.message}. `}${item.spokenPrompt}`);
 			await this.openListen(r, item);
 			return;
 		}
+		this.ignored.delete(r.runId);
 		if (!result.ok || result.confidence * sttFactor < threshold) {
 			r.attempts += 1;
 			if (r.attempts > this.deps.policy.retries) {
