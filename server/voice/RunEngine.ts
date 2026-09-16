@@ -18,6 +18,7 @@ import { buildItems, itemAnnouncement, nextItem, previousItem, progressOf, readi
 import { CHECKBOX_CHECKED, CHECKBOX_NOT_DONE, checkboxCheckedValue, controlWord, interpret, itemNumber, readbackText, THRESHOLDS, type ControlWord, type Interpretation, type InterpretContext } from "./interpret.js";
 import type { Outbox } from "./Outbox.js";
 import { normLang, t as tr } from "./i18n.js";
+import { grammarFor } from "./grammar.js";
 import { normalizeTranscript, wordsToNumber } from "./interpret.js";
 
 export const DISCARD_REASONS = [
@@ -30,7 +31,7 @@ export const DISCARD_REASONS = [
 export interface EngineIo {
 	/** Speak `text` on the station's endpoint. Resolves when the endpoint reports it spoke (or a fallback timer fires). */
 	speak(stationId: string, promptId: string, text: string, language: string): Promise<void>;
-	listen(stationId: string, promptId: string, opts: { maxMs: number; bias?: string[]; expect?: string }): void;
+	listen(stationId: string, promptId: string, opts: { maxMs: number; bias?: string[]; expect?: string; grammar?: string[] }): void;
 	stopListening(stationId: string): void;
 	status(stationId: string, state: ExchangeState, text?: string): void;
 	/** Is an audio endpoint attached to the station right now? */
@@ -645,7 +646,7 @@ export class RunEngine {
 		r.exchange = r.pendingReadback ? "confirming" : "listening";
 		await this.save(r);
 		this.deps.io.status(r.stationId, r.exchange, item.name);
-		this.deps.io.listen(r.stationId, `${r.runId}:${item.taskId}`, { maxMs, bias: this.biasFor(r, item), expect: r.pendingReadback ? "Confirm" : item.type });
+		this.deps.io.listen(r.stationId, `${r.runId}:${item.taskId}`, { maxMs, bias: this.biasFor(r, item), expect: r.pendingReadback ? "Confirm" : item.type, grammar: grammarFor(r.language, item, this.phrasesFor(r, item), !!r.pendingReadback) });
 		this.clearTimer(r.runId, "listen");
 		this.clearTimer(r.runId, "confirm");
 		const t = setTimeout(() => void this.onListenTimeout(r.runId), maxMs + 1500);

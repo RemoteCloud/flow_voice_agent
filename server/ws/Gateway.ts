@@ -298,11 +298,11 @@ export class Gateway implements EngineIo {
 		});
 	}
 
-	listen(stationId: string, promptId: string, opts: { maxMs: number; bias?: string[]; expect?: string }): void {
+	listen(stationId: string, promptId: string, opts: { maxMs: number; bias?: string[]; expect?: string; grammar?: string[] }): void {
 		const ep = this.endpoints.get(stationId);
 		if (!ep) return;
 		ep.listening = { promptId, chunks: [], bytes: 0, language: ep.language, bias: opts.bias };
-		this.send(ep, { type: "listen.open", promptId, maxMs: opts.maxMs, vad: !ep.caps.pushToTalk, bias: opts.bias, expect: opts.expect });
+		this.send(ep, { type: "listen.open", promptId, maxMs: opts.maxMs, vad: !ep.caps.pushToTalk, bias: opts.bias, expect: opts.expect, grammar: opts.grammar });
 	}
 
 	stopListening(stationId: string): void {

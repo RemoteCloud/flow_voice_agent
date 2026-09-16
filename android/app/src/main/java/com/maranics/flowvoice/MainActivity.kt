@@ -49,6 +49,9 @@ class MainActivity : AppCompatActivity() {
     private var ttsReady = false
     private var recognizer: SpeechRecognizer? = null
     private var listening = false
+    /** Grammar-restricted offline recogniser; used when the hub sends a vocabulary and a model for the language is loaded. */
+    private val vosk by lazy { VoskStt(this, voskCallbacks) }
+    private var voskListening = false
     private var pttDown = false
     private var micGranted = false
 
@@ -233,6 +236,7 @@ class MainActivity : AppCompatActivity() {
     }
 
     override fun onDestroy() {
+        vosk.shutdown()
         recognizer?.destroy()
         tts?.shutdown()
         VoiceService.stop(this)
@@ -319,7 +323,34 @@ class MainActivity : AppCompatActivity() {
 
         @JavascriptInterface
         fun stopListening() = runOnUiThread {
+            if (voskListening) vosk.stop()
             if (listening) recognizer?.stopListening()
+        }
+
+        /** Is the grammar recogniser's model for this language loaded? (web/src/audio.ts decides per window.) */
+        @JavascriptInterface
+        fun hasGrammarStt(language: String): Boolean = vosk.hasModel(language)
+
+        /** Load or download the model for this language in the background. */
+        @JavascriptInterface
+        fun prepareGrammarStt(language: String) = runOnUiThread { vosk.prepare(language) }
+
+        /** Listen for the phrases in `grammarJson` (a JSON array) only; anything else is reported as silence. */
+        @JavascriptInterface
+        fun startListeningGrammar(language: String, grammarJson: String, maxMs: Int, promptId: String) = runOnUiThread {
+            if (!micGranted) {
+                js("window.flowVoiceBridge&&window.flowVoiceBridge.onListenEnd('cancel')")
+                return@runOnUiThread
+            }
+            if (listening) recognizer?.cancel()
+            listening = false
+            tts?.stop()
+            voskListening = vosk.start(language, grammarJson, maxMs)
+            if (!voskListening) {
+                // model gone or mic busy: fall back to the platform recogniser so the window is not lost
+                listenBias = emptyList()
+                beginListening(language, preferOffline = language !in offlineUnavailable)
+            }
         }
 
         @JavascriptInterface
@@ -387,6 +418,29 @@ class MainActivity : AppCompatActivity() {
         SpeechRecognizer.ERROR_LANGUAGE_UNAVAILABLE -> "language pack not installed"
         SpeechRecognizer.ERROR_CANNOT_CHECK_SUPPORT -> "cannot check language support"
         else -> "error $error"
+    }
+
+    private val voskCallbacks = object : VoskStt.Callbacks {
+        override fun onPartial(text: String) {
+            js("window.flowVoiceBridge&&window.flowVoiceBridge.onTranscript(${q(text)},0,false)")
+        }
+        override fun onFinal(text: String, confidence: Float) {
+            voskListening = false
+            js("window.flowVoiceBridge&&window.flowVoiceBridge.onTranscript(${q(text)},$confidence,true)")
+        }
+        override fun onSilence() {
+            voskListening = false
+            js("window.flowVoiceBridge&&window.flowVoiceBridge.onListenEnd('silence')")
+        }
+        override fun onError(message: String) {
+            voskListening = false
+            js("window.flowVoiceBridge&&window.flowVoiceBridge.onListenEnd(${q("error:$message")})")
+        }
+        override fun onModelState(language: String, state: String) {
+            if (state == "downloading" || state == "ready" || state.startsWith("error")) {
+                Toast.makeText(this@MainActivity, getString(R.string.grammar_model_state, language, state), Toast.LENGTH_SHORT).show()
+            }
+        }
     }
 
     private val listener = object : RecognitionListener {

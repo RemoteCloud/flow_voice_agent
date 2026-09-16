@@ -11,8 +11,8 @@ android {
         applicationId = "com.maranics.flowvoice"
         minSdk = 26
         targetSdk = 34
-        versionCode = 4
-        versionName = "0.1.3"
+        versionCode = 5
+        versionName = "0.2.0"
     }
 
     signingConfigs {
@@ -50,7 +50,25 @@ android {
     packaging {
         resources.excludes += setOf("META-INF/AL2.0", "META-INF/LGPL2.1")
     }
+    // the English Vosk model ships in the APK (~40 MB); other languages download on demand (VoskStt.kt)
+    sourceSets.getByName("main").assets.srcDir(layout.buildDirectory.dir("vosk-assets"))
 }
+
+/** Fetch the bundled offline model once (kept out of git; see .gitignore). */
+val fetchVoskModel by tasks.registering {
+    val out = layout.buildDirectory.file("vosk-assets/vosk/en.zip")
+    outputs.file(out)
+    doLast {
+        val f = out.get().asFile
+        if (!f.exists() || f.length() < 1_000_000) {
+            f.parentFile.mkdirs()
+            val url = "https://alphacephei.com/vosk/models/vosk-model-small-en-us-0.15.zip"
+            logger.lifecycle("downloading $url")
+            ant.invokeMethod("get", mapOf("src" to url, "dest" to f.absolutePath))
+        }
+    }
+}
+tasks.named("preBuild") { dependsOn(fetchVoskModel) }
 
 dependencies {
     implementation("androidx.appcompat:appcompat:1.7.0")
@@ -59,4 +77,7 @@ dependencies {
     implementation("androidx.activity:activity-ktx:1.9.1")
     // QR scanner for the hub address (offline; no Play Services needed on vessel devices)
     implementation("com.journeyapps:zxing-android-embedded:4.3.0")
+    // grammar-restricted offline recognition (Apache-2.0); the models are fetched at build / run time
+    implementation("com.alphacephei:vosk-android:0.3.47")
+    implementation("net.java.dev.jna:jna:5.13.0@aar")
 }

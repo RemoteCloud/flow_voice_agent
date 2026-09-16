@@ -226,6 +226,7 @@ try {
 	step = "item 5";
 	await waitFor(() => spoken.some((s) => s.includes("Bow thruster tested?")), "item five spoken");
 	await waitFor(() => listenOpen, "listen window for item five");
+	assert.ok(Array.isArray(listenOpen.grammar) && listenOpen.grammar.includes("yes") && listenOpen.grammar.includes("skip") && !listenOpen.grammar.includes("minutes ago"), "a checkbox window carries a yes/no grammar for the phone's recogniser");
 	listenOpen = undefined;
 	await waitFor(() => listenOpen, "mic re-armed after a silent window (LISTEN_MS 1500)", 6000);
 	assert.equal((await api("GET", `runs/${runId}`)).body.currentTaskId, "flow-arr-1:ft-arr-2b", "still on bow thruster after silence");

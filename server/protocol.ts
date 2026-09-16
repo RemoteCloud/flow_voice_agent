@@ -133,7 +133,7 @@ export type EndpointMessage =
 export type HubToEndpointMessage =
 	| { type: "hello"; protocol: number; hubVersion: string; stationId: string; role: "endpoint" | "observer"; runId?: string }
 	| { type: "speak"; promptId: string; text: string; language: string; bargeIn: boolean; audioFormat?: "opus" | "wav" | "none" }
-	| { type: "listen.open"; promptId: string; maxMs: number; vad: boolean; bias?: string[]; expect?: string }
+	| { type: "listen.open"; promptId: string; maxMs: number; vad: boolean; bias?: string[]; expect?: string; grammar?: string[] }
 	| { type: "listen.close" }
 	| { type: "status"; state: ExchangeState; text?: string }
 	| { type: "released"; by?: string }

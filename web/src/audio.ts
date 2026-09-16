@@ -22,6 +22,12 @@ declare global {
 			startListeningIn?(language: string, extraLanguages: string, maxMs: number, promptId: string): void;
 			/** Newest app builds: like startListeningIn plus bias words (comma-separated) the recogniser should favour. */
 			startListeningWith?(language: string, extraLanguages: string, bias: string, maxMs: number, promptId: string): void;
+			/** Grammar-restricted offline recogniser (Vosk): is a model for this language ready on the phone? */
+			hasGrammarStt?(language: string): boolean;
+			/** Load / download the model for this language in the background (call when the answer language changes). */
+			prepareGrammarStt?(language: string): void;
+			/** Listen for the given phrases only (JSON array); anything else comes back as silence. */
+			startListeningGrammar?(language: string, grammarJson: string, maxMs: number, promptId: string): void;
 			stopListening(): void;
 			setForeground(active: boolean, text: string): void;
 			hasLocalStt(): boolean;
@@ -104,6 +110,7 @@ export class AudioEndpoint {
 		const localStt = opts.sttOnEndpoint && (hasAndroid() ? window.FlowVoiceAndroid!.hasLocalStt() : !!(window.SpeechRecognition ?? window.webkitSpeechRecognition));
 		this.handsFree = !!opts.handsFree;
 		this.capabilities = { input: [hasAndroid() ? "android-mic" : "browser-mic"], sampleRate: 16000, aec: false, pushToTalk: opts.pushToTalk && !this.handsFree, wakeWord: false, localTts: true, localStt };
+		window.FlowVoiceAndroid?.prepareGrammarStt?.(opts.answerLanguage || opts.language);
 		window.flowVoiceBridge = {
 			onSpoken: (promptId) => {
 				const p = this.pendingSpoken;
@@ -141,6 +148,7 @@ export class AudioEndpoint {
 	/** Change the language the recogniser listens for; takes effect at the next listen window. */
 	setAnswerLanguage(lang: string): void {
 		this.opts.answerLanguage = lang;
+		window.FlowVoiceAndroid?.prepareGrammarStt?.(lang || this.opts.language);
 	}
 
 	/** Hold-to-answer: a prompt arms the window, the mic opens only while push-to-talk is held. */
@@ -157,6 +165,8 @@ export class AudioEndpoint {
 	private armed: { maxMs: number } | undefined;
 	/** Bias words of the current window, forwarded to the phone's recogniser. */
 	private bias: string[] = [];
+	/** Allowed vocabulary of the current window (hub grammar); with a Vosk model on the phone, nothing else is heard. */
+	private grammar: string[] | undefined;
 
 	private startArmed(): void {
 		const a = this.armed;
@@ -332,6 +342,7 @@ export class AudioEndpoint {
 			case "listen.open":
 				if (this.role !== "endpoint") return;
 				this.bias = m.bias ?? [];
+				this.grammar = m.grammar;
 				this.openListen(m.promptId, m.maxMs);
 				return;
 			case "listen.close":
@@ -500,6 +511,11 @@ export class AudioEndpoint {
 			const a = window.FlowVoiceAndroid!;
 			// English is always understood by the hub: let the recogniser switch to it when the checklist is in another language
 			const extra = /^en/i.test(stt) ? "" : "en-US";
+			// narrow answer set + offline grammar model on the phone: the recogniser can only return allowed words
+			if (this.grammar?.length && a.startListeningGrammar && a.hasGrammarStt?.(stt)) {
+				a.startListeningGrammar(stt, JSON.stringify(this.grammar), maxMs, this.listenPromptId ?? "");
+				return;
+			}
 			if (a.startListeningWith) a.startListeningWith(stt, extra, this.bias.join(","), maxMs, this.listenPromptId ?? "");
 			else if (a.startListeningIn) a.startListeningIn(stt, extra, maxMs, this.listenPromptId ?? "");
 			else a.startListening(stt, maxMs, this.listenPromptId ?? "");
