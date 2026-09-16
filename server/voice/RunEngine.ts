@@ -79,6 +79,18 @@ interface Timers {
 const iso = (ms: number) => new Date(ms).toISOString();
 const newId = (prefix: string) => `${prefix}_${Date.now().toString(36)}${Math.random().toString(36).slice(2, 8)}`;
 
+/**
+ * Background talk caught by an open mic: a longer utterance that matches nothing on an item with a narrow answer
+ * set (yes/no, option, number, time). Free-text items accept anything, so they are never gated.
+ */
+export function isSideTalk(item: RunItem, text: string, result: Interpretation): boolean {
+	if (result.ok) return false;
+	if (item.type === "Text" || item.type === "LongText") return false;
+	if (result.reason !== "no_match") return false;
+	const words = text.trim().split(/\s+/).filter(Boolean);
+	return words.length >= 4;
+}
+
 export class RunEngine {
 	private readonly timers = new Map<string, Timers>();
 	/** Live transcript per run while a capture window is open. */
@@ -828,6 +840,12 @@ export class RunEngine {
 				await this.commit(r, item, r.pendingReadback, "voice");
 				return;
 			}
+			if (isSideTalk(item, text, again)) {
+				// people talking in the room while a read-back waits: not an answer, keep waiting for one
+				await this.audit(r, "item.ignored", { taskId: item.taskId, dataId: item.dataId, transcript: text, confidence, sub: session?.sub, text: "side talk during read-back" });
+				await this.openListen(r, item, this.deps.policy.confirmMs);
+				return;
+			}
 			r.pendingReadback = undefined;
 		}
 
@@ -843,6 +861,15 @@ export class RunEngine {
 		await this.audit(r, "item.captured", { taskId: item.taskId, dataId: item.dataId, transcript: text, confidence, sub: session?.sub });
 		const threshold = THRESHOLDS[item.type] ?? 0.6;
 		const sttFactor = confidence === undefined ? 1 : Math.max(0.5, confidence);
+		if (isSideTalk(item, text, result)) {
+			// a sentence that fits nothing on a yes/no, number or time item is the room, not the crew: no retry counted,
+			// no "say yes or no", the mic simply re-arms
+			await this.audit(r, "item.ignored", { taskId: item.taskId, dataId: item.dataId, transcript: text, confidence, sub: session?.sub, text: "side talk" });
+			r.exchange = "listening";
+			await this.save(r);
+			await this.openListen(r, item);
+			return;
+		}
 		if (!result.ok || result.confidence * sttFactor < threshold) {
 			r.attempts += 1;
 			if (r.attempts > this.deps.policy.retries) {

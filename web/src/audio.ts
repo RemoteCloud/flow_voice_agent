@@ -18,6 +18,8 @@ declare global {
 			speak(text: string, language: string, promptId: string): void;
 			stopSpeaking(): void;
 			startListening(language: string, maxMs: number, promptId: string): void;
+			/** Newer app builds: recognise `language` and also switch to `extraLanguage` (comma-separated tags) when the speaker uses it. */
+			startListeningIn?(language: string, extraLanguages: string, maxMs: number, promptId: string): void;
 			stopListening(): void;
 			setForeground(active: boolean, text: string): void;
 			hasLocalStt(): boolean;
@@ -51,6 +53,8 @@ export interface EndpointOptions {
 	stationId: string;
 	endpointId: string;
 	language: string;
+	/** Language the crew answers in ("" = same as `language`). The checklist is spoken in `language`; answers may be in this one. */
+	answerLanguage?: string;
 	/** Hub says STT is on the endpoint → use SpeechRecognition; else stream PCM. */
 	sttOnEndpoint: boolean;
 	pushToTalk: boolean;
@@ -128,6 +132,11 @@ export class AudioEndpoint {
 	/** Hands-free needs on-device recognition (the hub only accepts streamed audio inside a listen window). */
 	get handsFreeSupported(): boolean {
 		return !!this.capabilities.localStt;
+	}
+
+	/** Change the language the recogniser listens for; takes effect at the next listen window. */
+	setAnswerLanguage(lang: string): void {
+		this.opts.answerLanguage = lang;
 	}
 
 	setHandsFree(on: boolean): void {
@@ -443,8 +452,13 @@ export class AudioEndpoint {
 	}
 
 	private startRecognition(maxMs: number): void {
+		const stt = this.opts.answerLanguage || this.opts.language;
 		if (hasAndroid()) {
-			window.FlowVoiceAndroid!.startListening(this.opts.language, maxMs, this.listenPromptId ?? "");
+			const a = window.FlowVoiceAndroid!;
+			// English is always understood by the hub: let the recogniser switch to it when the checklist is in another language
+			const extra = /^en/i.test(stt) ? "" : "en-US";
+			if (a.startListeningIn) a.startListeningIn(stt, extra, maxMs, this.listenPromptId ?? "");
+			else a.startListening(stt, maxMs, this.listenPromptId ?? "");
 			return;
 		}
 		const Ctor = window.SpeechRecognition ?? window.webkitSpeechRecognition;
@@ -453,7 +467,7 @@ export class AudioEndpoint {
 			return;
 		}
 		const rec = new Ctor();
-		rec.lang = this.opts.language.length === 2 ? { en: "en-GB", no: "nb-NO", nb: "nb-NO", sv: "sv-SE", de: "de-DE", fr: "fr-FR", da: "da-DK" }[this.opts.language] ?? this.opts.language : this.opts.language;
+		rec.lang = stt.length === 2 ? { en: "en-GB", no: "nb-NO", nb: "nb-NO", sv: "sv-SE", de: "de-DE", fr: "fr-FR", da: "da-DK" }[stt] ?? stt : stt;
 		rec.interimResults = true;
 		rec.continuous = false;
 		rec.maxAlternatives = 1;

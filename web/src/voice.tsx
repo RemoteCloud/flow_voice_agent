@@ -34,6 +34,9 @@ export interface VoiceApi {
 	/** Spoken language for this device ("" = the station's configured language). Reconnects if voice is on. */
 	language: string;
 	setLanguage(lang: string): void;
+	/** Language the crew answers in ("" = the checklist language). The hub understands all of them; this only steers the recogniser. */
+	answerLanguage: string;
+	setAnswerLanguage(lang: string): void;
 	clearError(): void;
 }
 
@@ -77,6 +80,8 @@ export function VoiceProvider({ children }: { children: ReactNode }) {
 	const pendingStation = useRef<string | undefined>(undefined);
 	const [language, setLanguageState] = useState<string>(() => localStorage.getItem("fv.lang") ?? "");
 	const langRef = useRef(language);
+	const [answerLanguage, setAnswerLanguageState] = useState<string>(() => localStorage.getItem("fv.answerLang") ?? "");
+	const answerLangRef = useRef(answerLanguage);
 
 	const stop = useCallback(() => {
 		ep.current?.stop();
@@ -101,7 +106,7 @@ export function VoiceProvider({ children }: { children: ReactNode }) {
 			const open = station?.audioPolicy === "open";
 			setError(undefined);
 			const endpoint = new AudioEndpoint(
-				{ stationId: sid, endpointId: endpointId(), language: langRef.current || station?.language || "en", sttOnEndpoint: boot.speech.stt === "endpoint", pushToTalk: !open, handsFree: handsFree || open },
+				{ stationId: sid, endpointId: endpointId(), language: langRef.current || station?.language || "en", answerLanguage: answerLangRef.current, sttOnEndpoint: boot.speech.stt === "endpoint", pushToTalk: !open, handsFree: handsFree || open },
 				{
 					onState: (s, t) => {
 						setState(s);
@@ -214,9 +219,16 @@ export function VoiceProvider({ children }: { children: ReactNode }) {
 					void start(sid);
 				}
 			},
+			answerLanguage,
+			setAnswerLanguage: (lang) => {
+				answerLangRef.current = lang;
+				setAnswerLanguageState(lang);
+				localStorage.setItem("fv.answerLang", lang);
+				ep.current?.setAnswerLanguage(lang);
+			},
 			clearError: () => setError(undefined),
 		}),
-		[state, stateText, role, stationId, handsFree, transcript, run, events, error, start, stop, boot.speech.stt, language],
+		[state, stateText, role, stationId, handsFree, transcript, run, events, error, start, stop, boot.speech.stt, language, answerLanguage],
 	);
 
 	return <VoiceContext.Provider value={api}>{children}</VoiceContext.Provider>;
@@ -230,19 +242,29 @@ export function useVoice(): VoiceApi {
 
 export const STATE_TEXT: Record<EndpointState, string> = { disconnected: "Voice off", connecting: "Connecting…", observer: "Observing", ready: "Ready", speaking: "Speaking", listening: "Listening", thinking: "…" };
 
-/** Per-device spoken language. Shown wherever voice can be started. */
+/** Per-device languages: the one the checklist is spoken in, and the one the crew answers in. Shown wherever voice can be started. */
 export function LanguageSelect({ compact }: { compact?: boolean }) {
 	const v = useVoice();
 	const { me, stations } = useApp();
 	const station = stations.find((s) => s.stationId === (v.stationId ?? me.stationId));
+	const cls = `input w-auto ${compact ? "py-1 text-xs" : ""}`;
 	return (
-		<select className={`input w-auto ${compact ? "py-1 text-xs" : ""}`} value={v.language} onChange={(e) => v.setLanguage(e.target.value)} aria-label="Voice language" title="Voice language">
-			{LANGUAGES.map(([code, label]) => (
-				<option key={code} value={code}>
-					{code === "" && station?.language ? `${label} (${station.language})` : label}
-				</option>
-			))}
-		</select>
+		<span className="inline-flex items-center gap-1">
+			<select className={cls} value={v.language} onChange={(e) => v.setLanguage(e.target.value)} aria-label="Checklist language" title="Checklist language (spoken prompts)">
+				{LANGUAGES.map(([code, label]) => (
+					<option key={code} value={code}>
+						{code === "" && station?.language ? `${label} (${station.language})` : label}
+					</option>
+				))}
+			</select>
+			<select className={cls} value={v.answerLanguage} onChange={(e) => v.setAnswerLanguage(e.target.value)} aria-label="Answer language" title="Language you answer in (speech recognition)">
+				{LANGUAGES.map(([code, label]) => (
+					<option key={code} value={code}>
+						{code === "" ? "Answer in checklist language" : `Answer in ${label}`}
+					</option>
+				))}
+			</select>
+		</span>
 	);
 }
 

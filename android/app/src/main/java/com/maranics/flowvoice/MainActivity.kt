@@ -301,6 +301,17 @@ class MainActivity : AppCompatActivity() {
             beginListening(language, preferOffline = language !in offlineUnavailable)
         }
 
+        /** Like startListening, but on Android 14+ the recogniser may switch to any of `extraLanguages` (comma-separated tags). */
+        @JavascriptInterface
+        fun startListeningIn(language: String, extraLanguages: String, maxMs: Int, promptId: String) = runOnUiThread {
+            if (!micGranted) {
+                js("window.flowVoiceBridge&&window.flowVoiceBridge.onListenEnd('cancel')")
+                return@runOnUiThread
+            }
+            listenExtraLanguages = extraLanguages.split(',').map { it.trim() }.filter { it.isNotEmpty() }
+            beginListening(language, preferOffline = language !in offlineUnavailable)
+        }
+
         @JavascriptInterface
         fun stopListening() = runOnUiThread {
             if (listening) recognizer?.stopListening()
@@ -316,6 +327,8 @@ class MainActivity : AppCompatActivity() {
     /** The language of the open listen window, so a "language unavailable" error can be retried online once. */
     private var listenLanguage = ""
     private var listenRetriedOnline = false
+    /** Extra languages the recogniser may switch to (Android 14+ language switch; English for a Norwegian checklist). */
+    private var listenExtraLanguages: List<String> = emptyList()
     /** Languages this phone has no offline pack for (recogniser error 12/13): go straight to the online recogniser. */
     private val offlineUnavailable = mutableSetOf<String>()
 
@@ -335,6 +348,14 @@ class MainActivity : AppCompatActivity() {
             putExtra(RecognizerIntent.EXTRA_SPEECH_INPUT_COMPLETE_SILENCE_LENGTH_MILLIS, 1200L)
             putExtra(RecognizerIntent.EXTRA_SPEECH_INPUT_POSSIBLY_COMPLETE_SILENCE_LENGTH_MILLIS, 1200L)
             if (Build.VERSION.SDK_INT >= 33 && preferOffline) putExtra(RecognizerIntent.EXTRA_PREFER_OFFLINE, true)
+            if (Build.VERSION.SDK_INT >= 34 && listenExtraLanguages.isNotEmpty()) {
+                // crew may answer a Norwegian checklist in English: let the (on-device) recogniser switch languages
+                val allowed = ArrayList(listOf(localeOf(language).toLanguageTag()) + listenExtraLanguages)
+                putExtra(RecognizerIntent.EXTRA_ENABLE_LANGUAGE_DETECTION, true)
+                putStringArrayListExtra(RecognizerIntent.EXTRA_LANGUAGE_DETECTION_ALLOWED_LANGUAGES, allowed)
+                putExtra(RecognizerIntent.EXTRA_ENABLE_LANGUAGE_SWITCH, RecognizerIntent.LANGUAGE_SWITCH_BALANCED)
+                putStringArrayListExtra(RecognizerIntent.EXTRA_LANGUAGE_SWITCH_ALLOWED_LANGUAGES, allowed)
+            }
         }
         listenLanguage = language
         listenRetriedOnline = !preferOffline

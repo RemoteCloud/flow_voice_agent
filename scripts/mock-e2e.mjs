@@ -234,6 +234,10 @@ try {
 	await waitFor(() => /Say yes or no\. Bow thruster tested\?/.test(lastSpoken()), "clarification, never a guess");
 	await say("next item");
 	await waitFor(() => spoken.some((s) => s.includes("Steering gear tested?")), "item six spoken after next item");
+	// the room talks while the mic is open: a sentence that is no answer is ignored (no retry, no "say yes or no"), mic re-armed
+	await say("det är jättekul att du vill leka med Oskar");
+	await waitFor(() => listenOpen, "mic re-armed after side talk");
+	assert.ok(!spoken.some((s) => s.startsWith("Say yes or no. Steering gear tested?")), "side talk did not trigger a clarification");
 	await say("affirmative");
 	await waitFor(() => spoken.includes("Steering gear tested, yes."), "yes echoed for item six");
 	step = "item 7";
