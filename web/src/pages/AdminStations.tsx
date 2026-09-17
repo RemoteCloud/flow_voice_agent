@@ -6,6 +6,7 @@ import { QrCode } from "../components/QrCode.js";
 import { Icon } from "../icons.js";
 
 const LANGS = ["en", "sv", "no", "fr", "de"];
+const LANG_NAMES: Record<string, string> = { en: "English", no: "Norsk", sv: "Svenska", de: "Deutsch", fr: "Français" };
 type Minted = { token: string; path: string; tokenHint: string };
 
 const strip = (s: StationView): Station => {
@@ -51,32 +52,38 @@ export function StationsTab({ s, reload, canEdit }: { s: StatusResponse; reload:
 		setRows((r) => r.map((st, k) => (k === i ? { ...st, ...patch } : st)));
 		setDirty(true);
 	};
-	/** Selects and tick boxes save at once on a saved station, unless typed edits are still waiting for the Save button. */
+	/** Selects and tick boxes save at once (together with anything typed before). */
 	const pick = (i: number, patch: Partial<Station>) => {
-		const isSaved = s.stations.some((x) => x.stationId === rows[i]?.stationId);
-		if (dirty || !isSaved) return edit(i, patch);
 		const next = rows.map((st, k) => (k === i ? { ...st, ...patch } : st));
 		setRows(next);
 		void save(next);
 	};
+	const [saveState, setSaveState] = useState<"idle" | "saving" | "saved">("idle");
 	const save = async (list: Station[] = rows) => {
+		setSaveState("saving");
 		try {
 			await api.put("stations", list);
 			setErr(undefined);
 			setDirty(false);
 			await reload();
+			setSaveState("saved");
 		} catch (e) {
+			setSaveState("idle");
 			setErr(toApiError(e).message);
 		}
+	};
+	/** Text fields save when the cursor leaves them: there is no Save button. */
+	const commit = () => {
+		if (dirty) void save();
 	};
 	const applyJson = () => {
 		try {
 			const list = JSON.parse(text) as Station[];
 			if (!Array.isArray(list)) throw new SyntaxError("expected an array");
 			setRows(list);
-			setDirty(true);
 			setJson(false);
 			setErr(undefined);
+			void save(list);
 		} catch (e) {
 			setErr(e instanceof SyntaxError ? `JSON: ${e.message}` : String(e));
 		}
@@ -130,30 +137,15 @@ export function StationsTab({ s, reload, canEdit }: { s: StatusResponse; reload:
 
 	return (
 		<div className="space-y-4">
-			<div className="flex flex-wrap items-center gap-2">
-				<p className="text-xs text-fg-faint">Portable: the same list lives in /data/stations.json and can be copied to the next vessel. QR codes stay on this hub.</p>
-				<div className="ml-auto flex gap-2">
-					<button
-						type="button"
-						className="btn btn-sm btn-ghost"
-						onClick={() => {
-							setText(JSON.stringify(rows, null, 2));
-							setJson((j) => !j);
-						}}
-					>
-						{json ? "Hide JSON" : "Advanced JSON"}
-					</button>
-					<button type="button" className="btn btn-sm" disabled={!canEdit} onClick={() => edit(rows.length, { stationId: `station-${String(rows.length + 1).padStart(2, "0")}`, name: "New station", language: "en", audioPolicy: "ptt", autoStartAllowed: false, verbosity: "full", voiceActions: true, defaultProfile: null })}>
-						+ Add station
-					</button>
-					<button type="button" className="btn btn-sm btn-primary" disabled={!canEdit || !dirty} onClick={() => void save()}>
-						Save stations
-					</button>
-				</div>
+			<div className="flex items-center gap-2 px-1">
+				<p className="text-xs text-fg-muted">One station = one place with its own link and QR code. Everything you change here is saved at once.</p>
+				<span className={`ml-auto text-xs ${saveState === "saved" ? "text-ok" : "text-fg-faint"}`} aria-live="polite">
+					{saveState === "saving" ? "Saving…" : dirty ? "Not saved yet" : saveState === "saved" ? "Saved ✓" : ""}
+				</span>
 			</div>
 			<section className="card">
 				<div className="card-head">
-					<h2 className="card-title">New station with QR code</h2>
+					<h2 className="card-title">Add a station</h2>
 				</div>
 				<form
 					className="card-body grid gap-3 sm:grid-cols-[1fr_1fr_auto_auto] sm:items-end"
@@ -175,28 +167,18 @@ export function StationsTab({ s, reload, canEdit }: { s: StatusResponse; reload:
 						<select className="input" value={newLang} onChange={(e) => setNewLang(e.target.value)} disabled={!canEdit}>
 							{LANGS.map((l) => (
 								<option key={l} value={l}>
-									{l}
+									{LANG_NAMES[l] ?? l}
 								</option>
 							))}
 						</select>
 					</div>
-					<button type="submit" className="btn btn-primary" disabled={!canEdit || !newName.trim() || dirty} title={dirty ? "Save or discard the edits below first" : undefined}>
-						Create + QR
+					<button type="submit" className="btn btn-primary" disabled={!canEdit || !newName.trim() || dirty} >
+						Add station
 					</button>
 				</form>
-				<p className="help px-4 pb-3">The QR code appears on the new station's card below: print it and scan it with the phone or tablet. The device is then locked to this station.</p>
+				<p className="help px-4 pb-3">The new station opens below with its own link and QR code. Open the link on a PC, or scan the code with the phone or tablet.</p>
 			</section>
 			{err && <p className="text-sm text-danger">{err}</p>}
-			{json && (
-				<section className="card">
-					<div className="card-body space-y-2">
-						<textarea className="input mono" rows={14} value={text} onChange={(e) => setText(e.target.value)} disabled={!canEdit} />
-						<button type="button" className="btn btn-sm" disabled={!canEdit} onClick={applyJson}>
-							Apply to the form
-						</button>
-					</div>
-				</section>
-			)}
 			{rows.map((st, i) => {
 				const live = s.stations.find((x) => x.stationId === st.stationId);
 				const isNew = !live;
@@ -211,173 +193,192 @@ export function StationsTab({ s, reload, canEdit }: { s: StatusResponse; reload:
 									{st.location ? `${st.location} · ` : ""}
 									{st.name || st.stationId}
 								</h2>
-								{!isOpen && <span className="truncate text-xs text-fg-faint">{st.language} · {nTpl ? `${nTpl} checklist(s)` : "all checklists"}</span>}
+								<span className="truncate text-xs text-fg-faint">{LANG_NAMES[st.language] ?? st.language} · {nTpl ? `${nTpl} checklist${nTpl > 1 ? "s" : ""}` : "all checklists"}</span>
 							</button>
 							<div className="flex items-center gap-3 text-xs text-fg-faint">
-								{live?.endpoint ? <span className="text-ok">endpoint online</span> : <span>no endpoint</span>}
-								<button type="button" className="btn btn-sm btn-danger" disabled={!canEdit} onClick={() => setRows((r) => (setDirty(true), r.filter((_, k) => k !== i)))}>
-									Remove
-								</button>
+								{live?.endpoint ? <span className="text-ok">● in use now</span> : <span>not connected</span>}
 							</div>
 						</div>
 						<div className="grid gap-4 md:grid-cols-[minmax(0,1fr)_auto]" hidden={!isOpen}>
 							<div className="card-body grid gap-3 sm:grid-cols-2">
 								<div>
-									<label className="label">Station id</label>
-									<input className="input mono" value={st.stationId} readOnly={!isNew} disabled={!canEdit} onChange={(e) => edit(i, { stationId: e.target.value.trim() })} />
-								</div>
-								<div>
 									<label className="label">Name</label>
-									<input className="input" value={st.name} disabled={!canEdit} onChange={(e) => edit(i, { name: e.target.value })} />
+									<input className="input" value={st.name} disabled={!canEdit} onChange={(e) => edit(i, { name: e.target.value })} onBlur={commit} />
 								</div>
 								<div>
-									<label className="label">Location</label>
-									<input className="input" value={st.location ?? ""} placeholder="e.g. Location 1, Deck 3" disabled={!canEdit} onChange={(e) => edit(i, { location: e.target.value || undefined })} />
-									<p className="help">Shown before the name on phones and posters.</p>
+									<label className="label">Vessel / location</label>
+									<input className="input" value={st.location ?? ""} placeholder="e.g. MF Example" disabled={!canEdit} onChange={(e) => edit(i, { location: e.target.value || undefined })} onBlur={commit} />
 								</div>
 								<div>
-									<label className="label">Language</label>
+									<label className="label">Language of the voice menu</label>
 									<select className="input" value={st.language} disabled={!canEdit} onChange={(e) => pick(i, { language: e.target.value })}>
 										{LANGS.map((l) => (
 											<option key={l} value={l}>
-												{l}
+												{LANG_NAMES[l] ?? l}
 											</option>
 										))}
 									</select>
+									<p className="help">Each checklist speaks its own language (Checklist setup).</p>
 								</div>
-								<div>
-									<label className="label">Audio policy</label>
-									<select className="input" value={st.audioPolicy} disabled={!canEdit} onChange={(e) => pick(i, { audioPolicy: e.target.value === "open" ? "open" : "ptt" })}>
-										<option value="ptt">Push to talk</option>
-										<option value="open">Open mic (hands-free, voice auto-starts)</option>
-									</select>
-								</div>
-								<div>
-									<label className="label">Verbosity</label>
-									<select className="input" value={st.verbosity ?? "full"} disabled={!canEdit} onChange={(e) => pick(i, { verbosity: e.target.value as Station["verbosity"] })}>
-										<option value="full">Full</option>
-										<option value="short">Short</option>
-										<option value="silent">Silent</option>
-									</select>
-								</div>
-								<div>
-									<label className="label">Default profile</label>
-									<select className="input" value={st.defaultProfile ?? ""} disabled={!canEdit} onChange={(e) => pick(i, { defaultProfile: e.target.value || null })}>
-										<option value="">None</option>
-										{profiles.map((p) => (
-											<option key={p.profileId} value={p.profileId}>
-												{p.profileId}
-											</option>
-										))}
-									</select>
-								</div>
-								<div className="flex flex-col justify-end gap-2 text-sm">
+								<div className="flex flex-col justify-end gap-2 pb-1 text-sm">
 									<label className="flex items-center gap-2">
-										<input type="checkbox" checked={st.voiceActions !== false} disabled={!canEdit} onChange={(e) => pick(i, { voiceActions: e.target.checked })} />
-										Complete / discard by voice (two-step)
-									</label>
-									<label className="flex items-center gap-2">
-										<input type="checkbox" checked={!!st.holdToAnswer} disabled={!canEdit} onChange={(e) => pick(i, { holdToAnswer: e.target.checked })} />
-										Hold to answer on phones / tablets (noisy place)
-									</label>
-									<label className="flex items-center gap-2">
-										<input type="checkbox" checked={!!st.autoStartAllowed} disabled={!canEdit} onChange={(e) => pick(i, { autoStartAllowed: e.target.checked })} />
-										Triggered runs may start unattended
+										<input type="checkbox" className="h-5 w-5" checked={!!st.holdToAnswer} disabled={!canEdit} onChange={(e) => pick(i, { holdToAnswer: e.target.checked })} />
+										Noisy place: hold the button while answering
 									</label>
 								</div>
 								<div className="sm:col-span-2">
-							<TemplateRules rules={st.templates} templates={templates} stationLanguage={st.language} canEdit={canEdit} onChange={(t) => {
-								// checklists save at once (no trip to the Save button) unless other edits are still pending
-								const next = rows.map((x, k) => (k === i ? { ...x, templates: t } : x));
-								setRows(next);
-								if (isNew || dirty) setDirty(true);
-								else void save(next);
-							}} />
+									<TemplateRules rules={st.templates} templates={templates} canEdit={canEdit} onChange={(t) => pick(i, { templates: t })} />
 								</div>
+								<details className="rounded-lg border border-line sm:col-span-2">
+									<summary className="cursor-pointer px-3 py-2 text-sm text-fg-muted">Advanced settings</summary>
+									<div className="grid gap-3 border-t border-line p-3 sm:grid-cols-2">
+										<div>
+											<label className="label">Microphone</label>
+											<select className="input" value={st.audioPolicy} disabled={!canEdit} onChange={(e) => pick(i, { audioPolicy: e.target.value === "open" ? "open" : "ptt" })}>
+												<option value="ptt">Push to talk</option>
+												<option value="open">Always listening (hands-free)</option>
+											</select>
+										</div>
+										<div>
+											<label className="label">How much the voice says</label>
+											<select className="input" value={st.verbosity ?? "full"} disabled={!canEdit} onChange={(e) => pick(i, { verbosity: e.target.value as Station["verbosity"] })}>
+												<option value="full">Everything</option>
+												<option value="short">Short</option>
+												<option value="silent">Silent</option>
+											</select>
+										</div>
+										<label className="flex items-center gap-2 text-sm">
+											<input type="checkbox" className="h-5 w-5" checked={st.voiceActions !== false} disabled={!canEdit} onChange={(e) => pick(i, { voiceActions: e.target.checked })} />
+											Complete / discard by voice (asks twice)
+										</label>
+										<label className="flex items-center gap-2 text-sm">
+											<input type="checkbox" className="h-5 w-5" checked={!!st.autoStartAllowed} disabled={!canEdit} onChange={(e) => pick(i, { autoStartAllowed: e.target.checked })} />
+											Checklists started by other systems may begin on their own
+										</label>
+										<div>
+											<label className="label">Voice profile</label>
+											<select className="input" value={st.defaultProfile ?? ""} disabled={!canEdit} onChange={(e) => pick(i, { defaultProfile: e.target.value || null })}>
+												<option value="">None</option>
+												{profiles.map((p) => (
+													<option key={p.profileId} value={p.profileId}>
+														{p.profileId}
+													</option>
+												))}
+											</select>
+										</div>
+										<div>
+											<label className="label">Station id</label>
+											<input className="input mono" value={st.stationId} readOnly={!isNew} disabled={!canEdit} onChange={(e) => edit(i, { stationId: e.target.value.trim() })} onBlur={commit} />
+										</div>
+										<div className="sm:col-span-2">
+											<button
+												type="button"
+												className="btn btn-sm btn-danger"
+												disabled={!canEdit}
+												onClick={() => {
+													if (!confirm(`Remove the station "${st.name}"? Its link and QR code stop working.`)) return;
+													const next = rows.filter((_, k) => k !== i);
+													setRows(next);
+													void save(next);
+												}}
+											>
+												Remove this station
+											</button>
+										</div>
+									</div>
+								</details>
 							</div>
 							{!isNew && <JoinPanel station={live} minted={minted[st.stationId]} base={base} setBase={setBase} canEdit={canEdit} onMint={() => void mint(st.stationId)} onRevoke={() => void revoke(st.stationId)} />}
 						</div>
 					</section>
 				);
 			})}
-			{!rows.length && <p className="text-sm text-fg-muted">No stations. Add one above.</p>}
+			{!rows.length && <p className="text-sm text-fg-muted">No stations yet. Add one above.</p>}
+			<div className="flex justify-end">
+				<button
+					type="button"
+					className="btn btn-sm btn-ghost text-fg-faint"
+					onClick={() => {
+						setText(JSON.stringify(rows, null, 2));
+						setJson((j) => !j);
+					}}
+				>
+					{json ? "Hide JSON" : "Advanced: edit as JSON"}
+				</button>
+			</div>
+			{json && (
+				<section className="card">
+					<div className="card-body space-y-2">
+						<textarea className="input mono" rows={14} value={text} onChange={(e) => setText(e.target.value)} disabled={!canEdit} />
+						<button type="button" className="btn btn-sm" disabled={!canEdit} onClick={applyJson}>
+							Apply and save
+						</button>
+					</div>
+				</section>
+			)}
 		</div>
 	);
 }
 
 type Rules = NonNullable<Station["templates"]>;
-const LANG_NAMES: Record<string, string> = { en: "English", no: "Norsk", sv: "Svenska", de: "Deutsch", fr: "Français" };
 
-/** Per station: add the checklists used here; each one can be started or only worked on, in its own language. */
-function TemplateRules({ rules, templates, stationLanguage, canEdit, onChange }: { rules: Station["templates"]; templates: ChecklistPick[] | undefined; stationLanguage: string; canEdit: boolean; onChange: (r: Station["templates"]) => void }) {
+/** Per station: tick the checklists used here. Nothing ticked = all of them. A ticked one can be "use only". */
+function TemplateRules({ rules, templates, canEdit, onChange }: { rules: Station["templates"]; templates: ChecklistPick[] | undefined; canEdit: boolean; onChange: (r: Station["templates"]) => void }) {
 	const r: Rules = rules ?? {};
-	const ids = Object.keys(r);
-	const [pick, setPick] = useState("");
-	const nameOf = (id: string) => templates?.find((t) => t.templateId === id)?.templateName ?? id;
+	const limited = Object.keys(r).length > 0;
 	const put = (next: Rules) => onChange(Object.keys(next).length ? next : undefined);
-	const set = (id: string, patch: Rules[string]) => {
-		const rule = { ...r[id], ...patch };
-		if (!rule.language) delete rule.language;
-		put({ ...r, [id]: rule });
-	};
-	const remove = (id: string) => {
+	const toggle = (id: string) => {
 		const next = { ...r };
-		delete next[id];
+		if (next[id]) delete next[id];
+		else next[id] = { access: "start" };
 		put(next);
 	};
-	const add = () => {
-		if (!pick) return;
-		put({ ...r, [pick]: { access: "start" } });
-		setPick("");
-	};
-	const free = (templates ?? []).filter((t) => !(t.templateId in r));
-	const langOptions = (
-		<>
-			<option value="">Station language ({stationLanguage})</option>
-			{LANGS.map((l) => (
-				<option key={l} value={l}>
-					{LANG_NAMES[l] ?? l}
-				</option>
-			))}
-		</>
-	);
+	// rules for checklists that are no longer in the hub still show, so they can be unticked
+	const gone = Object.keys(r).filter((id) => templates && !templates.some((t) => t.templateId === id));
 	return (
 		<div className="rounded-lg border border-line">
-			<div className="px-3 py-2">
-				<h3 className="text-sm font-medium">Checklists on this station</h3>
-				<p className="text-xs text-fg-muted">{ids.length ? "Only the checklists added here are available on this station. Changes here are saved at once." : "Nothing added: every checklist of the hub (Admin → Checklist setup) is available here. Add checklists to limit this station to them. Language and answer words are set centrally under Checklist setup."}</p>
+			<div className="flex flex-wrap items-center gap-2 px-3 py-2">
+				<div className="min-w-0 flex-1 basis-60">
+					<h3 className="text-sm font-medium">Checklists on this station</h3>
+					<p className="text-xs text-fg-muted">{limited ? "Only the ticked checklists show on this station." : "Nothing ticked: all checklists show here. Tick some to show only those."}</p>
+				</div>
+				{limited && (
+					<button type="button" className="btn btn-sm" disabled={!canEdit} onClick={() => put({})}>
+						Show all
+					</button>
+				)}
 			</div>
-			{ids.length > 0 && (
+			{!templates ? (
+				<p className="border-t border-line px-3 py-2 text-sm text-fg-muted">Loading checklists…</p>
+			) : (
 				<ul className="divide-y divide-line border-t border-line">
-					{ids.map((id) => (
-						<li key={id} className="flex flex-wrap items-center gap-2 px-3 py-2 text-sm">
-							<span className="min-w-0 flex-1 basis-40 truncate">{nameOf(id)}</span>
-							<select className="input w-auto py-1 text-xs" value={r[id]?.access === "use" ? "use" : r[id]?.access === "off" ? "off" : "start"} disabled={!canEdit} onChange={(e) => set(id, { access: e.target.value as Rules[string]["access"] })} title="Start and use: start button here. Use only: open ones started elsewhere can be worked on here, no start button.">
-								<option value="start">Start and use</option>
-								<option value="use">Use only</option>
-								{r[id]?.access === "off" && <option value="off">Not here</option>}
-							</select>
-							<span className="text-xs text-fg-faint">{templates?.find((t) => t.templateId === id)?.language ?? "station language"}</span>
-							<button type="button" className="btn btn-sm btn-ghost" disabled={!canEdit} onClick={() => remove(id)}>
-								Remove
-							</button>
+					{templates.map((t) => {
+						const on = !!r[t.templateId];
+						return (
+							<li key={t.templateId} className="flex flex-wrap items-center gap-2 px-3 py-2 text-sm">
+								<label className="flex min-w-0 flex-1 basis-48 cursor-pointer items-center gap-3">
+									<input type="checkbox" className="h-5 w-5 shrink-0" checked={on} disabled={!canEdit} onChange={() => toggle(t.templateId)} />
+									<span className="min-w-0 truncate">{t.templateName}</span>
+									{t.language && <span className="shrink-0 text-xs text-fg-faint">{LANG_NAMES[t.language] ?? t.language}</span>}
+								</label>
+								{on && (
+									<select className="input w-auto py-1 text-xs" value={r[t.templateId]?.access === "use" ? "use" : "start"} disabled={!canEdit} onChange={(e) => put({ ...r, [t.templateId]: { ...r[t.templateId], access: e.target.value as "start" | "use" } })}>
+										<option value="start">Can be started here</option>
+										<option value="use">Only continue ones started elsewhere</option>
+									</select>
+								)}
+							</li>
+						);
+					})}
+					{gone.map((id) => (
+						<li key={id} className="flex items-center gap-3 px-3 py-2 text-sm text-fg-muted">
+							<input type="checkbox" className="h-5 w-5" checked disabled={!canEdit} onChange={() => toggle(id)} />
+							<span className="min-w-0 truncate">No longer in the hub ({id.slice(0, 8)}…)</span>
 						</li>
 					))}
+					{!templates.length && <li className="px-3 py-2 text-sm text-fg-muted">No checklists yet. Download them under Checklist setup.</li>}
 				</ul>
 			)}
-			<div className="flex flex-wrap items-center gap-2 border-t border-line px-3 py-2">
-				<select className="input min-w-0 flex-1 basis-40 py-1 text-sm" value={pick} disabled={!canEdit || !templates} onChange={(e) => setPick(e.target.value)}>
-					<option value="">{!templates ? "Loading checklists…" : free.length ? "Add a checklist…" : "All checklists added"}</option>
-					{free.map((t) => (
-						<option key={t.templateId} value={t.templateId}>
-							{t.templateName}
-						</option>
-					))}
-				</select>
-				<button type="button" className="btn btn-sm btn-primary" disabled={!canEdit || !pick} onClick={add}>
-					Add
-				</button>
-			</div>
 		</div>
 	);
 }
@@ -406,40 +407,45 @@ function JoinPanel({ station, minted, base, setBase, canEdit, onMint, onRevoke }
 	return (
 		<div className="border-t border-line p-4 md:w-72 md:border-t-0 md:border-l">
 			<p className="flex items-center gap-1.5 text-sm font-semibold">
-				<Icon name="qr" size={16} /> Station link & QR code
+				<Icon name="qr" size={16} /> Open this station
 			</p>
 			{station.join ? (
-				<p className="mt-1 text-xs text-fg-muted">
-					Active · …{station.join.tokenHint} · {new Date(station.join.createdAt).toLocaleString()}
-				</p>
+				<p className="mt-1 text-xs text-fg-muted">Scan with the phone or tablet, or open the link on a PC.</p>
 			) : (
 				<p className="mt-1 text-xs text-fg-muted">Save the station to get its link.</p>
 			)}
 			{url ? (
 				<div className="mt-3 space-y-2">
 					<QrCode text={url} size={208} className="mx-auto block border border-line" />
-					<p className="text-xs text-fg-muted">This station's own link. Open it on a PC, Mac or Raspberry Pi, or scan the QR code with a phone or tablet: the device is then locked to this station.</p>
-					<div>
-						<label className="label">Base URL on the poster</label>
-						<input className="input mono" value={base} onChange={(e) => setBase(e.target.value)} />
-					</div>
-					<p className="mono break-all text-[11px] text-fg-faint">{url}</p>
-					<div className="flex flex-wrap gap-2">
+					<div className="grid grid-cols-2 gap-2">
+						<a className="btn btn-sm btn-primary col-span-2" href={url} target="_blank" rel="noreferrer">
+							Open on this computer
+						</a>
 						<button type="button" className="btn btn-sm" onClick={() => void navigator.clipboard?.writeText(url).then(() => setCopied(true))}>
 							{copied ? "Copied" : "Copy link"}
 						</button>
 						<button type="button" className="btn btn-sm" onClick={print}>
-							Print
+							Print poster
 						</button>
 					</div>
 				</div>
-			) : null}
-			<div className="mt-3 flex flex-wrap gap-2">
-				<button type="button" className="btn btn-sm btn-primary" disabled={!canEdit} onClick={onMint}>
-					{station.join ? (station.join.path ? "New link (old one stops working)" : "Rotate to show the link") : "Create link"}
+			) : (
+				<button type="button" className="btn btn-sm btn-primary mt-3" disabled={!canEdit} onClick={onMint}>
+					Show link and QR code
 				</button>
-			</div>
-			<p className="help mt-3">Any number of phones can scan one poster: each is locked to this station and then signs in as its own user. A new link does not sign out devices already joined. The link opens the client (/client) on any device: phone, tablet, PC or Raspberry Pi.</p>
+			)}
+			{url && (
+				<details className="mt-3 text-xs text-fg-muted">
+					<summary className="cursor-pointer">Link lost or shared by mistake?</summary>
+					<p className="mt-2">Make a new link. The old link and printed posters stop working. Devices already in use stay signed in.</p>
+					<button type="button" className="btn btn-sm mt-2" disabled={!canEdit} onClick={() => confirm("Make a new link? The old link and printed QR codes stop working.") && onMint()}>
+						Make a new link
+					</button>
+					<label className="label mt-3">Web address on the poster</label>
+					<input className="input mono" value={base} onChange={(e) => setBase(e.target.value)} />
+					<p className="mono mt-2 break-all text-[11px] text-fg-faint">{url}</p>
+				</details>
+			)}
 		</div>
 	);
 }
