@@ -18,6 +18,14 @@ export async function run(): Promise<void> {
 	assert.ok(!neg.ok || neg.value !== "OK", "a negation is never the answer word");
 	assert.equal(ok(interpret("QuickSelect", "it reads high today", { ...ctx, answers: ["high"], options: [{ title: "Normal", value: "Normal" }, { title: "High", value: "High" }] })).value, "High");
 
+	// strict checklist: only the marked words count
+	const strict: InterpretContext = { ...ctx, answers: ["körbro"], answersOnly: true };
+	assert.equal(ok(interpret("Checkbox", "hivt körbro", strict)).valueText, "körbro");
+	assert.equal(interpret("Checkbox", "ja", strict).ok, false, "a plain yes is refused");
+	assert.equal(interpret("Checkbox", "confirmed", strict).ok, false);
+	assert.equal(interpret("Checkbox", "no", strict).ok, false);
+	assert.equal(ok(interpret("Checkbox", "yes", { ...ctx, answersOnly: true })).value, "OK", "an item without words still takes yes");
+
 	// numbers
 	assert.equal(wordsToNumber("twenty point five"), 20.5);
 	assert.equal(wordsToNumber("one hundred and twelve"), 112);

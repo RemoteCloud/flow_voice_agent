@@ -167,7 +167,7 @@ export class RunEngine {
 	}
 
 	private interpretCtx(r: RunRecord, item: RunItem, utteredAt: Date): InterpretContext {
-		return { utteredAt, tzMode: this.deps.store.get().settings.tzMode, timeZone: this.deps.policy.timeZone, maxPastHours: this.deps.policy.maxPastHours, options: item.options, language: normLang(r.language), answers: item.expected };
+		return { utteredAt, tzMode: this.deps.store.get().settings.tzMode, timeZone: this.deps.policy.timeZone, maxPastHours: this.deps.policy.maxPastHours, options: item.options, language: normLang(r.language), answers: item.expected, answersOnly: !!r.templateId && !!this.deps.store.get().settings.wordsOnly?.includes(r.templateId) };
 	}
 
 	runsForUser(sub: string): RunRecord[] {
@@ -1794,7 +1794,7 @@ export class RunEngine {
 	}
 
 	/** `Interpretation` re-exported for the HTTP layer's manual-value preview. */
-	preview(type: string, text: string, options?: { title: string; value: string }[], answers?: string[]): Interpretation {
-		return interpret(type, text, { utteredAt: new Date(this.deps.now()), tzMode: this.deps.store.get().settings.tzMode, timeZone: this.deps.policy.timeZone, maxPastHours: this.deps.policy.maxPastHours, options, language: normLang(this.deps.policy.defaultLanguage), answers });
+	preview(type: string, text: string, options?: { title: string; value: string }[], answers?: string[], answersOnly?: boolean): Interpretation {
+		return interpret(type, text, { utteredAt: new Date(this.deps.now()), tzMode: this.deps.store.get().settings.tzMode, timeZone: this.deps.policy.timeZone, maxPastHours: this.deps.policy.maxPastHours, options, language: normLang(this.deps.policy.defaultLanguage), answers, answersOnly });
 	}
 }

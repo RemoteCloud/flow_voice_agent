@@ -541,6 +541,12 @@ try {
 	assert.equal(entry.language, "sv");
 	assert.deepEqual(entry.words, { "d:ER/Main/LubeOil": ["normal"] });
 	assert.equal((await api("PUT", "library/entry", { templateId: "tpl-departure", language: "sv" })).status, 404, "only registered checklists can be edited");
+	// per checklist: only the marked words count, a plain yes / no is refused
+	assert.equal(entry.wordsOnly, false);
+	assert.equal((await api("PUT", "library/entry", { templateId: "tpl-engine", wordsOnly: true })).body.templates[0].wordsOnly, true);
+	assert.equal((await api("POST", "interpret", { type: "Checkbox", text: "ja", answers: ["körbro"], answersOnly: true })).body.ok, false);
+	assert.equal((await api("POST", "interpret", { type: "Checkbox", text: "hivt körbro", answers: ["körbro"], answersOnly: true })).body.valueText, "körbro");
+	assert.equal((await api("PUT", "library/entry", { templateId: "tpl-engine", wordsOnly: false })).body.templates[0].wordsOnly, false);
 	const regPicks = (await api("GET", "checklists")).body;
 	assert.ok(regPicks.filter((p) => p.templateId === "tpl-engine").every((p) => p.access === "start" && p.language === "sv"));
 	assert.ok(regPicks.filter((p) => p.templateId !== "tpl-engine").every((p) => p.access === "off"), "a non-empty register is the whole offer");

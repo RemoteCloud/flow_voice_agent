@@ -49,7 +49,7 @@ export function ChecklistsTab({ canEdit }: { canEdit: boolean }) {
 	};
 	const add = (id: string) => act(id, () => api.post<LibraryView>("library", { templateId: id })).then(() => setOpen(id));
 	const remove = (id: string) => act(id, () => api.del<LibraryView>(`library?templateId=${encodeURIComponent(id)}`));
-	const saveEntry = (id: string, patch: { language?: string; words?: Record<string, string[]> }) => act(`save:${id}`, () => api.put<LibraryView>("library/entry", { templateId: id, ...patch }));
+	const saveEntry = (id: string, patch: { language?: string; words?: Record<string, string[]>; wordsOnly?: boolean }) => act(`save:${id}`, () => api.put<LibraryView>("library/entry", { templateId: id, ...patch }));
 
 	const notAdded = avail?.filter((a) => !a.registered) ?? [];
 	return (
@@ -118,6 +118,13 @@ export function ChecklistsTab({ canEdit }: { canEdit: boolean }) {
 							</div>
 							{isOpen && (
 								<>
+									<label className="flex cursor-pointer items-start gap-2 border-t border-line px-4 py-3 text-sm">
+										<input type="checkbox" className="mt-0.5" checked={!t.wordsOnly} disabled={!canEdit || !!busy} onChange={(e) => void saveEntry(t.templateId, { wordsOnly: !e.target.checked })} />
+										<span>
+											<span className="font-medium">Accept a plain yes, confirm or no</span>
+											<span className="block text-xs text-fg-muted">{t.wordsOnly ? "Off: items with marked words only accept an answer that contains one, like \"hivt körbro\". Items without words work as usual." : "On: yes or confirm also answers an item. Turn off to require the marked word."}</span>
+										</span>
+									</label>
 									<ItemWords entry={t} canEdit={canEdit} onChange={(words) => void saveEntry(t.templateId, { words })} />
 									<div className="flex flex-wrap items-center gap-2 border-t border-line px-4 py-2 text-xs text-fg-faint">
 										<span className="flex-1">Downloaded {new Date(t.importedAt).toLocaleString()}</span>

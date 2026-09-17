@@ -19,6 +19,8 @@ export interface InterpretContext {
 	language?: string;
 	/** The item's own answer words (Admin → Answers): a transcript that contains one counts as the answer. */
 	answers?: string[];
+	/** Checklist setting "only the marked words count": an item with answer words refuses a plain yes / confirm / no. */
+	answersOnly?: boolean;
 }
 
 export type Interpretation =
@@ -592,6 +594,8 @@ export function interpret(type: string, transcript: string, ctx: InterpretContex
 		const opt = opts.find((o) => ` ${normalizeTranscript(o.title)} `.includes(` ${n} `) || normalizeTranscript(o.value) === n);
 		if (opt) return { ok: true, value: opt.value, valueText: opt.title, confidence: 0.92, kind: "option" };
 	}
+	// strict checklist: the crew must say the word itself ("hivt körbro"), a bare "yes" proves nothing
+	if (ctx.answersOnly && ctx.answers?.length) return { ok: false, reason: "no_match", message: msg("m_say_word", { words: ctx.answers.join(", ") }), confidence: 0.1 };
 	const stripped = stripPhrase(normalized, phrases);
 	/** The user said only the bound phrase ("engine started"): the event itself, with no value attached. */
 	const phraseOnly = !stripped;

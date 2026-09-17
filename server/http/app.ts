@@ -399,9 +399,9 @@ export function createApp(deps: AppDeps): Hono {
 		}),
 	);
 	api.post("/interpret", async (c) => {
-		const body = (await c.req.json().catch(() => ({}))) as { type?: string; text?: string; options?: { title: string; value: string }[]; answers?: unknown };
+		const body = (await c.req.json().catch(() => ({}))) as { type?: string; text?: string; options?: { title: string; value: string }[]; answers?: unknown; answersOnly?: unknown };
 		if (!str(body.type) || !str(body.text)) return fail(c, 400, "BAD_REQUEST", "type and text are required");
-		return c.json(engine.preview(body.type as string, body.text as string, body.options, Array.isArray(body.answers) ? body.answers.filter((a): a is string => typeof a === "string") : undefined));
+		return c.json(engine.preview(body.type as string, body.text as string, body.options, Array.isArray(body.answers) ? body.answers.filter((a): a is string => typeof a === "string") : undefined, body.answersOnly === true));
 	});
 
 	// ----- stations / devices / status (admin screens; every signed-in user can read, admins write)
@@ -672,7 +672,7 @@ export function createApp(deps: AppDeps): Hono {
 	// ----- central checklist register (Admin → Checklist setup); template ids may contain "/" so they travel in the body / query
 	const libraryView = (): LibraryView => {
 		const d = store.get();
-		return { templates: Object.values(d.library ?? {}).sort((a, b) => a.name.localeCompare(b.name)).map((t) => ({ ...t, language: d.settings.templateLanguages?.[t.templateId], words: d.settings.itemAnswers?.[t.templateId] ?? {} })) };
+		return { templates: Object.values(d.library ?? {}).sort((a, b) => a.name.localeCompare(b.name)).map((t) => ({ ...t, language: d.settings.templateLanguages?.[t.templateId], words: d.settings.itemAnswers?.[t.templateId] ?? {}, wordsOnly: !!d.settings.wordsOnly?.includes(t.templateId) })) };
 	};
 	api.get("/library", (c) => c.json(libraryView()));
 	api.get("/library/available", (c) => handle(c, async () => c.json({ templates: await engine.availableTemplates(c.get("sessionRow")) })));
@@ -704,10 +704,14 @@ export function createApp(deps: AppDeps): Hono {
 	api.put("/library/entry", async (c) => {
 		const denied = requireAdmin(c);
 		if (denied) return denied;
-		const body = (await c.req.json().catch(() => ({}))) as { templateId?: unknown; language?: unknown; words?: unknown };
+		const body = (await c.req.json().catch(() => ({}))) as { templateId?: unknown; language?: unknown; words?: unknown; wordsOnly?: unknown };
 		const id = str(body.templateId);
 		if (!id || !store.get().library?.[id]) return fail(c, 404, "NOT_FOUND", "checklist is not in the register");
 		await store.update((d) => {
+			if (typeof body.wordsOnly === "boolean") {
+				const rest = (d.settings.wordsOnly ?? []).filter((x) => x !== id);
+				d.settings.wordsOnly = body.wordsOnly ? [...rest, id] : rest;
+			}
 			if (body.language !== undefined) {
 				const langs = (d.settings.templateLanguages ??= {});
 				if (typeof body.language === "string" && /^(en|sv|no|fr|de)$/.test(body.language)) langs[id] = body.language;
