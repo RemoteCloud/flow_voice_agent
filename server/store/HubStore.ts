@@ -78,8 +78,15 @@ export interface TenantEntry {
 	tenant: string;
 	/** Gateway host when it differs from the main hub's. */
 	host?: string;
-	tokenEnc: string;
-	tokenHint: string;
+	/** Maranics SSO (the normal way): the tenant's own OIDC client; users sign in as themselves. */
+	clientId?: string;
+	/** Client secret, sealed with the hub key. */
+	clientSecretEnc?: string;
+	/** OIDC issuer when it cannot be derived from the main hub's (same UserManagement, other tenant segment). */
+	issuer?: string;
+	/** Fallback without an SSO client: a pasted access token everyone in the tenant acts with. */
+	tokenEnc?: string;
+	tokenHint?: string;
 	createdAt: string;
 }
 

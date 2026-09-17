@@ -125,7 +125,7 @@ async function run(): Promise<void> {
 	};
 	const dispatch = async (req: Request): Promise<Response> => {
 		const url = new URL(req.url);
-		if (url.pathname === "/api/tenants" || url.pathname.startsWith("/api/tenants/") || url.pathname.startsWith("/api/central/")) return tenantApi.fetch(req);
+		if (url.pathname === "/api/tenants" || url.pathname.startsWith("/api/tenants/") || url.pathname.startsWith("/api/central/") || /^\/t\/[^/]+$/.test(url.pathname)) return tenantApi.fetch(req);
 		let picked = tenants.pick(req.headers.get("cookie"));
 		let tenantCookie: string | undefined;
 		if (req.method === "POST" && url.pathname === "/api/auth/join") {

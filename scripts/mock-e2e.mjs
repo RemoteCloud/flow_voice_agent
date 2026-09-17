@@ -39,7 +39,7 @@ const sttUrl = `http://127.0.0.1:${sttServer.address().port}`;
 
 const hub = spawn(process.execPath, ["dist/server.mjs"], {
 	cwd: root,
-	env: { ...process.env, HUB_SECRET: "e2e-secret-0123456789abcdef", HUB_PORT: String(port), HUB_DATA_DIR: dataDir, HUB_PUBLIC_DIR: path.join(root, "dist", "public"), HUB_TENANT: "demo", HUB_MARANICS_HOST: fake.url, DEV_USER: "Bridge Officer", DEV_MARANICS_TOKEN: "t0k3n", CENTRAL_PASSWORD: "central-pass-e2e", SERVICE_TOKENS: "svc-token", STT_BACKUP_ENDPOINT: sttUrl, LOG_LEVEL: "debug", LISTEN_MS: "1500", CONFIRM_MS: "1500", EXCHANGE_MS: "20000" },
+	env: { ...process.env, HUB_SECRET: "e2e-secret-0123456789abcdef", HUB_PORT: String(port), HUB_DATA_DIR: dataDir, HUB_PUBLIC_DIR: path.join(root, "dist", "public"), HUB_PUBLIC_URL: `http://127.0.0.1:${port}`, HUB_TENANT: "demo", HUB_MARANICS_HOST: fake.url, DEV_USER: "Bridge Officer", DEV_MARANICS_TOKEN: "t0k3n", CENTRAL_PASSWORD: "central-pass-e2e", SERVICE_TOKENS: "svc-token", STT_BACKUP_ENDPOINT: sttUrl, LOG_LEVEL: "debug", LISTEN_MS: "1500", CONFIRM_MS: "1500", EXCHANGE_MS: "20000" },
 	stdio: ["ignore", "pipe", "pipe"],
 });
 hub.stdout.on("data", (d) => log.push(String(d)));
@@ -599,6 +599,42 @@ try {
 	assert.equal((await api("POST", "tenants/leave", undefined, adminJar)).status, 200);
 	assert.equal((await api("GET", "auth/me", undefined, adminJar)).status, 200);
 	assert.equal((await api("DELETE", "tenants/other-co", undefined, adminJar)).status, 200);
+	// the normal way: a tenant with its own Maranics SSO client; people sign in as themselves
+	fake.oidc.setRedirectUri(`http://127.0.0.1:${port}/api/auth/callback`);
+	assert.equal((await api("POST", "tenants", { name: "Sso Co", tenant: "demo" }, adminJar)).status, 400, "a tenant needs a client");
+	const sso = await api("POST", "tenants", { name: "Sso Co", tenant: "demo", clientId: fake.oidc.clientId, clientSecret: fake.oidc.clientSecret, issuer: fake.oidc.issuer }, adminJar);
+	assert.equal(sso.status, 201, JSON.stringify(sso.body));
+	assert.equal(sso.body.mode, "sso");
+	assert.equal(sso.body.loginPath, "/t/sso-co");
+	assert.ok(!JSON.stringify((await api("GET", "tenants", undefined, adminJar)).body).includes(fake.oidc.clientSecret), "the client secret never comes back");
+	const ssoJar = new Map();
+	const hop = async (url) => {
+		const res = await fetch(url, { redirect: "manual", headers: { cookie: [...ssoJar].map(([k, v]) => `${k}=${v}`).join("; ") } });
+		for (const sc of res.headers.getSetCookie()) {
+			const [k, ...v] = sc.split(";")[0].split("=");
+			if (v.join("=")) ssoJar.set(k.trim(), v.join("="));
+			else ssoJar.delete(k.trim());
+		}
+		return res;
+	};
+	assert.equal((await hop(`${base}/t/nope`)).status, 404);
+	const door = await hop(`${base}/t/sso-co`);
+	assert.equal(door.status, 302);
+	assert.ok(ssoJar.get("fv_tenant")?.startsWith("sso-co."), "the tenant link picks the tenant");
+	assert.equal((await api("POST", "auth/dev", undefined, ssoJar)).status >= 400, true, "no sign-in without Maranics in an SSO tenant");
+	const toIdp = await hop(`${base}/api/auth/login`);
+	assert.equal(toIdp.status, 302, "login redirects to Maranics");
+	assert.ok(toIdp.headers.get("location").startsWith(fake.oidc.issuer), toIdp.headers.get("location"));
+	const back = await hop(toIdp.headers.get("location"));
+	assert.ok(back.headers.get("location").startsWith(`${base}/api/auth/callback`));
+	assert.ok((await hop(back.headers.get("location"))).status < 400, "callback lands in the tenant");
+	const ssoMe = await api("GET", "auth/me", undefined, ssoJar);
+	assert.equal(ssoMe.status, 200, JSON.stringify(ssoMe.body));
+	assert.equal(ssoMe.body.isAdmin, true, "first to sign in is the tenant's admin");
+	assert.equal((await api("GET", "tenants", undefined, ssoJar)).body.current?.id, "sso-co");
+	assert.ok((await api("GET", "checklists", undefined, ssoJar)).body.length > 0, "the user's own token reads Maranics");
+	assert.equal((await api("PUT", "tenants/sso-co/client", { clientId: fake.oidc.clientId, clientSecret: fake.oidc.clientSecret }, ssoJar)).status, 403, "a tenant admin is not the central admin");
+	assert.equal((await api("DELETE", "tenants/sso-co", undefined, adminJar)).status, 200);
 	assert.equal((await api("POST", "central/logout", undefined, adminJar)).status, 200);
 	assert.equal((await api("GET", "tenants", undefined, adminJar)).body.canManage, false, "signed out of the central area");
 	assert.equal((await api("GET", "auth/me", undefined, tPhone)).status, 401, "a removed tenant's cookie falls back to the main hub");

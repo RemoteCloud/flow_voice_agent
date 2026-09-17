@@ -32,7 +32,7 @@ export default defineConfig({
 			workbox: {
 				// the app shell is cached; API and sockets always go to the hub on the ship LAN
 				navigateFallback: "/index.html",
-				navigateFallbackDenylist: [/^\/api\//, /^\/v1\//, /^\/healthz/, /^\/metrics/],
+				navigateFallbackDenylist: [/^\/api\//, /^\/t\//, /^\/v1\//, /^\/healthz/, /^\/metrics/],
 				runtimeCaching: [],
 			},
 		}),

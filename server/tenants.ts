@@ -40,7 +40,13 @@ export interface TenantView {
 	name: string;
 	tenant: string;
 	host?: string;
-	tokenHint: string;
+	/** "sso" = users sign in with Maranics through the tenant's own client; "token" = pasted access token. */
+	mode: "sso" | "token";
+	clientId?: string;
+	issuer?: string;
+	/** Address that takes a browser to this tenant's sign-in (SSO tenants). */
+	loginPath?: string;
+	tokenHint?: string;
 	/** From the token's own `exp` claim when it is a JWT. */
 	tokenExpiresAt?: string;
 	createdAt: string;
@@ -109,37 +115,58 @@ export class Tenants {
 	private entries(): TenantEntry[] {
 		return this.deps.store.get().tenants ?? [];
 	}
-	private envFor(t: TenantEntry, token: string): HubEnv {
+	/** Issuer of a tenant: its own, or the main hub's with the tenant segment swapped (same UserManagement). */
+	issuerFor(t: { tenant: string; issuer?: string }): string | undefined {
+		if (t.issuer) return t.issuer;
+		const base = this.deps.env;
+		const tail = `/${encodeURIComponent(base.maranics?.tenant ?? "")}`;
+		return base.oidc && base.maranics && base.oidc.issuer.endsWith(tail) ? `${base.oidc.issuer.slice(0, -tail.length)}/${encodeURIComponent(t.tenant)}` : undefined;
+	}
+	private envFor(t: TenantEntry): HubEnv {
 		const base = this.deps.env;
 		const host = t.host ?? base.maranics?.host;
 		if (!host) throw new Error("no Maranics host: set HUB_MARANICS_HOST or give the tenant its own host");
 		const same = !t.host || t.host === base.maranics?.host;
-		const who = peekJwt(token).name ?? "token user";
+		let umApiBaseUrl = same && base.maranics ? base.maranics.umApiBaseUrl : `${host}/app/usermanagement`;
+		const common = { ...base, dataDir: `${base.dataDir}/tenants/${t.id}`, serviceTokens: [] };
+		let sign: Pick<HubEnv, "oidc" | "oidcReason" | "devUser" | "devToken" | "tokenTenant">;
+		if (t.clientId && t.clientSecretEnc) {
+			const issuer = this.issuerFor(t);
+			if (!issuer) throw new Error("no sign-in address (issuer): the main hub has none to derive it from, so give the tenant its own");
+			if (!base.publicUrl) throw new Error("HUB_PUBLIC_URL must be set for tenant sign-in");
+			const secret = openToken(t.clientSecretEnc, this.deps.sealKey);
+			registerSecret(secret);
+			if (t.issuer && !same) umApiBaseUrl = `${new URL(issuer).origin}/external/api`;
+			sign = {
+				oidc: { issuer, clientId: t.clientId, clientSecret: secret, redirectUri: `${base.publicUrl}/api/auth/callback`, scopes: base.oidc?.scopes ?? "openid email profile offline_access", prompt: base.oidc?.prompt, audience: t.clientId, postLogoutRedirectUri: base.oidc?.postLogoutRedirectUri, clockSkewSec: base.oidc?.clockSkewSec ?? 120, httpTimeoutMs: base.oidc?.httpTimeoutMs ?? 8000, flowMaxAgeSec: base.oidc?.flowMaxAgeSec ?? 600 },
+				oidcReason: undefined,
+				devUser: undefined,
+				devToken: undefined,
+				tokenTenant: undefined,
+			};
+		} else if (t.tokenEnc) {
+			const token = openToken(t.tokenEnc, this.deps.sealKey);
+			registerSecret(token);
+			sign = { oidc: undefined, oidcReason: "This tenant uses a pasted access token.", devUser: { sub: `dev:${t.id}`, name: peekJwt(token).name ?? "token user", email: "" }, devToken: token, tokenTenant: { id: t.id, name: t.name } };
+		} else throw new Error("tenant has neither an SSO client nor a token");
 		return {
-			...base,
-			dataDir: `${base.dataDir}/tenants/${t.id}`,
-			oidc: undefined,
-			oidcReason: "This tenant uses a pasted access token.",
-			devUser: { sub: `dev:${t.id}`, name: who, email: "" },
-			devToken: token,
-			serviceTokens: [],
-			tokenTenant: { id: t.id, name: t.name },
+			...common,
+			...sign,
 			maranics: {
 				host,
 				tenant: t.tenant,
 				flowsBaseUrl: same && base.maranics ? base.maranics.flowsBaseUrl : `${host}/app/flows`,
 				templatesBaseUrl: same && base.maranics ? base.maranics.templatesBaseUrl : `${host}/app/templates`,
-				umApiBaseUrl: same && base.maranics ? base.maranics.umApiBaseUrl : `${host}/app/usermanagement`,
+				umApiBaseUrl,
 				allowedHosts: base.maranics?.allowedHosts ?? [],
 			},
 		};
 	}
 	private async boot(t: TenantEntry): Promise<void> {
-		const token = openToken(t.tokenEnc, this.deps.sealKey);
-		registerSecret(token);
+		const env = this.envFor(t);
 		this.cores.get(t.id)?.stop();
-		this.cores.set(t.id, await this.deps.build(this.envFor(t, token)));
-		this.deps.log.info(`tenant "${t.name}" (${t.tenant}) running from ${this.deps.env.dataDir}/tenants/${t.id}`);
+		this.cores.set(t.id, await this.deps.build(env));
+		this.deps.log.info(`tenant "${t.name}" (${t.tenant}, ${t.clientId ? "Maranics sign-in" : "pasted token"}) running from ${this.deps.env.dataDir}/tenants/${t.id}`);
 	}
 	async start(): Promise<void> {
 		for (const t of this.entries()) {
@@ -154,21 +181,26 @@ export class Tenants {
 		for (const c of this.cores.values()) c.stop();
 	}
 
+	isSso(id: string): boolean {
+		return !!this.entries().find((t) => t.id === id)?.clientId;
+	}
 	view(t: TenantEntry): TenantView {
 		let exp: number | undefined;
 		try {
-			exp = peekJwt(openToken(t.tokenEnc, this.deps.sealKey)).exp;
+			if (t.tokenEnc) exp = peekJwt(openToken(t.tokenEnc, this.deps.sealKey)).exp;
 		} catch {
 			/* sealed with another HUB_SECRET */
 		}
-		return { id: t.id, name: t.name, tenant: t.tenant, host: t.host, tokenHint: t.tokenHint, tokenExpiresAt: exp ? new Date(exp * 1000).toISOString() : undefined, createdAt: t.createdAt };
+		const sso = !!t.clientId;
+		return { id: t.id, name: t.name, tenant: t.tenant, host: t.host, mode: sso ? "sso" : "token", clientId: t.clientId, issuer: sso ? this.issuerFor(t) : undefined, loginPath: sso ? `/t/${t.id}` : undefined, tokenHint: t.tokenHint, tokenExpiresAt: exp ? new Date(exp * 1000).toISOString() : undefined, createdAt: t.createdAt };
 	}
 
-	async add(p: { name: string; tenant: string; token: string; host?: string }): Promise<TenantView> {
+	async add(p: { name: string; tenant: string; host?: string; issuer?: string; token?: string; clientId?: string; clientSecret?: string }): Promise<TenantView> {
 		const slug = p.name.toLowerCase().replace(/[^a-z0-9]+/g, "-").replace(/^-|-$/g, "").slice(0, 30) || "tenant";
 		let id = slug;
 		for (let n = 2; this.entries().some((t) => t.id === id); n++) id = `${slug}-${n}`;
-		const entry: TenantEntry = { id, name: p.name, tenant: p.tenant, host: p.host, tokenEnc: sealToken(p.token, this.deps.sealKey), tokenHint: p.token.slice(-6), createdAt: new Date(this.deps.now()).toISOString() };
+		const sign = p.clientId && p.clientSecret ? { clientId: p.clientId, clientSecretEnc: sealToken(p.clientSecret, this.deps.sealKey), issuer: p.issuer } : { tokenEnc: sealToken(p.token ?? "", this.deps.sealKey), tokenHint: (p.token ?? "").slice(-6) };
+		const entry: TenantEntry = { id, name: p.name, tenant: p.tenant, host: p.host, ...sign, createdAt: new Date(this.deps.now()).toISOString() };
 		await this.boot(entry); // fails before anything is stored
 		await this.deps.store.update((d) => {
 			(d.tenants ??= []).push(entry);
@@ -178,7 +210,7 @@ export class Tenants {
 	async replaceToken(id: string, token: string): Promise<TenantView | undefined> {
 		const t = this.entries().find((x) => x.id === id);
 		if (!t) return undefined;
-		const next: TenantEntry = { ...t, tokenEnc: sealToken(token, this.deps.sealKey), tokenHint: token.slice(-6) };
+		const next: TenantEntry = { ...t, clientId: undefined, clientSecretEnc: undefined, tokenEnc: sealToken(token, this.deps.sealKey), tokenHint: token.slice(-6) };
 		await this.boot(next);
 		await this.deps.store.update((d) => {
 			d.tenants = (d.tenants ?? []).map((x) => (x.id === id ? next : x));
@@ -186,6 +218,17 @@ export class Tenants {
 		return this.view(next);
 	}
 	/** Stops the tenant and forgets its token. Its data folder stays on disk. */
+	/** New client id / secret for an SSO tenant (also turns a token tenant into an SSO one). */
+	async replaceClient(id: string, clientId: string, clientSecret: string): Promise<TenantView | undefined> {
+		const t = this.entries().find((x) => x.id === id);
+		if (!t) return undefined;
+		const next: TenantEntry = { ...t, clientId, clientSecretEnc: sealToken(clientSecret, this.deps.sealKey), tokenEnc: undefined, tokenHint: undefined };
+		await this.boot(next);
+		await this.deps.store.update((d) => {
+			d.tenants = (d.tenants ?? []).map((x) => (x.id === id ? next : x));
+		});
+		return this.view(next);
+	}
 	async remove(id: string): Promise<boolean> {
 		if (!this.entries().some((x) => x.id === id)) return false;
 		this.cores.get(id)?.stop();
@@ -221,6 +264,14 @@ export class Tenants {
 		/** With a central password set, only the central area manages tenants; without one, admins of the main hub do. */
 		const canManage = async (c: Context): Promise<boolean> => (env.centralPassword ? inCentral(c) : isMainAdmin(c));
 
+		// A tenant's own address: picks the tenant, then its Maranics sign-in decides who gets in. SSO tenants only:
+		// a token tenant signs in by itself, so it stays reachable only through a station link or the central area.
+		app.get("/t/:id", (c) => {
+			const id = c.req.param("id");
+			if (!this.cores.has(id) || !this.isSso(id)) return c.text("Unknown tenant", 404);
+			c.header("Set-Cookie", this.setCookie(id, "client"));
+			return c.redirect(c.req.query("to") === "client" ? "/client" : "/admin", 302);
+		});
 		app.get("/api/central/me", (c) => c.json({ configured: !!env.centralPassword, signedIn: inCentral(c), mainName: env.maranics?.tenant ?? "main" }));
 		app.post("/api/central/login", async (c) => {
 			if (!env.centralPassword) return fail(c, 404, "NOT_CONFIGURED", "the central admin area has no password yet (CENTRAL_PASSWORD)");
@@ -264,7 +315,25 @@ export class Tenants {
 			const tenant = str(b.tenant);
 			const token = str(b.token)?.replace(/^Bearer\s+/i, "");
 			let host = str(b.host)?.replace(/\/+$/, "");
-			if (!name || !tenant || !token) return fail(c, 400, "BAD_REQUEST", "name, tenant and token are required");
+			let issuer = str(b.issuer)?.replace(/\/+$/, "");
+			const clientId = str(b.clientId);
+			const clientSecret = str(b.clientSecret);
+			if (!name || !tenant) return fail(c, 400, "BAD_REQUEST", "name and tenant are required");
+			if (!(clientId && clientSecret) && !token) return fail(c, 400, "BAD_REQUEST", "client id and client secret are required");
+			const allowedUrl = (raw: string): URL => {
+				const u = new URL(raw);
+				const allowed = env.maranics?.allowedHosts ?? [];
+				if (u.protocol !== "https:" && u.hostname !== "localhost" && u.hostname !== "127.0.0.1") throw new Error("https only");
+				if (!allowed.some((a) => (a.startsWith(".") ? u.hostname.endsWith(a) : u.hostname === a))) throw new Error(`host not allowed (HUB_ALLOWED_HOSTS): ${u.hostname}`);
+				return u;
+			};
+			if (issuer) {
+				try {
+					issuer = allowedUrl(issuer).href.replace(/\/+$/, "");
+				} catch (err) {
+					return fail(c, 400, "BAD_REQUEST", `sign-in address: ${err instanceof Error ? err.message : "invalid"}`);
+				}
+			}
 			if (host) {
 				try {
 					const u = new URL(host);
@@ -277,7 +346,7 @@ export class Tenants {
 				}
 			}
 			try {
-				return c.json(await this.add({ name, tenant, token, host }), 201);
+				return c.json(await this.add({ name, tenant, host, issuer, token, clientId, clientSecret }), 201);
 			} catch (err) {
 				return fail(c, 502, "TENANT_START", err instanceof Error ? err.message : String(err));
 			}
@@ -287,6 +356,18 @@ export class Tenants {
 			if (!token) return fail(c, 400, "BAD_REQUEST", "token is required");
 			const v = await this.replaceToken(c.req.param("id"), token);
 			return v ? c.json(v) : fail(c, 404, "NOT_FOUND", "unknown tenant");
+		});
+		app.put("/api/tenants/:id/client", async (c) => {
+			const b = (await c.req.json().catch(() => ({}))) as Record<string, unknown>;
+			const clientId = str(b.clientId);
+			const clientSecret = str(b.clientSecret);
+			if (!clientId || !clientSecret) return fail(c, 400, "BAD_REQUEST", "client id and client secret are required");
+			try {
+				const v = await this.replaceClient(c.req.param("id"), clientId, clientSecret);
+				return v ? c.json(v) : fail(c, 404, "NOT_FOUND", "unknown tenant");
+			} catch (err) {
+				return fail(c, 502, "TENANT_START", err instanceof Error ? err.message : String(err));
+			}
 		});
 		app.delete("/api/tenants/:id", async (c) => ((await this.remove(c.req.param("id"))) ? c.json({ ok: true }) : fail(c, 404, "NOT_FOUND", "unknown tenant")));
 		app.post("/api/tenants/:id/enter", (c) => {
