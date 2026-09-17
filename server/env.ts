@@ -69,6 +69,8 @@ export interface HubEnv {
 	maranics?: MaranicsEnv;
 	oidc?: OidcEnv;
 	oidcReason?: string;
+	/** Password of the central admin area (`/central`, tenant management). Unset → main-hub admins manage tenants instead. */
+	centralPassword?: string;
 	/** Set on the core of a token tenant (`server/tenants.ts`); the main hub leaves it unset. */
 	tokenTenant?: { id: string; name: string };
 	speech: SpeechEnv;
@@ -165,6 +167,8 @@ export function parseEnv(e: Env, defaults: { cwd: string } = { cwd: process.cwd(
 			};
 	} else oidcReason = "Sign-in is not configured (HUB_OIDC_ISSUER, HUB_OIDC_CLIENT_ID, HUB_OIDC_CLIENT_SECRET)";
 
+	const centralPassword = s(e, "CENTRAL_PASSWORD", "HUB_CENTRAL_PASSWORD");
+	if (centralPassword && centralPassword.length < 12) throw new EnvError("CENTRAL_PASSWORD must be at least 12 characters");
 	const devUserName = s(e, "DEV_USER");
 	const devUser = devUserName ? { sub: `dev:${devUserName.toLowerCase().replace(/\s+/g, "-")}`, name: devUserName, email: s(e, "DEV_USER_EMAIL") ?? `${devUserName.toLowerCase().replace(/\s+/g, ".")}@example.com` } : undefined;
 
@@ -215,6 +219,7 @@ export function parseEnv(e: Env, defaults: { cwd: string } = { cwd: process.cwd(
 			defaultLanguage: s(e, "DEFAULT_LANGUAGE") ?? "en",
 			readNotices: b(e, "READ_NOTICES"),
 		},
+		centralPassword,
 		serviceTokens: (s(e, "SERVICE_TOKENS", "FLOW_SERVICE_TOKEN") ?? "")
 			.split(",")
 			.map((x) => x.trim())

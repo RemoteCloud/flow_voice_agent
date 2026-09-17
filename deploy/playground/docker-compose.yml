@@ -50,6 +50,7 @@ services:
       VESSEL_ID: ${VESSEL_ID:-ai-playground}
       HUB_SECRET: ${HUB_SECRET:?set HUB_SECRET in /opt/flowvoice/.env}
       SESSION_SECRET: ${SESSION_SECRET:?set SESSION_SECRET in /opt/flowvoice/.env}
+      CENTRAL_PASSWORD: ${CENTRAL_PASSWORD:-}
       # Maranics tenant + API gateway host (Flows / Templates APIs under {host}/app/…)
       HUB_TENANT: ${HUB_TENANT:?set HUB_TENANT in /opt/flowvoice/.env}
       HUB_MARANICS_HOST: ${HUB_MARANICS_HOST:?set HUB_MARANICS_HOST in /opt/flowvoice/.env}

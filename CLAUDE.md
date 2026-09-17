@@ -62,6 +62,7 @@ For trying other Maranics tenants, not a full tenant model. `main.ts` `buildCore
 - **Direct links**: `/client` = run-and-voice client on any device (wins over UA detection and `fv.mobile`), `/admin` = desktop admin; `/` keeps detecting. Station posters point at `/client#/join/<token>` (old `/?mobile=1#/join/…` posters still work); sign-in carries `returnTo` so the path survives OIDC.
 - **Clients**: one PWA for Android (agent APK), macOS, Windows and Raspberry Pi (Chromium kiosk). TTS is the browser's `speechSynthesis` (a Pi needs `speech-dispatcher` + `espeak-ng`, or `TTS_ENDPOINT`).
 - **Discard and Complete are screen-only**; spoken "discard" only reminds the user.
+- **Central admin area** `/central` (`web/src/pages/Central.tsx`, rendered by `main.tsx` before `App`): its own password `CENTRAL_PASSWORD` (≥ 12 chars), `POST /api/central/login` (rate limited, timing-safe) → signed `fv_central` cookie (12 h), `GET /api/central/me`, `POST /api/central/logout`; all in `server/tenants.ts`. With the password set, only a central session adds / opens / removes tenants (`/api/tenants*`); without it, main-hub admins do (dev). `npm run mock` runs with it set.
 - Everything runs on Windows, macOS and Linux via Node launchers (`scripts/*.mjs`); no shell built-ins in npm scripts.
 
 ## Commands

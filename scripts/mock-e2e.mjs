@@ -39,7 +39,7 @@ const sttUrl = `http://127.0.0.1:${sttServer.address().port}`;
 
 const hub = spawn(process.execPath, ["dist/server.mjs"], {
 	cwd: root,
-	env: { ...process.env, HUB_SECRET: "e2e-secret-0123456789abcdef", HUB_PORT: String(port), HUB_DATA_DIR: dataDir, HUB_PUBLIC_DIR: path.join(root, "dist", "public"), HUB_TENANT: "demo", HUB_MARANICS_HOST: fake.url, DEV_USER: "Bridge Officer", DEV_MARANICS_TOKEN: "t0k3n", SERVICE_TOKENS: "svc-token", STT_BACKUP_ENDPOINT: sttUrl, LOG_LEVEL: "debug", LISTEN_MS: "1500", CONFIRM_MS: "1500", EXCHANGE_MS: "20000" },
+	env: { ...process.env, HUB_SECRET: "e2e-secret-0123456789abcdef", HUB_PORT: String(port), HUB_DATA_DIR: dataDir, HUB_PUBLIC_DIR: path.join(root, "dist", "public"), HUB_TENANT: "demo", HUB_MARANICS_HOST: fake.url, DEV_USER: "Bridge Officer", DEV_MARANICS_TOKEN: "t0k3n", CENTRAL_PASSWORD: "central-pass-e2e", SERVICE_TOKENS: "svc-token", STT_BACKUP_ENDPOINT: sttUrl, LOG_LEVEL: "debug", LISTEN_MS: "1500", CONFIRM_MS: "1500", EXCHANGE_MS: "20000" },
 	stdio: ["ignore", "pipe", "pipe"],
 });
 hub.stdout.on("data", (d) => log.push(String(d)));
@@ -545,11 +545,22 @@ try {
 	step = "tenants";
 	const adminJar = new Map();
 	assert.equal((await api("POST", "auth/dev", undefined, adminJar)).body.isAdmin, true);
+	// tenants are managed in the central admin area: its own password, not the main hub's admin sign-in
+	const locked = (await api("GET", "tenants", undefined, adminJar)).body;
+	assert.equal(locked.canManage, false, "a hub admin alone does not manage tenants");
+	assert.equal(locked.central, true);
+	assert.equal((await api("POST", "tenants", { name: "X", tenant: "demo", token: "t0k3n" }, adminJar)).status, 403);
+	assert.deepEqual((await api("GET", "central/me", undefined, adminJar)).body, { configured: true, signedIn: false, mainName: "demo" });
+	assert.equal((await api("POST", "central/login", { password: "nope" }, adminJar)).status, 403);
+	assert.equal((await api("POST", "central/login", { password: "central-pass-e2e" }, adminJar)).status, 200);
+	assert.equal((await api("GET", "central/me", undefined, adminJar)).body.signedIn, true);
+	const forgedCentral = new Map([["fv_central", `${Date.now() + 3600_000}.AAAA`]]);
+	assert.equal((await api("GET", "central/me", undefined, forgedCentral)).body.signedIn, false, "a forged central cookie is nothing");
 	const t0 = (await api("GET", "tenants", undefined, adminJar)).body;
 	assert.equal(t0.canManage, true);
 	assert.equal(t0.current, undefined);
 	const stranger = new Map();
-	assert.equal((await api("POST", "tenants", { name: "X", tenant: "demo", token: "t0k3n" }, stranger)).status, 403, "only main-hub admins add tenants");
+	assert.equal((await api("POST", "tenants", { name: "X", tenant: "demo", token: "t0k3n" }, stranger)).status, 403, "only the central area adds tenants");
 	const added = await api("POST", "tenants", { name: "Other Co", tenant: "demo", token: "Bearer t0k3n" }, adminJar);
 	assert.equal(added.status, 201, JSON.stringify(added.body));
 	assert.equal(added.body.id, "other-co");
@@ -588,6 +599,8 @@ try {
 	assert.equal((await api("POST", "tenants/leave", undefined, adminJar)).status, 200);
 	assert.equal((await api("GET", "auth/me", undefined, adminJar)).status, 200);
 	assert.equal((await api("DELETE", "tenants/other-co", undefined, adminJar)).status, 200);
+	assert.equal((await api("POST", "central/logout", undefined, adminJar)).status, 200);
+	assert.equal((await api("GET", "tenants", undefined, adminJar)).body.canManage, false, "signed out of the central area");
 	assert.equal((await api("GET", "auth/me", undefined, tPhone)).status, 401, "a removed tenant's cookie falls back to the main hub");
 
 	step = "speech models";

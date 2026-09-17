@@ -64,7 +64,17 @@ export function TenantsTab() {
 			</section>
 
 			{!data.canManage ? (
-				<p className="px-1 text-sm text-fg-muted">Tenants are added and switched by an admin of the main hub. Go back to the main hub to manage them.</p>
+				data.central ? (
+					<p className="px-1 text-sm text-fg-muted">
+						Tenants are added, opened and removed in the{" "}
+						<a className="underline" href="/central">
+							central admin area
+						</a>
+						. It has its own password.
+					</p>
+				) : (
+					<p className="px-1 text-sm text-fg-muted">Tenants are added and switched by an admin of the main hub. Go back to the main hub to manage them.</p>
+				)
 			) : (
 				<>
 					<section className="card">

@@ -15,10 +15,14 @@ import { registerSecret } from "./core/redact.js";
 import type { HubEnv } from "./env.js";
 import { ROLE_HEADER, SESSION_COOKIE, readSession, sidHash, validSession } from "./http/session.js";
 export { SESSION_COOKIE };
+import { LOGIN_LIMITS, RateLimiter } from "./http/rateLimit.js";
 import { openToken, sealToken, verifyDeckToken } from "./store/crypto.js";
 import type { HubStore, TenantEntry } from "./store/HubStore.js";
 
 export const TENANT_COOKIE = "fv_tenant";
+/** Signed-in marker of the central admin area: `<expiryMs>.<hmac>`, 12 hours. */
+export const CENTRAL_COOKIE = "fv_central";
+const CENTRAL_TTL_MS = 12 * 3600_000;
 /** Set by the dispatcher (never trusted from outside): how the caller got into a token tenant. */
 export { ROLE_HEADER };
 export type TenantRole = "admin" | "client";
@@ -45,6 +49,8 @@ export interface TenantsResponse {
 	/** The token tenant this browser is in; absent = the main hub. */
 	current?: { id: string; name: string };
 	canManage: boolean;
+	/** True when tenants are managed in the central admin area (`/central`) rather than by main-hub admins. */
+	central: boolean;
 	mainName: string;
 	tenants: TenantView[];
 }
@@ -202,20 +208,57 @@ export class Tenants {
 			return !!row && row.sub === claims.sub && !!store.get().users.find((u) => u.sub === row.sub)?.isAdmin;
 		};
 		const str = (v: unknown) => (typeof v === "string" && v.trim() ? v.trim() : undefined);
+		const secure = env.publicUrl?.startsWith("https:") ? "; Secure" : "";
+		const limiter = new RateLimiter(LOGIN_LIMITS, this.deps.now);
+		const centralSig = (exp: string) => createHmac("sha256", env.sessionSecret).update(`central:${exp}`).digest("base64url");
+		const inCentral = (c: Context): boolean => {
+			const m = /^(\d{10,16})\.([A-Za-z0-9_-]+)$/.exec(getCookie(c, CENTRAL_COOKIE) ?? "");
+			if (!env.centralPassword || !m || Number(m[1]) < this.deps.now()) return false;
+			const want = Buffer.from(centralSig(m[1]!));
+			const got = Buffer.from(m[2]!);
+			return want.length === got.length && timingSafeEqual(want, got);
+		};
+		/** With a central password set, only the central area manages tenants; without one, admins of the main hub do. */
+		const canManage = async (c: Context): Promise<boolean> => (env.centralPassword ? inCentral(c) : isMainAdmin(c));
+
+		app.get("/api/central/me", (c) => c.json({ configured: !!env.centralPassword, signedIn: inCentral(c), mainName: env.maranics?.tenant ?? "main" }));
+		app.post("/api/central/login", async (c) => {
+			if (!env.centralPassword) return fail(c, 404, "NOT_CONFIGURED", "the central admin area has no password yet (CENTRAL_PASSWORD)");
+			const ip = (env.trustProxy ? c.req.header("x-forwarded-for")?.split(",")[0]?.trim() : undefined) ?? c.req.header("x-real-ip") ?? "unknown";
+			const lim = limiter.check(ip);
+			if (!lim.ok) {
+				c.header("Retry-After", String(lim.retryAfterSec));
+				return c.json({ error: { code: "RATE_LIMITED", message: "too many attempts, wait 15 minutes" } }, 429);
+			}
+			const given = createHmac("sha256", env.sessionSecret).update(str(((await c.req.json().catch(() => ({}))) as Record<string, unknown>).password) ?? "").digest();
+			const want = createHmac("sha256", env.sessionSecret).update(env.centralPassword).digest();
+			if (!timingSafeEqual(given, want)) {
+				this.deps.log.warn(`central admin: wrong password from ${ip}`);
+				return fail(c, 403, "FORBIDDEN", "wrong password");
+			}
+			const exp = String(this.deps.now() + CENTRAL_TTL_MS);
+			c.header("Set-Cookie", `${CENTRAL_COOKIE}=${exp}.${centralSig(exp)}; Path=/; Max-Age=${CENTRAL_TTL_MS / 1000}; SameSite=Strict; HttpOnly${secure}`);
+			this.deps.log.info(`central admin: signed in from ${ip}`);
+			return c.json({ ok: true });
+		});
+		app.post("/api/central/logout", (c) => {
+			c.header("Set-Cookie", `${CENTRAL_COOKIE}=; Path=/; Max-Age=0; SameSite=Strict; HttpOnly${secure}`);
+			return c.json({ ok: true });
+		});
 
 		app.get("/api/tenants", async (c) => {
 			const cur = this.parseCookie(getCookie(c, TENANT_COOKIE));
-			const canManage = await isMainAdmin(c);
+			const manage = await canManage(c);
 			const curEntry = cur && this.entries().find((t) => t.id === cur.id);
-			return c.json<TenantsResponse>({ current: curEntry ? { id: curEntry.id, name: curEntry.name } : undefined, canManage, mainName: env.maranics?.tenant ?? "main", tenants: canManage ? this.entries().map((t) => this.view(t)) : [] });
+			return c.json<TenantsResponse>({ current: curEntry ? { id: curEntry.id, name: curEntry.name } : undefined, canManage: manage, central: !!env.centralPassword, mainName: env.maranics?.tenant ?? "main", tenants: manage ? this.entries().map((t) => this.view(t)) : [] });
 		});
 		app.post("/api/tenants/leave", (c) => {
 			c.header("Set-Cookie", this.setCookie(undefined));
 			return c.json({ ok: true });
 		});
-		app.use("/api/tenants/*", async (c, next) => ((await isMainAdmin(c)) ? next() : fail(c, 403, "FORBIDDEN", "only an admin of the main hub manages tenants")));
+		app.use("/api/tenants/*", async (c, next) => ((await canManage(c)) ? next() : fail(c, 403, "FORBIDDEN", env.centralPassword ? "sign in to the central admin area first" : "only an admin of the main hub manages tenants")));
 		app.post("/api/tenants", async (c) => {
-			if (!(await isMainAdmin(c))) return fail(c, 403, "FORBIDDEN", "only an admin of the main hub manages tenants");
+			if (!(await canManage(c))) return fail(c, 403, "FORBIDDEN", env.centralPassword ? "sign in to the central admin area first" : "only an admin of the main hub manages tenants");
 			const b = (await c.req.json().catch(() => ({}))) as Record<string, unknown>;
 			const name = str(b.name);
 			const tenant = str(b.tenant);
