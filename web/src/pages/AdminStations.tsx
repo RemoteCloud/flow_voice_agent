@@ -1,5 +1,5 @@
 import { useEffect, useState } from "react";
-import type { ChecklistPick, JoinTokenResponse, Station, StationView, StatusResponse, VoiceProfile } from "../../../server/api.js";
+import type { ChecklistPick, JoinTokenResponse, LibraryView, Station, StationView, StatusResponse, VoiceProfile } from "../../../server/api.js";
 import { encodeQr, qrToSvg } from "../../../server/core/qr.js";
 import { api, toApiError } from "../api.js";
 import { QrCode } from "../components/QrCode.js";
@@ -29,8 +29,16 @@ export function StationsTab({ s, reload, canEdit }: { s: StatusResponse; reload:
 	const toggleOpen = (id: string) => setOpenIds((o) => { const n = new Set(o); if (n.has(id)) n.delete(id); else n.add(id); return n; });
 	useEffect(() => {
 		api.get<VoiceProfile[]>("profiles").then(setProfiles, () => setProfiles([]));
-		api.get<ChecklistPick[]>("checklists").then(
-			(p) => setTemplates(p.filter((x) => x.source === "template")),
+		// stations pick from the central register; an empty register falls back to everything the Templates app offers
+		api.get<LibraryView>("library").then(
+			(l) => {
+				if (l.templates.length) setTemplates(l.templates.map((t) => ({ templateId: t.templateId, templateName: t.name, language: t.language }) as ChecklistPick));
+				else
+					api.get<ChecklistPick[]>("checklists").then(
+						(p) => setTemplates(p.filter((x) => x.source === "template")),
+						() => setTemplates([]),
+					);
+			},
 			() => setTemplates([]),
 		);
 	}, []);
@@ -295,7 +303,6 @@ function TemplateRules({ rules, templates, stationLanguage, canEdit, onChange }:
 	const r: Rules = rules ?? {};
 	const ids = Object.keys(r);
 	const [pick, setPick] = useState("");
-	const [pickLang, setPickLang] = useState("");
 	const nameOf = (id: string) => templates?.find((t) => t.templateId === id)?.templateName ?? id;
 	const put = (next: Rules) => onChange(Object.keys(next).length ? next : undefined);
 	const set = (id: string, patch: Rules[string]) => {
@@ -310,9 +317,8 @@ function TemplateRules({ rules, templates, stationLanguage, canEdit, onChange }:
 	};
 	const add = () => {
 		if (!pick) return;
-		put({ ...r, [pick]: { access: "start", ...(pickLang ? { language: pickLang } : {}) } });
+		put({ ...r, [pick]: { access: "start" } });
 		setPick("");
-		setPickLang("");
 	};
 	const free = (templates ?? []).filter((t) => !(t.templateId in r));
 	const langOptions = (
@@ -329,7 +335,7 @@ function TemplateRules({ rules, templates, stationLanguage, canEdit, onChange }:
 		<div className="rounded-lg border border-line">
 			<div className="px-3 py-2">
 				<h3 className="text-sm font-medium">Checklists on this station</h3>
-				<p className="text-xs text-fg-muted">{ids.length ? "Only the checklists added here are available on this station. Changes here are saved at once." : "Nothing added: the hub-wide Start buttons list applies. Add checklists to limit this station to them."}</p>
+				<p className="text-xs text-fg-muted">{ids.length ? "Only the checklists added here are available on this station. Changes here are saved at once." : "Nothing added: every checklist of the hub (Admin → Checklist setup) is available here. Add checklists to limit this station to them. Language and answer words are set centrally under Checklist setup."}</p>
 			</div>
 			{ids.length > 0 && (
 				<ul className="divide-y divide-line border-t border-line">
@@ -341,9 +347,7 @@ function TemplateRules({ rules, templates, stationLanguage, canEdit, onChange }:
 								<option value="use">Use only</option>
 								{r[id]?.access === "off" && <option value="off">Not here</option>}
 							</select>
-							<select className="input w-auto py-1 text-xs" value={r[id]?.language ?? ""} disabled={!canEdit} onChange={(e) => set(id, { language: e.target.value || undefined })} title="Language this checklist is spoken and answered in on this station">
-								{langOptions}
-							</select>
+							<span className="text-xs text-fg-faint">{templates?.find((t) => t.templateId === id)?.language ?? "station language"}</span>
 							<button type="button" className="btn btn-sm btn-ghost" disabled={!canEdit} onClick={() => remove(id)}>
 								Remove
 							</button>
@@ -359,9 +363,6 @@ function TemplateRules({ rules, templates, stationLanguage, canEdit, onChange }:
 							{t.templateName}
 						</option>
 					))}
-				</select>
-				<select className="input w-auto py-1 text-xs" value={pickLang} disabled={!canEdit || !pick} onChange={(e) => setPickLang(e.target.value)}>
-					{langOptions}
 				</select>
 				<button type="button" className="btn btn-sm btn-primary" disabled={!canEdit || !pick} onClick={add}>
 					Add

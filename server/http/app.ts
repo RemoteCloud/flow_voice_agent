@@ -7,7 +7,7 @@ import { createHmac, timingSafeEqual } from "node:crypto";
 import { Hono, type Context } from "hono";
 import QRCode from "qrcode";
 import { getCookie } from "hono/cookie";
-import type { ApiError, EnrollPollResponse, EnrollRequest, EnrollResponse, HealthResponse, JoinRequest, JoinResponse, JoinTokenResponse, LogoutResponse, MeResponse, SessionProbeResponse, StationView, StatusResponse } from "../api.js";
+import type { ApiError, EnrollPollResponse, EnrollRequest, EnrollResponse, HealthResponse, JoinRequest, JoinResponse, JoinTokenResponse, LibraryView, LogoutResponse, MeResponse, SessionProbeResponse, StationView, StatusResponse } from "../api.js";
 import { isJoinToken } from "../protocol.js";
 import type { HubEnv } from "../env.js";
 import type { Logger } from "../core/log.js";
@@ -645,6 +645,64 @@ export function createApp(deps: AppDeps): Hono {
 		void models.ensure(lang).catch((err) => log.warn(`speech model ${lang}: ${err instanceof Error ? err.message : String(err)}`));
 		return c.json(await models.list());
 	});
+	// ----- central checklist register (Admin → Checklist setup); template ids may contain "/" so they travel in the body / query
+	const libraryView = (): LibraryView => {
+		const d = store.get();
+		return { templates: Object.values(d.library ?? {}).sort((a, b) => a.name.localeCompare(b.name)).map((t) => ({ ...t, language: d.settings.templateLanguages?.[t.templateId], words: d.settings.itemAnswers?.[t.templateId] ?? {} })) };
+	};
+	api.get("/library", (c) => c.json(libraryView()));
+	api.get("/library/available", (c) => handle(c, async () => c.json({ templates: await engine.availableTemplates(c.get("sessionRow")) })));
+	api.post("/library", async (c) => {
+		const denied = requireAdmin(c);
+		if (denied) return denied;
+		const body = (await c.req.json().catch(() => ({}))) as { templateId?: unknown };
+		const id = str(body.templateId);
+		if (!id) return fail(c, 400, "BAD_REQUEST", "templateId is required");
+		return handle(c, async () => {
+			await engine.registerTemplate(c.get("sessionRow"), id);
+			return c.json(libraryView());
+		});
+	});
+	api.delete("/library", async (c) => {
+		const denied = requireAdmin(c);
+		if (denied) return denied;
+		const id = c.req.query("templateId") ?? "";
+		await store.update((d) => {
+			if (d.library) delete d.library[id];
+			for (const st of d.stations) {
+				if (st.templates) delete st.templates[id];
+				if (st.templates && !Object.keys(st.templates).length) delete st.templates;
+			}
+		});
+		return c.json(libraryView());
+	});
+	/** Language and trigger words of one registered checklist. `words`: item key → words. */
+	api.put("/library/entry", async (c) => {
+		const denied = requireAdmin(c);
+		if (denied) return denied;
+		const body = (await c.req.json().catch(() => ({}))) as { templateId?: unknown; language?: unknown; words?: unknown };
+		const id = str(body.templateId);
+		if (!id || !store.get().library?.[id]) return fail(c, 404, "NOT_FOUND", "checklist is not in the register");
+		await store.update((d) => {
+			if (body.language !== undefined) {
+				const langs = (d.settings.templateLanguages ??= {});
+				if (typeof body.language === "string" && /^(en|sv|no|fr|de)$/.test(body.language)) langs[id] = body.language;
+				else delete langs[id];
+			}
+			if (isObj(body.words)) {
+				const per: Record<string, string[]> = {};
+				for (const [key, words] of Object.entries(body.words)) {
+					const list = Array.isArray(words) ? [...new Set(words.filter((w): w is string => typeof w === "string").map((w) => w.trim().toLowerCase().slice(0, 60)).filter(Boolean))].slice(0, 12) : [];
+					if (/^[dn]:/.test(key) && list.length) per[key] = list;
+				}
+				const all = (d.settings.itemAnswers ??= {});
+				if (Object.keys(per).length) all[id] = per;
+				else delete all[id];
+			}
+		});
+		return c.json(libraryView());
+	});
+
 	api.put("/settings", async (c) => {
 		const denied = requireAdmin(c);
 		if (denied) return denied;

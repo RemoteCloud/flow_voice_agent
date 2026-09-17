@@ -1,8 +1,17 @@
 /** HTTP view types shared with the web app (relative import from web/src). */
 import type { AuthErrorCode, AuthProviderView } from "./http/auth.js";
 import type { ChecklistPick, RunView } from "./protocol.js";
-import type { AuditEntry, Device, EventMapping, OutboxEntry, PendingEnrollment, Station, StationJoin, VoiceProfile } from "./store/HubStore.js";
+import type { AuditEntry, Device, LibraryTemplate, EventMapping, OutboxEntry, PendingEnrollment, Station, StationJoin, VoiceProfile } from "./store/HubStore.js";
 
+export type { LibraryTemplate };
+/** `GET /api/library`: the central checklist register with its language and trigger words. */
+export interface LibraryView {
+	templates: (LibraryTemplate & { language?: string; words: Record<string, string[]> })[];
+}
+/** `GET /api/library/available`: what the Templates app offers, flagged when already in the register. */
+export interface LibraryAvailable {
+	templates: { templateId: string; name: string; refId?: string; categoryName?: string; registered: boolean }[];
+}
 export type { AuthErrorCode, AuthProviderView, ChecklistPick, RunView, Station, StationJoin, Device, PendingEnrollment, VoiceProfile, EventMapping, OutboxEntry, AuditEntry };
 
 export interface MeResponse {

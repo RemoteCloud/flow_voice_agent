@@ -502,6 +502,29 @@ try {
 	await api("POST", `runs/${ansRun.runId}/abandon`);
 	await api("PUT", "settings", { itemAnswers: {} });
 
+	// central register: download from the Templates app, set language + answer words once, stations pick from it
+	step = "checklist register";
+	const avail = (await api("GET", "library/available")).body.templates;
+	assert.ok(avail.length >= 3 && avail.every((t) => t.registered === false), "nothing registered yet");
+	const reg = (await api("POST", "library", { templateId: "tpl-engine" })).body.templates;
+	assert.equal(reg.length, 1);
+	assert.equal(reg[0].items[0].key, "d:ER/Main/LubeOil", "items are snapshotted with their keys");
+	const entry = (await api("PUT", "library/entry", { templateId: "tpl-engine", language: "sv", words: { "d:ER/Main/LubeOil": ["Normal", "normal "], junk: ["x"] } })).body.templates[0];
+	assert.equal(entry.language, "sv");
+	assert.deepEqual(entry.words, { "d:ER/Main/LubeOil": ["normal"] });
+	assert.equal((await api("PUT", "library/entry", { templateId: "tpl-departure", language: "sv" })).status, 404, "only registered checklists can be edited");
+	const regPicks = (await api("GET", "checklists")).body;
+	assert.ok(regPicks.filter((p) => p.templateId === "tpl-engine").every((p) => p.access === "start" && p.language === "sv"));
+	assert.ok(regPicks.filter((p) => p.templateId !== "tpl-engine").every((p) => p.access === "off"), "a non-empty register is the whole offer");
+	assert.equal((await api("POST", "runs", { templateId: "tpl-departure", stationId: "ecr-01" })).status, 403);
+	const regRun = (await api("POST", "runs", { templateId: "tpl-engine", stationId: "ecr-01" })).body;
+	assert.deepEqual(regRun.items[0].expected, ["normal"]);
+	assert.equal(regRun.language, "sv");
+	await api("POST", `runs/${regRun.runId}/abandon`);
+	assert.equal((await api("DELETE", `library?templateId=${encodeURIComponent("tpl-engine")}`)).body.templates.length, 0);
+	await api("PUT", "settings", { itemAnswers: {}, templateLanguages: {} });
+	assert.ok((await api("GET", "checklists")).body.every((p) => p.access === "start"), "empty register → everything again");
+
 	step = "speech models";
 	const modelList = await (await fetch(`${base}/models/vosk`)).json();
 	assert.deepEqual(modelList.map((m) => m.language).sort(), ["de", "en", "fr", "sv"]);
@@ -529,7 +552,7 @@ try {
 	assert.deepEqual(again.map((st) => st.join.path), links.map((st) => st.join.path), "stable until rotated");
 
 	// audit is text only
-	const audit = await api("GET", "audit?limit=50");
+	const audit = await api("GET", "audit?limit=500");
 	assert.ok(audit.body.some((a) => a.kind === "item.committed" && a.transcript === "Pilot on board five minutes ago."));
 
 	ws.close();

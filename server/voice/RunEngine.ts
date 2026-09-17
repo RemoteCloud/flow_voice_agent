@@ -257,6 +257,10 @@ export class RunEngine {
 		if (templates.ok) {
 			for (const t of templates.data.items) {
 				if (t.status && !/active/i.test(t.status)) continue;
+				if (access(t.id) === "off") {
+					picks.push({ templateId: t.id, templateName: t.name, refId: t.refId, state: "not_started", readiness: "partial", needsScreen: 0, source: "template", startable: false, access: "off", language: this.templateLang(t.id, station) });
+					continue;
+				}
 				const detail = await this.deps.flows.getTemplate(api, t.id);
 				let readiness: ChecklistPick["readiness"] = "partial";
 				let needsScreen = 0;
@@ -451,6 +455,29 @@ export class RunEngine {
 	 * The template behind a flow, cached briefly. The v3 flow read does not carry a checkbox's option list
 	 * ("Utført::completed"), so without the template the hub would write "OK" where Flow expects "completed".
 	 */
+	/** Admin → Checklist setup: what the Templates app offers right now. */
+	async availableTemplates(session: HubSession): Promise<{ templateId: string; name: string; refId?: string; categoryName?: string; registered: boolean }[]> {
+		const api = await this.deps.credentials.apiSettings(session);
+		if (!api) throw noCredential();
+		const list = await this.deps.flows.listTemplates(api);
+		if (!list.ok) throw new EngineError(502, "MARANICS", `Maranics templates: ${list.message}`);
+		const library = this.deps.store.get().library ?? {};
+		return list.data.items.map((t) => ({ templateId: t.id, name: t.name, refId: t.refId, categoryName: t.categoryName, registered: !!library[t.id] })).sort((a, b) => a.name.localeCompare(b.name));
+	}
+
+	/** Download (or refresh) a template into the central register: name + a snapshot of its items. */
+	async registerTemplate(session: HubSession, templateId: string): Promise<void> {
+		const api = await this.deps.credentials.apiSettings(session);
+		if (!api) throw noCredential();
+		this.templates.delete(templateId);
+		const t = await this.deps.flows.getTemplate(api, templateId);
+		if (!t.ok) throw new EngineError(502, "MARANICS", `template: ${t.message}`);
+		const items = await this.templateItems(session, templateId);
+		await this.deps.store.update((d) => {
+			(d.library ??= {})[templateId] = { templateId, name: t.data.name, refId: t.data.refId, categoryName: t.data.categoryName, importedAt: iso(this.deps.now()), items };
+		});
+	}
+
 	/** Admin → Answers: the items of a template, with the key their answer words are stored under. */
 	async templateItems(session: HubSession, templateId: string): Promise<{ key: string; name: string; section?: string; type?: string }[]> {
 		const api = await this.deps.credentials.apiSettings(session);
@@ -610,12 +637,14 @@ export class RunEngine {
 
 	/** Station list first (Admin → Stations → Checklists on this station: only what was added), else the hub-wide Start buttons list (empty → everything). */
 	templateAccess(templateId: string | undefined, station?: Station): "start" | "use" | "off" {
-		const rule = templateId ? station?.templates?.[templateId]?.access : undefined;
-		if (rule) return rule;
+		const d = this.deps.store.get();
+		// the central register (Admin → Checklist setup), once it holds anything, is the whole offer
+		const hasLibrary = !!d.library && Object.keys(d.library).length > 0;
+		if (hasLibrary && !(templateId && d.library![templateId])) return "off";
 		// a station with its own list offers only what was added to it
-		if (station?.templates && Object.keys(station.templates).length) return templateId && station.templates[templateId] ? "start" : "off";
-		const allow = this.deps.store.get().settings.startable;
-		return !allow?.length || (!!templateId && allow.includes(templateId)) ? "start" : "off";
+		if (station?.templates && Object.keys(station.templates).length) return (templateId && station.templates[templateId]?.access) || (templateId && station.templates[templateId] ? "start" : "off");
+		if (hasLibrary) return "start";
+		return !d.settings.startable?.length || (!!templateId && d.settings.startable.includes(templateId)) ? "start" : "off";
 	}
 
 	/** The endpoint's chosen language wins over the station's configured one. */

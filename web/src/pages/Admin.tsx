@@ -1,4 +1,4 @@
-import { AnswersTab } from "./AdminAnswers.js";
+import { ChecklistsTab } from "./AdminChecklists.js";
 import { useCallback, useEffect, useState } from "react";
 import type { AuditEntry, ChecklistPick, Station, StatusResponse, VoiceProfile, EventMapping } from "../../../server/api.js";
 import { api, toApiError } from "../api.js";
@@ -8,7 +8,7 @@ import { StationsTab } from "./AdminStations.js";
 import { HubQr } from "./Login.js";
 import { versionLine } from "../build.js";
 
-type Tab = "status" | "start" | "answers" | "stations" | "devices" | "profiles" | "outbox" | "audit";
+type Tab = "status" | "checklists" | "stations" | "devices" | "profiles" | "outbox" | "audit";
 
 export function AdminPage() {
 	const { me } = useApp();
@@ -32,8 +32,7 @@ export function AdminPage() {
 
 	const tabs: [Tab, string][] = [
 		["status", "Status"],
-		["start", "Start buttons"],
-		["answers", "Answers"],
+		["checklists", "Checklist setup"],
 		["stations", "Stations"],
 		["devices", "Devices & sessions"],
 		["profiles", "Profiles & mappings"],
@@ -52,7 +51,7 @@ export function AdminPage() {
 				{!me.isAdmin && <span className="ml-auto text-xs text-fg-faint">read-only (not an admin)</span>}
 			</div>
 			{err && <p className="text-sm text-danger">{err}</p>}
-			{!status ? <p className="text-sm text-fg-muted">Loading…</p> : tab === "status" ? <StatusTab s={status} /> : tab === "start" ? <StartTab s={status} reload={load} canEdit={me.isAdmin} /> : tab === "answers" ? <AnswersTab s={status} reload={load} canEdit={me.isAdmin} /> : tab === "stations" ? <StationsTab s={status} reload={load} canEdit={me.isAdmin} /> : tab === "devices" ? <DevicesTab s={status} reload={load} canEdit={me.isAdmin} /> : tab === "profiles" ? <ProfilesTab canEdit={me.isAdmin} /> : tab === "outbox" ? <OutboxTab s={status} reload={load} /> : <AuditTab />}
+			{!status ? <p className="text-sm text-fg-muted">Loading…</p> : tab === "status" ? <StatusTab s={status} /> : tab === "checklists" ? <ChecklistsTab canEdit={me.isAdmin} /> : tab === "stations" ? <StationsTab s={status} reload={load} canEdit={me.isAdmin} /> : tab === "devices" ? <DevicesTab s={status} reload={load} canEdit={me.isAdmin} /> : tab === "profiles" ? <ProfilesTab canEdit={me.isAdmin} /> : tab === "outbox" ? <OutboxTab s={status} reload={load} /> : <AuditTab />}
 		</div>
 	);
 }
@@ -184,89 +183,6 @@ function StatusTab({ s }: { s: StatusResponse }) {
 				</div>
 			</section>
 		</div>
-	);
-}
-
-/** Which templates get a big start button on the phone / tablet home screen (and a place in the voice menu). Nothing ticked → all of them. */
-function StartTab({ s, reload, canEdit }: { s: StatusResponse; reload: () => Promise<void>; canEdit: boolean }) {
-	const [templates, setTemplates] = useState<ChecklistPick[] | undefined>();
-	const [err, setErr] = useState<string | undefined>();
-	const [busy, setBusy] = useState(false);
-	useEffect(() => {
-		api.get<ChecklistPick[]>("checklists").then(
-			(p) => setTemplates(p.filter((x) => x.source === "template")),
-			(e) => setErr(toApiError(e).message),
-		);
-	}, []);
-	const chosen = new Set(s.settings.startable ?? []);
-	const save = async (ids: string[]) => {
-		setBusy(true);
-		setErr(undefined);
-		try {
-			await api.put("settings", { startable: ids });
-			await reload();
-		} catch (e) {
-			setErr(toApiError(e).message);
-		} finally {
-			setBusy(false);
-		}
-	};
-	const toggle = (id: string) => void save(chosen.has(id) ? [...chosen].filter((x) => x !== id) : [...chosen, id]);
-	const langs = s.settings.templateLanguages ?? {};
-	const setLang = async (id: string, lang: string) => {
-		setBusy(true);
-		setErr(undefined);
-		try {
-			const next = { ...langs };
-			if (lang) next[id] = lang;
-			else delete next[id];
-			await api.put("settings", { templateLanguages: next });
-			await reload();
-		} catch (e) {
-			setErr(toApiError(e).message);
-		} finally {
-			setBusy(false);
-		}
-	};
-	return (
-		<section className="card">
-			<div className="card-head">
-				<div>
-					<h2 className="card-title">Start buttons & checklist language</h2>
-					<p className="text-xs text-fg-muted">{chosen.size ? `${chosen.size} checklist(s) can be started from the phone / tablet.` : "Nothing ticked: every checklist gets a start button."}</p>
-				</div>
-				{chosen.size > 0 && (
-					<button type="button" className="btn btn-sm" disabled={!canEdit || busy} onClick={() => void save([])}>
-						Show all
-					</button>
-				)}
-			</div>
-			{err && <p className="px-4 py-2 text-sm text-danger">{err}</p>}
-			{!templates ? (
-				<p className="card-body text-sm text-fg-muted">Loading checklists…</p>
-			) : (
-				<ul className="divide-y divide-line">
-					{templates.map((t) => (
-						<li key={t.templateId}>
-							<label className="flex cursor-pointer items-center gap-3 px-4 py-3 text-sm">
-								<input type="checkbox" className="h-5 w-5" checked={chosen.has(t.templateId)} disabled={!canEdit || busy} onChange={() => toggle(t.templateId)} />
-								<span className="min-w-0 flex-1 truncate">{t.templateName}</span>
-								<select className="input w-auto py-1 text-xs" value={langs[t.templateId] ?? ""} disabled={!canEdit || busy} onChange={(e) => void setLang(t.templateId, e.target.value)} title="Language the checklist is written in: spoken and recognised in it (English answers are always understood)">
-									<option value="">Station language</option>
-									<option value="en">English</option>
-									<option value="no">Norsk</option>
-									<option value="sv">Svenska</option>
-									<option value="de">Deutsch</option>
-									<option value="fr">Français</option>
-								</select>
-								<span className="text-xs text-fg-faint">{t.readiness === "full" ? "voice" : t.readiness === "partial" ? "partial voice" : "no voice"}</span>
-							</label>
-						</li>
-					))}
-					{!templates.length && <li className="px-4 py-3 text-sm text-fg-muted">No templates visible to this sign-in.</li>}
-				</ul>
-			)}
-		</section>
 	);
 }
 

@@ -70,6 +70,15 @@ export interface Station {
 	templates?: Record<string, StationTemplateRule>;
 }
 
+export interface LibraryTemplate {
+	templateId: string;
+	name: string;
+	refId?: string;
+	categoryName?: string;
+	importedAt: string;
+	items: { key: string; name: string; section?: string; type?: string }[];
+}
+
 export interface StationTemplateRule {
 	access?: "start" | "use" | "off";
 	language?: string;
@@ -239,6 +248,12 @@ export interface HubData {
 	outbox: OutboxEntry[];
 	audit: AuditEntry[];
 	idempotency: Record<string, { at: string; result: string }>;
+	/**
+	 * The central checklist register (Admin → Checklist setup): templates downloaded from the Templates app, with a snapshot of
+	 * their items. Once it holds anything, only registered checklists are offered; language and trigger words are set
+	 * here (`settings.templateLanguages` / `settings.itemAnswers`) and stations pick from it.
+	 */
+	library?: Record<string, LibraryTemplate>;
 	/** Portable file → modification time it had when it was last imported; a file is imported again only after it changed. */
 	portableSeen?: Record<string, number>;
 	settings: { readNotices: boolean; tzMode: "utc" | "local"; confirmation: "required" | "optional"; /** Template ids that get a start button on the phone/tablet home screen and in the voice menu; empty or absent → every template. */ startable?: string[]; /** Template id → language the checklist is written in (en/sv/no/fr/de); wins over the station language. */ templateLanguages?: Record<string, string>; /** Template id → item key (`answerKey`) → words that count as that item's answer ("up", "closed"). */ itemAnswers?: Record<string, Record<string, string[]>> };
