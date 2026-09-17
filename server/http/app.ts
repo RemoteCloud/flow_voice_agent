@@ -382,6 +382,8 @@ export function createApp(deps: AppDeps): Hono {
 		}),
 	);
 	api.post("/runs/:id/abandon", (c) => handle(c, async () => c.json(await engine.abandon(c.req.param("id"), "stopped on screen"))));
+	// template ids may contain "/" (NauticAI/ArrivalChecklist): query, not path
+	api.get("/template-items", (c) => handle(c, async () => c.json(await engine.templateItems(c.get("sessionRow"), c.req.query("templateId") ?? ""))));
 	api.get("/templates/:id/discard-reasons", (c) =>
 		handle(c, async () => {
 			const id = c.req.param("id");
@@ -389,9 +391,9 @@ export function createApp(deps: AppDeps): Hono {
 		}),
 	);
 	api.post("/interpret", async (c) => {
-		const body = (await c.req.json().catch(() => ({}))) as { type?: string; text?: string; options?: { title: string; value: string }[] };
+		const body = (await c.req.json().catch(() => ({}))) as { type?: string; text?: string; options?: { title: string; value: string }[]; answers?: unknown };
 		if (!str(body.type) || !str(body.text)) return fail(c, 400, "BAD_REQUEST", "type and text are required");
-		return c.json(engine.preview(body.type as string, body.text as string, body.options));
+		return c.json(engine.preview(body.type as string, body.text as string, body.options, Array.isArray(body.answers) ? body.answers.filter((a): a is string => typeof a === "string") : undefined));
 	});
 
 	// ----- stations / devices / status (admin screens; every signed-in user can read, admins write)
@@ -655,6 +657,19 @@ export function createApp(deps: AppDeps): Hono {
 				const next: Record<string, string> = {};
 				for (const [id, lang] of Object.entries(body.templateLanguages)) if (typeof lang === "string" && /^(en|sv|no|fr|de)$/.test(lang)) next[id] = lang;
 				d.settings.templateLanguages = next;
+			}
+			if (isObj(body.itemAnswers)) {
+				const all: Record<string, Record<string, string[]>> = {};
+				for (const [tpl, items] of Object.entries(body.itemAnswers)) {
+					if (!isObj(items)) continue;
+					const per: Record<string, string[]> = {};
+					for (const [key, words] of Object.entries(items)) {
+						const list = Array.isArray(words) ? [...new Set(words.filter((w): w is string => typeof w === "string").map((w) => w.trim().slice(0, 60)).filter(Boolean))].slice(0, 12) : [];
+						if (/^[dn]:/.test(key) && list.length) per[key] = list;
+					}
+					if (Object.keys(per).length) all[tpl] = per;
+				}
+				d.settings.itemAnswers = all;
 			}
 			if (Array.isArray(body.startable)) d.settings.startable = [...new Set(body.startable.filter((x): x is string => typeof x === "string" && !!x.trim()))];
 		});

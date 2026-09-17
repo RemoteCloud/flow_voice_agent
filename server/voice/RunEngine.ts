@@ -14,7 +14,7 @@ import type { DiscardReason, FlowDetail, FlowsClient, TemplateDetail } from "../
 import type { ChecklistPick, ExchangeState, HubEvent, HubEventType, RunItem, RunView } from "../protocol.js";
 import type { Credentials } from "../store/credentials.js";
 import type { HubSession, HubStore, PromptRecord, RunRecord, Station, VoiceProfile } from "../store/HubStore.js";
-import { buildItems, itemAnnouncement, nextItem, previousItem, progressOf, readinessOf, spokenNumber, startAnnouncement } from "./checklist.js";
+import { answerKey, buildItems, itemAnnouncement, nextItem, previousItem, progressOf, readinessOf, spokenNumber, startAnnouncement } from "./checklist.js";
 import { CHECKBOX_CHECKED, CHECKBOX_NOT_DONE, checkboxCheckedValue, controlWord, interpret, itemNumber, readbackText, THRESHOLDS, type ControlWord, type Interpretation, type InterpretContext } from "./interpret.js";
 import type { Outbox } from "./Outbox.js";
 import { normLang, t as tr } from "./i18n.js";
@@ -167,7 +167,7 @@ export class RunEngine {
 	}
 
 	private interpretCtx(r: RunRecord, item: RunItem, utteredAt: Date): InterpretContext {
-		return { utteredAt, tzMode: this.deps.store.get().settings.tzMode, timeZone: this.deps.policy.timeZone, maxPastHours: this.deps.policy.maxPastHours, options: item.options, language: normLang(r.language) };
+		return { utteredAt, tzMode: this.deps.store.get().settings.tzMode, timeZone: this.deps.policy.timeZone, maxPastHours: this.deps.policy.maxPastHours, options: item.options, language: normLang(r.language), answers: item.expected };
 	}
 
 	runsForUser(sub: string): RunRecord[] {
@@ -333,7 +333,7 @@ export class RunEngine {
 	private newRun(flow: FlowDetail, station: Station, session: HubSession | undefined, userName: string | undefined, template?: TemplateDetail): RunRecord {
 		const settings = this.deps.store.get().settings;
 		const profile = this.profileFor(flow.templateId, station);
-		const items = buildItems(flow, { profile, template, readNotices: settings.readNotices });
+		const items = buildItems(flow, { profile, template, readNotices: settings.readNotices, answers: settings.itemAnswers?.[flow.templateId ?? ""] });
 		const now = this.deps.now();
 		return {
 			runId: newId("run"),
@@ -360,7 +360,7 @@ export class RunEngine {
 		const detail = await this.deps.flows.getFlow(api, r.instanceId);
 		if (!detail.ok) return;
 		const profile = this.profileFor(detail.data.templateId, station);
-		const fresh = buildItems(detail.data, { profile, template: await this.templateDetail(api, detail.data.templateId), readNotices: this.deps.store.get().settings.readNotices });
+		const fresh = buildItems(detail.data, { profile, template: await this.templateDetail(api, detail.data.templateId), readNotices: this.deps.store.get().settings.readNotices, answers: this.deps.store.get().settings.itemAnswers?.[detail.data.templateId ?? ""] });
 		const local = new Map(r.items.map((i) => [i.taskId, i]));
 		for (const f of fresh) {
 			const l = local.get(f.taskId);
@@ -450,6 +450,15 @@ export class RunEngine {
 	 * The template behind a flow, cached briefly. The v3 flow read does not carry a checkbox's option list
 	 * ("Utført::completed"), so without the template the hub would write "OK" where Flow expects "completed".
 	 */
+	/** Admin → Answers: the items of a template, with the key their answer words are stored under. */
+	async templateItems(session: HubSession, templateId: string): Promise<{ key: string; name: string; section?: string; type?: string }[]> {
+		const api = await this.deps.credentials.apiSettings(session);
+		if (!api) throw noCredential();
+		const t = await this.templateDetail(api, templateId);
+		if (!t) throw new EngineError(502, "MARANICS", "template unavailable");
+		return [...t.sections].sort((a, b) => a.order - b.order).flatMap((s) => [...s.tasks].sort((a, b) => a.order - b.order).map((x) => ({ key: answerKey({ dataId: x.dataId, name: x.name }), name: x.name, section: s.name, type: x.type })));
+	}
+
 	private async templateDetail(api: NonNullable<Awaited<ReturnType<Credentials["apiSettings"]>>>, templateId: string | undefined): Promise<TemplateDetail | undefined> {
 		if (!templateId) return undefined;
 		const hit = this.templates.get(templateId);
@@ -689,6 +698,7 @@ export class RunEngine {
 		const profile = this.profileFor(r.templateId, station ?? ({} as Station));
 		const b = profile?.bindings.find((x) => x.dataId === item.dataId);
 		if (b?.phrases) out.push(...b.phrases);
+		if (item.expected) out.push(...item.expected);
 		return out;
 	}
 
@@ -698,7 +708,7 @@ export class RunEngine {
 		r.exchange = r.pendingReadback ? "confirming" : "listening";
 		await this.save(r);
 		this.deps.io.status(r.stationId, r.exchange, item.name);
-		this.deps.io.listen(r.stationId, `${r.runId}:${item.taskId}`, { maxMs, bias: this.biasFor(r, item), expect: r.pendingReadback ? "Confirm" : item.type, grammar: grammarFor(r.language, item, this.phrasesFor(r, item), !!r.pendingReadback), language: r.language });
+		this.deps.io.listen(r.stationId, `${r.runId}:${item.taskId}`, { maxMs, bias: this.biasFor(r, item), expect: r.pendingReadback ? "Confirm" : item.type, grammar: grammarFor(r.language, item, this.grammarWords(r, item), !!r.pendingReadback), language: r.language });
 		this.clearTimer(r.runId, "listen");
 		this.clearTimer(r.runId, "confirm");
 		const t = setTimeout(() => void this.onListenTimeout(r.runId), maxMs + 1500);
@@ -980,6 +990,11 @@ export class RunEngine {
 		const b = profile?.bindings.find((x) => x.dataId === item.dataId);
 		const phrases = [...(b?.phrases ?? []), item.name];
 		return phrases;
+	}
+
+	/** Bound phrases plus the item's answer words: what the on-device grammar recogniser must be able to hear. */
+	private grammarWords(r: RunRecord, item: RunItem): string[] {
+		return [...(this.phrasesFor(r, item) ?? []), ...(item.expected ?? [])];
 	}
 
 	/**
@@ -1746,7 +1761,7 @@ export class RunEngine {
 	}
 
 	/** `Interpretation` re-exported for the HTTP layer's manual-value preview. */
-	preview(type: string, text: string, options?: { title: string; value: string }[]): Interpretation {
-		return interpret(type, text, { utteredAt: new Date(this.deps.now()), tzMode: this.deps.store.get().settings.tzMode, timeZone: this.deps.policy.timeZone, maxPastHours: this.deps.policy.maxPastHours, options, language: normLang(this.deps.policy.defaultLanguage) });
+	preview(type: string, text: string, options?: { title: string; value: string }[], answers?: string[]): Interpretation {
+		return interpret(type, text, { utteredAt: new Date(this.deps.now()), tzMode: this.deps.store.get().settings.tzMode, timeZone: this.deps.policy.timeZone, maxPastHours: this.deps.policy.maxPastHours, options, language: normLang(this.deps.policy.defaultLanguage), answers });
 	}
 }

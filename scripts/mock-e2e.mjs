@@ -488,6 +488,20 @@ try {
 	await api("POST", `runs/${elsewhere.body.runId}/abandon`);
 	await api("PUT", "stations", plain);
 
+	// Admin → Answers: a word per item; an answer that contains it is accepted and shown as the value
+	step = "item answers";
+	const tItems = (await api("GET", "template-items?templateId=tpl-engine")).body;
+	const lube = tItems.find((i) => i.name === "Check lube oil pressure");
+	assert.equal(lube.key, "d:ER/Main/LubeOil");
+	const setAns = await api("PUT", "settings", { itemAnswers: { "tpl-engine": { [lube.key]: ["Normal ", "normal", ""], bogus: ["x"] } } });
+	assert.deepEqual(setAns.body.itemAnswers, { "tpl-engine": { [lube.key]: ["Normal", "normal"] } });
+	const ansRun = (await api("POST", "runs", { templateId: "tpl-engine", stationId: "ecr-01" })).body;
+	assert.deepEqual(ansRun.items[0].expected, ["Normal", "normal"], "the run item carries its answer words");
+	const heardAns = (await api("POST", "interpret", { type: "Checkbox", text: "pressure is normal", answers: ["normal"] })).body;
+	assert.equal(heardAns.ok, true, JSON.stringify(heardAns));
+	await api("POST", `runs/${ansRun.runId}/abandon`);
+	await api("PUT", "settings", { itemAnswers: {} });
+
 	step = "speech models";
 	const modelList = await (await fetch(`${base}/models/vosk`)).json();
 	assert.deepEqual(modelList.map((m) => m.language).sort(), ["de", "en", "fr", "sv"]);

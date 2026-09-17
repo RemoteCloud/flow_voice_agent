@@ -17,6 +17,8 @@ export interface InterpretContext {
 	maxPastHours: number;
 	options?: { title: string; value: string }[];
 	language?: string;
+	/** The item's own answer words (Admin → Answers): a transcript that contains one counts as the answer. */
+	answers?: string[];
 }
 
 export type Interpretation =
@@ -560,12 +562,36 @@ function fuzzyScore(a: string, b: string): number {
 	return A.size && B.size ? ((2 * c) / (A.size + B.size)) * 0.8 : 0;
 }
 
+const NEGATION = /(^| )(not|no|isn t|ikke|nei|inte|nej|nicht|nein|kein|pas|non)( |$)/;
+
+/** The answer word the transcript contains as whole words ("the ramp is up now" ⊇ "up"); never inside a negation. */
+export function heardAnswer(normalized: string, answers: string[] | undefined): string | undefined {
+	if (!answers?.length || NEGATION.test(normalized)) return undefined;
+	const hay = ` ${normalized} `;
+	return answers.find((a) => {
+		const n = normalizeTranscript(a);
+		return !!n && hay.includes(` ${n} `);
+	});
+}
+
 export function interpret(type: string, transcript: string, ctx: InterpretContext, phrases?: string[]): Interpretation {
 	const lang: Lang = normLang(ctx.language);
 	const msg = (key: string, params: Record<string, string | number> = {}) => tr(lang, key, params);
 	const raw = transcript.trim();
 	const normalized = normalizeTranscript(raw);
 	if (!normalized) return { ok: false, reason: "empty", message: msg("m_empty"), confidence: 0 };
+	const heard = heardAnswer(normalized, ctx.answers);
+	if (heard) {
+		const said = heard.trim();
+		const opts = ctx.options ?? [];
+		if (type === "Checkbox" && opts.length <= 1) return { ok: true, value: checkboxCheckedValue(opts).value, valueText: said, confidence: 0.92, kind: "bool" };
+		if (type === "RadioButtons" && !opts.length) return { ok: true, value: "Yes", valueText: said, confidence: 0.92, kind: "bool" };
+		if (type === "DateAndTime") return { ok: true, value: flowDateTime(ctx.utteredAt), valueText: `${said}, ${formatClock(ctx.utteredAt, ctx)}`, confidence: 0.85, kind: "now" };
+		if (type === "Text" || type === "LongText") return { ok: true, value: said, valueText: said, confidence: 0.9, kind: "text" };
+		const n = normalizeTranscript(said);
+		const opt = opts.find((o) => ` ${normalizeTranscript(o.title)} `.includes(` ${n} `) || normalizeTranscript(o.value) === n);
+		if (opt) return { ok: true, value: opt.value, valueText: opt.title, confidence: 0.92, kind: "option" };
+	}
 	const stripped = stripPhrase(normalized, phrases);
 	/** The user said only the bound phrase ("engine started"): the event itself, with no value attached. */
 	const phraseOnly = !stripped;

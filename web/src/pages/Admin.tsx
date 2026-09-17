@@ -1,3 +1,4 @@
+import { AnswersTab } from "./AdminAnswers.js";
 import { useCallback, useEffect, useState } from "react";
 import type { AuditEntry, ChecklistPick, Station, StatusResponse, VoiceProfile, EventMapping } from "../../../server/api.js";
 import { api, toApiError } from "../api.js";
@@ -7,7 +8,7 @@ import { StationsTab } from "./AdminStations.js";
 import { HubQr } from "./Login.js";
 import { versionLine } from "../build.js";
 
-type Tab = "status" | "start" | "stations" | "devices" | "profiles" | "outbox" | "audit";
+type Tab = "status" | "start" | "answers" | "stations" | "devices" | "profiles" | "outbox" | "audit";
 
 export function AdminPage() {
 	const { me } = useApp();
@@ -32,6 +33,7 @@ export function AdminPage() {
 	const tabs: [Tab, string][] = [
 		["status", "Status"],
 		["start", "Start buttons"],
+		["answers", "Answers"],
 		["stations", "Stations"],
 		["devices", "Devices & sessions"],
 		["profiles", "Profiles & mappings"],
@@ -50,7 +52,7 @@ export function AdminPage() {
 				{!me.isAdmin && <span className="ml-auto text-xs text-fg-faint">read-only (not an admin)</span>}
 			</div>
 			{err && <p className="text-sm text-danger">{err}</p>}
-			{!status ? <p className="text-sm text-fg-muted">Loading…</p> : tab === "status" ? <StatusTab s={status} /> : tab === "start" ? <StartTab s={status} reload={load} canEdit={me.isAdmin} /> : tab === "stations" ? <StationsTab s={status} reload={load} canEdit={me.isAdmin} /> : tab === "devices" ? <DevicesTab s={status} reload={load} canEdit={me.isAdmin} /> : tab === "profiles" ? <ProfilesTab canEdit={me.isAdmin} /> : tab === "outbox" ? <OutboxTab s={status} reload={load} /> : <AuditTab />}
+			{!status ? <p className="text-sm text-fg-muted">Loading…</p> : tab === "status" ? <StatusTab s={status} /> : tab === "start" ? <StartTab s={status} reload={load} canEdit={me.isAdmin} /> : tab === "answers" ? <AnswersTab s={status} reload={load} canEdit={me.isAdmin} /> : tab === "stations" ? <StationsTab s={status} reload={load} canEdit={me.isAdmin} /> : tab === "devices" ? <DevicesTab s={status} reload={load} canEdit={me.isAdmin} /> : tab === "profiles" ? <ProfilesTab canEdit={me.isAdmin} /> : tab === "outbox" ? <OutboxTab s={status} reload={load} /> : <AuditTab />}
 		</div>
 	);
 }

@@ -8,6 +8,16 @@ const ok = (r: ReturnType<typeof interpret>) => {
 };
 
 export async function run(): Promise<void> {
+	// answer words set per item: any answer that contains the word counts, a negation never does
+	const ramp: InterpretContext = { ...ctx, answers: ["up", "stowed"] };
+	assert.equal(ok(interpret("Checkbox", "the ramp is up now", ramp)).valueText, "up");
+	assert.equal(ok(interpret("Checkbox", "Stowed", ramp)).value, "OK");
+	assert.equal(ok(interpret("Checkbox", "yes", ramp)).valueText.toLowerCase(), "yes");
+	assert.equal(interpret("Checkbox", "supper", ramp).ok, false, "whole words only");
+	const neg = interpret("Checkbox", "not up", ramp);
+	assert.ok(!neg.ok || neg.value !== "OK", "a negation is never the answer word");
+	assert.equal(ok(interpret("QuickSelect", "it reads high today", { ...ctx, answers: ["high"], options: [{ title: "Normal", value: "Normal" }, { title: "High", value: "High" }] })).value, "High");
+
 	// numbers
 	assert.equal(wordsToNumber("twenty point five"), 20.5);
 	assert.equal(wordsToNumber("one hundred and twelve"), 112);

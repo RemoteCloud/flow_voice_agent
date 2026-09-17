@@ -59,6 +59,8 @@ export interface RunItem {
 	committedAt?: string;
 	outboxId?: string;
 	skipReason?: string;
+	/** Words set in Admin → Answers: an answer that contains one of them counts as the answer for this item. */
+	expected?: string[];
 }
 
 export interface RunView {
