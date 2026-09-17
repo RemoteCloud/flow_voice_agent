@@ -49,6 +49,8 @@ export interface TenantView {
 	tokenHint?: string;
 	/** From the token's own `exp` claim when it is a JWT. */
 	tokenExpiresAt?: string;
+	/** Set on an extra server of a tenant: the entry it was added under. */
+	parent?: string;
 	createdAt: string;
 }
 export interface TenantsResponse {
@@ -204,7 +206,7 @@ export class Tenants {
 			/* sealed with another HUB_SECRET */
 		}
 		const sso = !!t.clientId;
-		return { id: t.id, name: t.name, tenant: t.tenant, host: t.host, mode: sso ? "sso" : "token", clientId: t.clientId, issuer: sso ? this.issuerFor(t) : undefined, loginPath: sso ? `/t/${t.id}` : undefined, tokenHint: t.tokenHint, tokenExpiresAt: exp ? new Date(exp * 1000).toISOString() : undefined, createdAt: t.createdAt };
+		return { id: t.id, name: t.name, tenant: t.tenant, host: t.host, mode: sso ? "sso" : "token", clientId: t.clientId, issuer: sso ? this.issuerFor(t) : undefined, loginPath: sso ? `/t/${t.id}` : undefined, tokenHint: t.tokenHint, tokenExpiresAt: exp ? new Date(exp * 1000).toISOString() : undefined, parent: t.parent, createdAt: t.createdAt };
 	}
 
 	async add(p: { name: string; tenant: string; host?: string; issuer?: string; token?: string; clientId?: string; clientSecret?: string }): Promise<TenantView> {
@@ -214,6 +216,21 @@ export class Tenants {
 		const sign = p.clientId && p.clientSecret ? { clientId: p.clientId, clientSecretEnc: sealToken(p.clientSecret, this.deps.sealKey), issuer: p.issuer } : { tokenEnc: sealToken(p.token ?? "", this.deps.sealKey), tokenHint: (p.token ?? "").slice(-6) };
 		const entry: TenantEntry = { id, name: p.name, tenant: p.tenant, host: p.host, ...sign, createdAt: new Date(this.deps.now()).toISOString() };
 		await this.boot(entry); // fails before anything is stored
+		await this.deps.store.update((d) => {
+			(d.tenants ??= []).push(entry);
+		});
+		return this.view(entry);
+	}
+	/** Another server of the same tenant: same Maranics tenant id and client (or token), its own address, stations and data. */
+	async addServer(parentId: string, p: { name: string; host: string; issuer?: string }): Promise<TenantView | undefined> {
+		const parent = this.entries().find((x) => x.id === parentId);
+		if (!parent) return undefined;
+		const root = parent.parent ?? parent.id;
+		const slug = p.name.toLowerCase().replace(/[^a-z0-9]+/g, "-").replace(/^-|-$/g, "").slice(0, 30) || "server";
+		let id = `${root}-${slug}`;
+		for (let n = 2; this.entries().some((t) => t.id === id); n++) id = `${root}-${slug}-${n}`;
+		const entry: TenantEntry = { ...parent, id, name: p.name, host: p.host, issuer: p.issuer, parent: root, createdAt: new Date(this.deps.now()).toISOString() };
+		await this.boot(entry);
 		await this.deps.store.update((d) => {
 			(d.tenants ??= []).push(entry);
 		});
@@ -359,6 +376,34 @@ export class Tenants {
 			}
 			try {
 				return c.json(await this.add({ name, tenant, host, issuer, token, clientId, clientSecret }), 201);
+			} catch (err) {
+				return fail(c, 502, "TENANT_START", err instanceof Error ? err.message : String(err));
+			}
+		});
+		app.post("/api/tenants/:id/servers", async (c) => {
+			const b = (await c.req.json().catch(() => ({}))) as Record<string, unknown>;
+			const name = str(b.name);
+			const rawHost = str(b.host);
+			const rawIssuer = str(b.issuer);
+			if (!name || !rawHost) return fail(c, 400, "BAD_REQUEST", "name and server address are required");
+			const check = (raw: string): URL => {
+				const u = new URL(raw);
+				const allowed = env.maranics?.allowedHosts ?? [];
+				if (u.protocol !== "https:" && u.hostname !== "localhost" && u.hostname !== "127.0.0.1") throw new Error("https only");
+				if (!allowed.some((a) => (a.startsWith(".") ? u.hostname.endsWith(a) : u.hostname === a))) throw new Error(`host not allowed (HUB_ALLOWED_HOSTS): ${u.hostname}`);
+				return u;
+			};
+			let host: string;
+			let issuer: string | undefined;
+			try {
+				host = check(rawHost).origin;
+				issuer = rawIssuer ? check(rawIssuer).href.replace(/\/+$/, "") : undefined;
+			} catch (err) {
+				return fail(c, 400, "BAD_REQUEST", `address: ${err instanceof Error ? err.message : "invalid"}`);
+			}
+			try {
+				const v = await this.addServer(c.req.param("id"), { name, host, issuer });
+				return v ? c.json(v, 201) : fail(c, 404, "NOT_FOUND", "unknown tenant");
 			} catch (err) {
 				return fail(c, 502, "TENANT_START", err instanceof Error ? err.message : String(err));
 			}

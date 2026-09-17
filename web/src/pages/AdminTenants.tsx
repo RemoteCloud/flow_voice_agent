@@ -20,6 +20,7 @@ export function TenantsTab() {
 	const [clientId, setClientId] = useState("");
 	const [clientSecret, setClientSecret] = useState("");
 	const [issuer, setIssuer] = useState("");
+	const [server, setServer] = useState<{ id: string; name: string; host: string; issuer: string } | undefined>();
 	const [copied, setCopied] = useState<string | undefined>();
 	const [replace, setReplace] = useState<{ id: string; clientId: string; clientSecret: string } | undefined>();
 
@@ -91,11 +92,14 @@ export function TenantsTab() {
 							<h2 className="card-title">Tenants to try</h2>
 						</div>
 						<ul className="divide-y divide-line">
-							{data.tenants.map((t) => (
-								<li key={t.id} className="space-y-2 px-4 py-3 text-sm">
+							{[...data.tenants.filter((t) => !t.parent || !data.tenants.some((x) => x.id === t.parent)).flatMap((t) => [t, ...data.tenants.filter((x) => x.parent === t.id)])].map((t) => (
+								<li key={t.id} className={`space-y-2 py-3 pr-4 text-sm ${t.parent && data.tenants.some((x) => x.id === t.parent) ? "pl-10" : "pl-4"}`}>
 									<div className="flex flex-wrap items-center gap-2">
 										<span className="min-w-0 flex-1 basis-48">
-											<span className="block truncate font-medium">{t.name}</span>
+											<span className="block truncate font-medium">
+												{t.parent && <span className="text-fg-faint">{data.tenants.find((x) => x.id === t.parent)?.name ?? t.parent} / </span>}
+												{t.name}
+											</span>
 											<span className="block truncate text-xs text-fg-faint">
 												{t.tenant}
 												{t.host ? ` · ${t.host.replace(/^https?:\/\//, "")}` : ""} · {t.mode === "sso" ? `Maranics sign-in · client ${t.clientId}` : `pasted token …${t.tokenHint}`}
@@ -105,6 +109,11 @@ export function TenantsTab() {
 										<button type="button" className="btn btn-sm btn-primary" disabled={busy || data.current?.id === t.id} onClick={() => void switchTenant(t.id)}>
 											{data.current?.id === t.id ? "You are here" : "Open"}
 										</button>
+										{!t.parent && (
+											<button type="button" className="btn btn-sm" disabled={busy} onClick={() => setServer(server?.id === t.id ? undefined : { id: t.id, name: "", host: "", issuer: t.issuer ?? "" })}>
+												Add server
+											</button>
+										)}
 										<button type="button" className="btn btn-sm" disabled={busy} onClick={() => setReplace(replace?.id === t.id ? undefined : { id: t.id, clientId: t.clientId ?? "", clientSecret: "" })}>
 											New client secret
 										</button>
@@ -119,6 +128,22 @@ export function TenantsTab() {
 											<button type="button" className="btn btn-sm" onClick={() => copy(location.origin + t.loginPath)}>
 												{copied === location.origin + t.loginPath ? "Copied ✓" : "Copy"}
 											</button>
+										</div>
+									)}
+									{server?.id === t.id && (
+										<div className="space-y-2 rounded-lg border border-line p-3">
+											<p className="text-xs text-fg-muted">Another server of {t.name}, for example one per vessel. Same tenant id and client; its own stations, checklists and sign-in link.</p>
+											<div className="flex flex-wrap gap-2">
+												<input className="input min-w-0 flex-1 basis-40 text-xs" placeholder="Name, e.g. Color Magic" value={server.name} onChange={(e) => setServer({ ...server, name: e.target.value })} />
+												<input className="input mono min-w-0 flex-1 basis-64 text-xs" placeholder="Server address, https://api.…" value={server.host} onChange={(e) => setServer({ ...server, host: e.target.value })} />
+											</div>
+											<div className="flex flex-wrap gap-2">
+												<input className="input mono min-w-0 flex-1 basis-64 text-xs" placeholder="Sign-in address (empty: worked out from the server address)" value={server.issuer} onChange={(e) => setServer({ ...server, issuer: e.target.value })} />
+												<button type="button" className="btn btn-sm btn-primary self-start" disabled={busy || !server.name.trim() || !server.host.trim()} onClick={() => void run(() => api.post(`tenants/${encodeURIComponent(t.id)}/servers`, { name: server.name, host: server.host, issuer: server.issuer || undefined })).then(() => setServer(undefined))}>
+													Add server
+												</button>
+											</div>
+											<p className="text-xs text-fg-faint">Sign-in address is filled with this tenant's. Keep it when people sign in at the same place; clear it when the server has its own sign-in.</p>
 										</div>
 									)}
 									{replace?.id === t.id && (

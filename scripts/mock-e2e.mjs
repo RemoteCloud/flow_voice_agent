@@ -666,6 +666,19 @@ try {
 	assert.equal(far.body.host, "https://api.cloud.maranics.com");
 	assert.equal(far.body.issuer, "https://usermanagement.cloud.maranics.com/farco");
 	assert.equal((await api("POST", "tenants", { name: "Bad Co", tenant: "x", host: "https://api.evil.example", clientId: "c", clientSecret: "s3cret-s3cret" }, adminJar)).status, 400, "only allowed servers");
+	// one tenant, several servers ("far co / magic"): same client, own address, own sign-in link
+	const magic = await api("POST", "tenants/far-co/servers", { name: "Magic", host: "https://api.magic.maranics.com", issuer: far.body.issuer }, adminJar);
+	assert.equal(magic.status, 201, JSON.stringify(magic.body));
+	assert.equal(magic.body.id, "far-co-magic");
+	assert.equal(magic.body.parent, "far-co");
+	assert.equal(magic.body.tenant, "farco");
+	assert.equal(magic.body.issuer, far.body.issuer, "people sign in at the same place");
+	assert.equal(magic.body.loginPath, "/t/far-co-magic");
+	const own = await api("POST", "tenants/far-co/servers", { name: "Fantasy", host: "https://api.fantasy.maranics.com" }, adminJar);
+	assert.equal(own.body.issuer, "https://usermanagement.fantasy.maranics.com/farco", "or at the server's own sign-in");
+	assert.equal((await api("POST", "tenants/far-co/servers", { name: "X" }, adminJar)).status, 400);
+	assert.equal((await api("POST", "tenants/nope/servers", { name: "X", host: "https://api.x.maranics.com" }, adminJar)).status, 404);
+	for (const id of ["far-co-magic", "far-co-fantasy"]) assert.equal((await api("DELETE", `tenants/${id}`, undefined, adminJar)).status, 200);
 	assert.equal((await api("DELETE", "tenants/far-co", undefined, adminJar)).status, 200);
 	assert.equal((await api("POST", "central/logout", undefined, adminJar)).status, 200);
 	assert.equal((await api("GET", "tenants", undefined, adminJar)).body.canManage, false, "signed out of the central area");
