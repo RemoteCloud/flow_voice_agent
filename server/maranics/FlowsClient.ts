@@ -133,6 +133,12 @@ export function templatesRoots(base: string): string[] | undefined {
 
 const isObj = (v: unknown): v is Record<string, unknown> => typeof v === "object" && v !== null && !Array.isArray(v);
 const str = (v: unknown): string | undefined => (typeof v === "string" && v ? v : typeof v === "number" ? String(v) : undefined);
+/** `Maranics.Checklist.DTO.Enums.TaskType`: the Templates API sends the number, the Checklist API the name. */
+const TASK_TYPES = ["Text", "Number", "Dropdown", "Date", "DateAndTime", "Time", "Checkbox", "RadioButtons", "LongText", "PersonsOnBoard", "List", "Picture", "Information", "GPS", "ScanLabel", "RichText", "File", "DataRegister", "SystemLists", "Email", "Sign", "PhoneNumber", "Form", "QuickSelect", "DataList", "AudioRecording", "Drawing"];
+export const taskTypeName = (v: unknown): string | undefined => {
+	const raw = str(v);
+	return raw && /^\d+$/.test(raw) ? TASK_TYPES[Number(raw)] ?? raw : raw;
+};
 const num = (v: unknown, fallback: number): number => (typeof v === "number" && Number.isFinite(v) ? v : fallback);
 
 function query(q: Record<string, string | number | boolean | undefined>): string {
@@ -205,7 +211,7 @@ function toTask(raw: unknown, i: number): TaskDetail | undefined {
 	if (!taskId) return undefined;
 	const controlsRaw = Array.isArray(raw.controls) ? raw.controls : isObj(raw.control) ? [raw.control] : [];
 	const controls = controlsRaw
-		.map((c): TaskControl | undefined => (isObj(c) ? { controlId: str(c.controlId) ?? str(c.id), dataId: str(c.dataId), type: str(c.type) ?? "Text" } : undefined))
+		.map((c): TaskControl | undefined => (isObj(c) ? { controlId: str(c.controlId) ?? str(c.id), dataId: str(c.dataId), type: taskTypeName(c.type) ?? "Text" } : undefined))
 		.filter((c): c is TaskControl => !!c);
 	const valuesRaw = Array.isArray(raw.values) ? raw.values : [];
 	const values = valuesRaw.map((v): TaskValue | undefined => (isObj(v) ? { controlId: str(v.controlId), dataId: str(v.dataId), value: str(v.value), time: str(v.time), source: str(v.source) } : undefined)).filter((v): v is TaskValue => !!v);
@@ -273,7 +279,7 @@ export function toTemplateDetail(raw: unknown): TemplateDetail | undefined {
 					const tid = str(t.id);
 					if (!tid) return undefined;
 					const control = isObj(t.control) ? t.control : isObj(t.taskTemplateControl) ? t.taskTemplateControl : undefined;
-					const type = str(control?.type) ?? str(t.type) ?? str(t.controlType);
+					const type = taskTypeName(control?.type) ?? taskTypeName(t.type) ?? taskTypeName(t.controlType);
 					return { id: tid, name: str(t.name) ?? tid, order: num(t.order, j), type, dataId: str(control?.dataId) ?? str(t.dataId), options: parseOptions(control?.quickSelectValues) ?? parseOptions(control?.values), spokenPrompt: str(t.spokenPrompt) };
 				})
 				.filter((t): t is TemplateTask => !!t)

@@ -73,7 +73,7 @@ function templateFixtures() {
 					name: "Auxiliaries",
 					order: 2,
 					taskTemplates: [
-						{ id: "tt-er-2a", name: "Check generator 1", order: 1, control: { type: "Checkbox", dataId: "ER/Aux/Gen1" } },
+						{ id: "tt-er-2a", name: "Check generator 1", order: 1, control: { type: 6, dataId: "ER/Aux/Gen1" } }, // the real Templates API sends the TaskType number
 						// a checkbox authored with an option ("Title::key"): Flow stores the key, and the v3 flow read hides the list
 						{ id: "tt-er-2b", name: "Check generator 2", order: 2, control: { type: "Checkbox", dataId: "ER/Aux/Gen2", values: "Done::completed" } },
 						{ id: "tt-er-2c", name: "Check bilge level", order: 3, control: { type: "QuickSelect", dataId: "ER/Aux/Bilge", quickSelectValues: [{ title: "Normal", value: "Normal" }, { title: "High", value: "High" }, { title: "Alarm", value: "Alarm" }] } },

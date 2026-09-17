@@ -495,6 +495,7 @@ try {
 	await api("PUT", "settings", { templateLanguages: {} });
 
 	// per station: start and use / use only / not here, and a language per template that beats the hub-wide one
+	assert.equal((await api("GET", "checklists")).body.find((p) => p.source === "template" && p.templateId === "tpl-engine").readiness, "full", "numeric task types from the Templates API count as voice items");
 	step = "station checklists";
 	const plain = (await api("GET", "stations")).body.map(({ endpoint, activeRun, join, ...st }) => st);
 	const ruled = plain.map((st) => (st.stationId === "bridge-01" ? { ...st, templates: { "tpl-engine": { access: "use", language: "de" }, "tpl-departure": { access: "off" }, junk: { access: "maybe", language: "xx" } } } : st));
