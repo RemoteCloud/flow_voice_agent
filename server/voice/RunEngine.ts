@@ -1005,7 +1005,9 @@ export class RunEngine {
 			r.exchange = "clarifying";
 			await this.save(r);
 			this.emit("answer.clarifying", r, { taskId: item.taskId, text: result.ok ? "low confidence" : result.message });
-			await this.say(r, result.ok ? tr(r.language, "not_sure", { value: result.valueText, prompt: item.spokenPrompt }) : `${result.message}. ${item.spokenPrompt}`);
+			// short: the question was just read, saying it again after every miss wears the crew out. The last try repeats it.
+			const last = r.attempts >= this.deps.policy.retries;
+			await this.say(r, result.ok ? tr(r.language, "not_sure", { value: result.valueText, prompt: item.spokenPrompt }) : last ? `${result.message}. ${item.spokenPrompt}` : `${result.message}.`);
 			await this.openListen(r, item);
 			return;
 		}
@@ -1015,7 +1017,7 @@ export class RunEngine {
 		const policy = this.confirmationFor(r, item, result);
 		if (policy === "none") {
 			// the answer is the confirmation: repeat item and value so the crew hears what goes in, then write it
-			if (!(item.type === "Checkbox" && result.value === CHECKBOX_NOT_DONE)) await this.say(r, tr(r.language, "echo", { name: item.name, value: result.valueText }));
+			if (!(item.type === "Checkbox" && result.value === CHECKBOX_NOT_DONE)) await this.say(r, result.byWord || item.name.length > 30 ? tr(r.language, "echo_short", { value: result.valueText }) : tr(r.language, "echo", { name: item.name, value: result.valueText }));
 			await this.commit(r, item, { taskId: item.taskId, value: result.value, valueText: result.valueText, transcript: text, confidence: item.confidence }, "voice");
 			return;
 		}
@@ -1051,6 +1053,7 @@ export class RunEngine {
 		const b = profile?.bindings.find((x) => x.dataId === item.dataId);
 		if (b?.confirmation === "none") return "none";
 		if (b?.confirmation === "required") return "required";
+		if (result.byWord) return "none"; // the crew said the item's own word: asking "correct?" on top would stall a strict checklist
 		if (this.deps.store.get().settings.confirmation === "optional") return "none";
 		return result.kind === "bool" ? "none" : "required";
 	}

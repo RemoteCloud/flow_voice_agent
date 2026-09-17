@@ -26,7 +26,7 @@ export interface InterpretContext {
 }
 
 export type Interpretation =
-	| { ok: true; value: string; valueText: string; confidence: number; kind: string }
+	| { ok: true; value: string; valueText: string; confidence: number; kind: string; /** Answered with one of the item's own answer words: the word is the confirmation, no read-back question. */ byWord?: boolean }
 	| { ok: false; reason: "no_match" | "ambiguous" | "implausible" | "empty"; message: string; confidence: number };
 
 export type ControlKind = "DateAndTime" | "Time" | "Date" | "Number" | "Checkbox" | "QuickSelect" | "Dropdown" | "RadioButtons" | "Text" | "LongText";
@@ -663,13 +663,13 @@ export function interpret(type: string, transcript: string, ctx: InterpretContex
 	if (heard) {
 		const said = heard.trim();
 		const opts = ctx.options ?? [];
-		if (type === "Checkbox" && opts.length <= 1) return { ok: true, value: checkboxCheckedValue(opts).value, valueText: said, confidence: 0.92, kind: "bool" };
-		if (type === "RadioButtons" && !opts.length) return { ok: true, value: "Yes", valueText: said, confidence: 0.92, kind: "bool" };
-		if (type === "DateAndTime") return { ok: true, value: flowDateTime(ctx.utteredAt), valueText: `${said}, ${formatClock(ctx.utteredAt, ctx)}`, confidence: 0.85, kind: "now" };
-		if (type === "Text" || type === "LongText") return { ok: true, value: said, valueText: said, confidence: 0.9, kind: "text" };
+		if (type === "Checkbox" && opts.length <= 1) return { ok: true, value: checkboxCheckedValue(opts).value, valueText: said, confidence: 0.92, kind: "bool", byWord: true };
+		if (type === "RadioButtons" && !opts.length) return { ok: true, value: "Yes", valueText: said, confidence: 0.92, kind: "bool", byWord: true };
+		if (type === "DateAndTime") return { ok: true, value: flowDateTime(ctx.utteredAt), valueText: `${said}, ${formatClock(ctx.utteredAt, ctx)}`, confidence: 0.85, kind: "now", byWord: true };
+		if (type === "Text" || type === "LongText") return { ok: true, value: said, valueText: said, confidence: 0.9, kind: "text", byWord: true };
 		const n = normalizeTranscript(said);
 		const opt = opts.find((o) => ` ${normalizeTranscript(o.title)} `.includes(` ${n} `) || normalizeTranscript(o.value) === n);
-		if (opt) return { ok: true, value: opt.value, valueText: opt.title, confidence: 0.92, kind: "option" };
+		if (opt) return { ok: true, value: opt.value, valueText: opt.title, confidence: 0.92, kind: "option", byWord: true };
 	}
 	// strict checklist: the crew must say the word itself ("hivt körbro"), a bare "yes" proves nothing
 	if (ctx.answersOnly && ctx.answers?.length) return { ok: false, reason: "no_match", message: msg("m_say_word", { words: ctx.answers.join(", ") }), confidence: 0.1 };
