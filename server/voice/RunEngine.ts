@@ -653,6 +653,12 @@ export class RunEngine {
 	}
 
 	/** The endpoint's chosen language wins over the station's configured one. */
+	/** How much the voice says: read live from the station so a change in Admin applies to an open run. Prompt runs stay as created. */
+	private level(r: RunRecord): "full" | "short" | "silent" {
+		if (r.runId.startsWith("prun_")) return r.verbosity;
+		return this.deps.store.get().stations.find((x) => x.stationId === r.stationId)?.verbosity ?? r.verbosity;
+	}
+
 	private stationLang(stationId: string): string {
 		return this.deps.io.endpointLanguage(stationId) ?? this.deps.store.get().stations.find((x) => x.stationId === stationId)?.language ?? this.deps.policy.defaultLanguage;
 	}
@@ -691,7 +697,7 @@ export class RunEngine {
 	}
 
 	private async announceAndSpeak(r: RunRecord, resume: boolean): Promise<void> {
-		const text = startAnnouncement(r.templateName, r.items, r.verbosity, resume, r.language);
+		const text = startAnnouncement(r.templateName, r.items, this.level(r), resume, r.language);
 		this.lastSection.set(r.runId, undefined);
 		if (text) await this.say(r, text);
 		const next = nextItem(r.items);
@@ -715,7 +721,7 @@ export class RunEngine {
 		await this.save(r);
 		const prev = this.lastSection.get(r.runId);
 		const first = prev === undefined && !r.items.some((i) => i.state === "answered" || i.state === "unsynced");
-		const text = itemAnnouncement(item, prev, first, r.verbosity, r.language);
+		const text = itemAnnouncement(item, prev, first, this.level(r), r.language);
 		this.lastSection.set(r.runId, item.sectionName);
 		this.emit("run.item.spoken", r, { taskId: item.taskId, text });
 		this.armExchangeTimer(r);
@@ -1017,7 +1023,8 @@ export class RunEngine {
 		const policy = this.confirmationFor(r, item, result);
 		if (policy === "none") {
 			// the answer is the confirmation: repeat item and value so the crew hears what goes in, then write it
-			if (!(item.type === "Checkbox" && result.value === CHECKBOX_NOT_DONE)) await this.say(r, result.byWord || item.name.length > 30 ? tr(r.language, "echo_short", { value: result.valueText }) : tr(r.language, "echo", { name: item.name, value: result.valueText }));
+			const level = this.level(r);
+			if (level !== "silent" && !(item.type === "Checkbox" && result.value === CHECKBOX_NOT_DONE)) await this.say(r, level === "short" || result.byWord || item.name.length > 30 ? tr(r.language, "echo_short", { value: result.valueText }) : tr(r.language, "echo", { name: item.name, value: result.valueText }));
 			await this.commit(r, item, { taskId: item.taskId, value: result.value, valueText: result.valueText, transcript: text, confidence: item.confidence }, "voice");
 			return;
 		}

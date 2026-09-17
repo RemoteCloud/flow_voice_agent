@@ -227,6 +227,15 @@ export function StationsTab({ s, reload, canEdit }: { s: StatusResponse; reload:
 									</label>
 								</div>
 								<div className="sm:col-span-2">
+									<label className="label">How much the voice says</label>
+									<select className="input" value={st.verbosity ?? "full"} disabled={!canEdit} onChange={(e) => pick(i, { verbosity: e.target.value as Station["verbosity"] })}>
+										<option value="full">Everything: item number, question, item and answer repeated</option>
+										<option value="short">Short: question, then only the answer</option>
+										<option value="silent">Least: only the question</option>
+									</select>
+									<p className="help">Applies at once, also to a checklist that is open.</p>
+								</div>
+								<div className="sm:col-span-2">
 									<TemplateRules rules={st.templates} templates={templates} canEdit={canEdit} onChange={(t) => pick(i, { templates: t })} />
 								</div>
 								<details className="rounded-lg border border-line sm:col-span-2">
@@ -237,14 +246,6 @@ export function StationsTab({ s, reload, canEdit }: { s: StatusResponse; reload:
 											<select className="input" value={st.audioPolicy} disabled={!canEdit} onChange={(e) => pick(i, { audioPolicy: e.target.value === "open" ? "open" : "ptt" })}>
 												<option value="ptt">Push to talk</option>
 												<option value="open">Always listening (hands-free)</option>
-											</select>
-										</div>
-										<div>
-											<label className="label">How much the voice says</label>
-											<select className="input" value={st.verbosity ?? "full"} disabled={!canEdit} onChange={(e) => pick(i, { verbosity: e.target.value as Station["verbosity"] })}>
-												<option value="full">Everything</option>
-												<option value="short">Short</option>
-												<option value="silent">Silent</option>
 											</select>
 										</div>
 										<label className="flex items-center gap-2 text-sm">
