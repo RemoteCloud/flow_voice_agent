@@ -3,7 +3,7 @@
  * after every `update()`. Same pattern as the FlowDeck hub. Audio never lands here; the audit
  * record is text (section 15 of the spec).
  */
-import { mkdirSync, readFileSync, readdirSync, renameSync, writeFileSync, existsSync } from "node:fs";
+import { mkdirSync, readFileSync, readdirSync, renameSync, statSync, writeFileSync, existsSync } from "node:fs";
 import path from "node:path";
 import type { RunItem, RunState, ExchangeState } from "../protocol.js";
 
@@ -239,6 +239,8 @@ export interface HubData {
 	outbox: OutboxEntry[];
 	audit: AuditEntry[];
 	idempotency: Record<string, { at: string; result: string }>;
+	/** Portable file → modification time it had when it was last imported; a file is imported again only after it changed. */
+	portableSeen?: Record<string, number>;
 	settings: { readNotices: boolean; tzMode: "utc" | "local"; confirmation: "required" | "optional"; /** Template ids that get a start button on the phone/tablet home screen and in the voice menu; empty or absent → every template. */ startable?: string[]; /** Template id → language the checklist is written in (en/sv/no/fr/de); wins over the station language. */ templateLanguages?: Record<string, string>; /** Template id → item key (`answerKey`) → words that count as that item's answer ("up", "closed"). */ itemAnswers?: Record<string, Record<string, string[]>> };
 }
 
@@ -316,6 +318,7 @@ export class JsonHubStore implements HubStore {
 		mkdirSync(dataDir, { recursive: true });
 		this.file = path.join(dataDir, "hub.json");
 		this.data = emptyData();
+		const fresh = !existsSync(this.file);
 		if (existsSync(this.file)) {
 			try {
 				const raw = JSON.parse(readFileSync(this.file, "utf8")) as Partial<HubData>;
@@ -325,13 +328,26 @@ export class JsonHubStore implements HubStore {
 				this.log?.warn(`hub.json unreadable (${err instanceof Error ? err.message : String(err)}); starting empty`);
 			}
 		}
-		this.loadPortableFiles(dataDir);
+		this.loadPortableFiles(dataDir, fresh);
+	}
+
+	/**
+	 * A portable file is imported once per version of the file: on a fresh hub, or when the file changed since the last
+	 * import. Otherwise what Admin saved (hub.json) stands, so a restart never rolls stations back to an old file.
+	 */
+	private changed(file: string, key: string, fresh: boolean): boolean {
+		const mtime = Math.round(statSync(file).mtimeMs);
+		const seen = (this.data.portableSeen ??= {});
+		const before = seen[key];
+		seen[key] = mtime;
+		if (before === undefined) return fresh;
+		return before !== mtime;
 	}
 
 	/** `stations.json`, `profiles/*.json`, `mappings.json` next to hub.json override what hub.json holds — author once, copy to the next vessel. */
-	private loadPortableFiles(dataDir: string): void {
+	private loadPortableFiles(dataDir: string, fresh: boolean): void {
 		const stationsFile = path.join(dataDir, "stations.json");
-		if (existsSync(stationsFile)) {
+		if (existsSync(stationsFile) && this.changed(stationsFile, "stations.json", fresh)) {
 			try {
 				const list = JSON.parse(readFileSync(stationsFile, "utf8")) as Station[];
 				if (Array.isArray(list) && list.every((x) => x && typeof x.stationId === "string")) this.data.stations = list.map((x) => ({ ...x, audioPolicy: x.audioPolicy ?? "ptt", autoStartAllowed: x.autoStartAllowed ?? false, language: x.language ?? "en" }));
@@ -340,7 +356,7 @@ export class JsonHubStore implements HubStore {
 			}
 		}
 		const mappingsFile = path.join(dataDir, "mappings.json");
-		if (existsSync(mappingsFile)) {
+		if (existsSync(mappingsFile) && this.changed(mappingsFile, "mappings.json", fresh)) {
 			try {
 				const list = JSON.parse(readFileSync(mappingsFile, "utf8")) as EventMapping[];
 				if (Array.isArray(list)) this.data.mappings = list.filter((m) => m && typeof m.on === "string" && typeof m.start === "string" && typeof m.station === "string");
@@ -352,6 +368,7 @@ export class JsonHubStore implements HubStore {
 		if (existsSync(profilesDir)) {
 			try {
 				for (const f of readdirSync(profilesDir).filter((x: string) => x.endsWith(".json"))) {
+					if (!this.changed(path.join(profilesDir, f), `profiles/${f}`, fresh)) continue;
 					const p = JSON.parse(readFileSync(path.join(profilesDir, f), "utf8")) as VoiceProfile;
 					if (p && typeof p.profileId === "string" && Array.isArray(p.bindings)) {
 						this.data.profiles = this.data.profiles.filter((x) => x.profileId !== p.profileId);
