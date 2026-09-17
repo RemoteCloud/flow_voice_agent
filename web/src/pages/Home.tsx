@@ -18,8 +18,8 @@ const OPEN_STATES = new Set<RunView["state"]>(["active", "paused", "pending"]);
  * Phone home: the one open run on this station as a big Continue button, then large icon tiles
  * for every checklist. Station chips only when the phone was not locked to a station by QR.
  */
-export function HomePage({ onOpenRun }: { onOpenRun: (runId: string) => void }) {
-	const { me, stations, boot } = useApp();
+export function HomePage({ onOpenRun, mobile = true }: { onOpenRun: (runId: string) => void; mobile?: boolean }) {
+	const { me, stations, boot, setStation } = useApp();
 	const v = useVoice();
 	const [picks, setPicks] = useState<ChecklistPick[] | undefined>();
 	const [runs, setRuns] = useState<RunView[]>([]);
@@ -71,7 +71,8 @@ export function HomePage({ onOpenRun }: { onOpenRun: (runId: string) => void }) 
 	const scan = () => window.FlowVoiceAndroid?.scanStation?.();
 	const station = stations.find((s) => s.stationId === me.stationId);
 
-	if (!locked || !me.stationId) {
+	// phones / tablets take their station from the QR poster only; a desktop browser may pick one on screen
+	if (mobile && (!locked || !me.stationId)) {
 		return (
 			<div className="flex min-h-[70vh] flex-col items-center justify-center gap-5 text-center">
 				<Icon name="qr" size={72} strokeWidth={1.4} />
@@ -109,6 +110,16 @@ export function HomePage({ onOpenRun }: { onOpenRun: (runId: string) => void }) 
 				</p>
 			)}
 
+			{!mobile && stations.length > 1 && (
+				<div className="flex flex-wrap gap-2">
+					{stations.map((s) => (
+						<button key={s.stationId} type="button" className={`btn btn-sm ${me.stationId === s.stationId ? "btn-primary" : ""}`} onClick={() => void setStation(s.stationId).then(load)}>
+							{s.location ? `${s.location} · ${s.name}` : s.name}
+						</button>
+					))}
+				</div>
+			)}
+			{!mobile && !me.stationId && <p className="text-sm text-warn">Pick a station to start a checklist.</p>}
 			{(me.name || me.locationName) && (
 				<p className="text-xs text-fg-faint">
 					{me.name}
