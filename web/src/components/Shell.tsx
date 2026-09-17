@@ -1,6 +1,6 @@
 import type { ReactNode } from "react";
 import { Icon } from "../icons.js";
-import { useTheme } from "../theme.js";
+import { useDayNight, useTheme } from "../theme.js";
 import { useApp } from "../context.js";
 import { navigate, type Route } from "../router.js";
 
@@ -11,6 +11,7 @@ import { navigate, type Route } from "../router.js";
 export function Shell({ route, mobile = false, children }: { route: Route; mobile?: boolean; children: ReactNode }) {
 	const { me, boot, stations, signOut } = useApp();
 	const [theme, cycle] = useTheme();
+	const [night, toggleNight] = useDayNight();
 	// on a phone / tablet the station only counts once a QR poster set it
 	const station = mobile && me.stationSource !== "join" ? undefined : stations.find((s) => s.stationId === me.stationId);
 	const stationLabel = station ? (station.location ? `${station.location} · ${station.name}` : station.name) : "No station";
@@ -33,8 +34,9 @@ export function Shell({ route, mobile = false, children }: { route: Route; mobil
 						<span className="pill min-w-0 truncate border-line-strong text-fg-muted" title="Station">
 							{stationLabel}
 						</span>
-						<button type="button" className="btn btn-ghost ml-auto h-10 w-10 !p-0" onClick={cycle} title={`Theme: ${themeTitle}`} aria-label="Switch theme">
-							<Icon name={themeIcon} size={20} />
+						<button type="button" className="btn ml-auto h-11 shrink-0 gap-2 px-4 text-sm font-semibold tracking-wide uppercase" onClick={toggleNight} aria-pressed={night} aria-label={night ? "Night mode on. Switch to day" : "Day mode on. Switch to night"}>
+							<Icon name={night ? "moon" : "sun"} size={20} />
+							{night ? "Night" : "Day"}
 						</button>
 						<button type="button" className="btn btn-sm btn-ghost" onClick={() => void signOut()}>
 							Sign out

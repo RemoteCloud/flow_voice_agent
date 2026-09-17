@@ -41,3 +41,18 @@ export function useTheme(): [Theme, () => void] {
 	}, [theme]);
 	return [theme, cycle];
 }
+
+/** What is on screen right now: a pinned choice, else what the device prefers. */
+export function isDark(t: Theme): boolean {
+	return t === "dark" || (t === "system" && window.matchMedia("(prefers-color-scheme: dark)").matches);
+}
+
+/** The client's Day / Night switch: two states, one tap, no "auto" step in between. */
+export function useDayNight(): [boolean, () => void] {
+	const [night, setNight] = useState<boolean>(() => isDark(readTheme()));
+	const toggle = useCallback(() => {
+		saveTheme(night ? "light" : "dark");
+		setNight(!night);
+	}, [night]);
+	return [night, toggle];
+}
