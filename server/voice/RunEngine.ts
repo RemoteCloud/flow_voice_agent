@@ -1262,13 +1262,8 @@ export class RunEngine {
 		}
 		const st = t.match(/^(?:station|stasjon|estación|poste)\s+(.+)$/);
 		if (st) {
-			const target = this.matchStation(st[1]);
-			if (!target) {
-				await this.sayOn(stationId, lang, tr(lang, "station_unknown", { name: st[1] }));
-				return;
-			}
-			await this.sayOn(stationId, lang, tr(lang, "station_switch", { name: target.name }));
-			this.deps.io.navigate(stationId, "picker", { stationId: target.stationId });
+			// the station comes from the station link / QR only: nothing in the client, spoken or tapped, changes it
+			await this.sayOn(stationId, lang, tr(lang, "station_fixed"));
 			return;
 		}
 		if (!session) {

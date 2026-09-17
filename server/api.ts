@@ -50,7 +50,7 @@ export interface StationView extends Station {
 	endpoint?: { endpointId: string; user?: string; observers: number; aec?: boolean; pushToTalk?: boolean; localStt?: boolean; localTts?: boolean };
 	activeRun?: { runId: string; templateName: string; state: string; answered: number; total: number };
 	/** The station's live QR join token, never the hash. */
-	join?: { tokenHint: string; createdAt: string; createdBy?: string };
+	join?: { tokenHint: string; createdAt: string; createdBy?: string; /** `/client#/join/<token>` — admins only; absent on links minted before the hub kept them (rotate once). */ path?: string };
 }
 
 /** `POST /api/auth/join` — redeem a station QR token (no session required). */

@@ -132,13 +132,6 @@ export function VoiceProvider({ children }: { children: ReactNode }) {
 					},
 					onRole: setRole,
 					onNavigate: (page, opts) => {
-						if (opts.stationId && opts.stationId !== sid) {
-							// the hub moved us to another station: rebind the session and reconnect there
-							pendingStation.current = opts.stationId;
-							void setStation(opts.stationId);
-							navigate({ page: "picker" });
-							return;
-						}
 						if (page === "run" && opts.runId) navigate({ page: "run", id: opts.runId });
 						else navigate({ page: "picker" });
 					},

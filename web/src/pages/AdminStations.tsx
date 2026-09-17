@@ -269,7 +269,8 @@ export function StationsTab({ s, reload, canEdit }: { s: StatusResponse; reload:
 
 function JoinPanel({ station, minted, base, setBase, canEdit, onMint, onRevoke }: { station: StationView; minted?: Minted; base: string; setBase: (b: string) => void; canEdit: boolean; onMint: () => void; onRevoke: () => void }) {
 	const label = `${station.location ? `${station.location} · ` : ""}${station.name}`;
-	const url = minted ? `${base.replace(/\/$/, "")}${minted.path}` : undefined;
+	const path = minted?.path ?? station.join?.path;
+	const url = path ? `${base.replace(/\/$/, "")}${path}` : undefined;
 	const [copied, setCopied] = useState(false);
 
 	const print = () => {
@@ -290,19 +291,19 @@ function JoinPanel({ station, minted, base, setBase, canEdit, onMint, onRevoke }
 	return (
 		<div className="border-t border-line p-4 md:w-72 md:border-t-0 md:border-l">
 			<p className="flex items-center gap-1.5 text-sm font-semibold">
-				<Icon name="qr" size={16} /> Station QR code
+				<Icon name="qr" size={16} /> Station link & QR code
 			</p>
 			{station.join ? (
 				<p className="mt-1 text-xs text-fg-muted">
 					Active · …{station.join.tokenHint} · {new Date(station.join.createdAt).toLocaleString()}
 				</p>
 			) : (
-				<p className="mt-1 text-xs text-fg-muted">No QR code yet.</p>
+				<p className="mt-1 text-xs text-fg-muted">Save the station to get its link.</p>
 			)}
-			{minted && url ? (
+			{url ? (
 				<div className="mt-3 space-y-2">
 					<QrCode text={url} size={208} className="mx-auto block border border-line" />
-					<p className="text-xs text-warn">Shown once. Print or copy it now — after reload only the hint remains.</p>
+					<p className="text-xs text-fg-muted">This station's own link. Open it on a PC, Mac or Raspberry Pi, or scan the QR code with a phone or tablet: the device is then locked to this station.</p>
 					<div>
 						<label className="label">Base URL on the poster</label>
 						<input className="input mono" value={base} onChange={(e) => setBase(e.target.value)} />
@@ -320,15 +321,10 @@ function JoinPanel({ station, minted, base, setBase, canEdit, onMint, onRevoke }
 			) : null}
 			<div className="mt-3 flex flex-wrap gap-2">
 				<button type="button" className="btn btn-sm btn-primary" disabled={!canEdit} onClick={onMint}>
-					{station.join ? "Rotate" : "Create QR"}
+					{station.join ? (station.join.path ? "New link (old one stops working)" : "Rotate to show the link") : "Create link"}
 				</button>
-				{station.join && (
-					<button type="button" className="btn btn-sm btn-danger" disabled={!canEdit} onClick={onRevoke}>
-						Revoke
-					</button>
-				)}
 			</div>
-			<p className="help mt-3">Any number of phones can scan one poster: each is locked to this station and then signs in as its own user. Rotating or revoking does not sign out phones already joined. The link opens the client (/client) on any device: phone, tablet, PC or Raspberry Pi.</p>
+			<p className="help mt-3">Any number of phones can scan one poster: each is locked to this station and then signs in as its own user. A new link does not sign out devices already joined. The link opens the client (/client) on any device: phone, tablet, PC or Raspberry Pi.</p>
 		</div>
 	);
 }

@@ -73,6 +73,8 @@ export interface StationJoin {
 	/** sha256 hex of the `fvj_` token. */
 	tokenHash: string;
 	tokenHint: string;
+	/** The token itself, sealed with the hub key, so Admin can show the station link and QR again at any time. */
+	sealed?: string;
 	createdAt: string;
 	createdBy?: string;
 }

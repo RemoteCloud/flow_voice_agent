@@ -19,7 +19,7 @@ const OPEN_STATES = new Set<RunView["state"]>(["active", "paused", "pending"]);
  * for every checklist. Station chips only when the phone was not locked to a station by QR.
  */
 export function HomePage({ onOpenRun, mobile = true }: { onOpenRun: (runId: string) => void; mobile?: boolean }) {
-	const { me, stations, boot, setStation } = useApp();
+	const { me, stations, boot } = useApp();
 	const v = useVoice();
 	const [picks, setPicks] = useState<ChecklistPick[] | undefined>();
 	const [runs, setRuns] = useState<RunView[]>([]);
@@ -71,13 +71,13 @@ export function HomePage({ onOpenRun, mobile = true }: { onOpenRun: (runId: stri
 	const scan = () => window.FlowVoiceAndroid?.scanStation?.();
 	const station = stations.find((s) => s.stationId === me.stationId);
 
-	// phones / tablets take their station from the QR poster only; a desktop browser may pick one on screen
-	if (mobile && (!locked || !me.stationId)) {
+	// every client takes its station from the station link / QR code, never from a control on screen
+	if (!locked || !me.stationId) {
 		return (
 			<div className="flex min-h-[70vh] flex-col items-center justify-center gap-5 text-center">
 				<Icon name="qr" size={72} strokeWidth={1.4} />
-				<h1 className="text-2xl font-semibold tracking-wide uppercase">Scan the station QR code</h1>
-				<p className="max-w-sm text-sm text-fg-muted">This device works on one station, set by the QR poster at that station. {canScan ? "" : "Scan the poster with the camera, or open the station link (Admin → Stations → Copy link) on this computer."}</p>
+				<h1 className="text-2xl font-semibold tracking-wide uppercase">{canScan ? "Scan the station QR code" : "Open the station link"}</h1>
+				<p className="max-w-sm text-sm text-fg-muted">{canScan ? "This device works on one station, set by the QR poster at that station." : "This client works on one station. Open that station's own link (Admin → Stations), or scan its QR code with a phone or tablet."}</p>
 				{canScan && (
 					<button type="button" className="start-btn max-w-sm justify-center text-lg font-semibold tracking-wide uppercase" onClick={scan}>
 						Scan QR code
@@ -110,16 +110,6 @@ export function HomePage({ onOpenRun, mobile = true }: { onOpenRun: (runId: stri
 				</p>
 			)}
 
-			{!mobile && stations.length > 1 && (
-				<div className="flex flex-wrap gap-2">
-					{stations.map((s) => (
-						<button key={s.stationId} type="button" className={`btn btn-sm ${me.stationId === s.stationId ? "btn-primary" : ""}`} onClick={() => void setStation(s.stationId).then(load)}>
-							{s.location ? `${s.location} · ${s.name}` : s.name}
-						</button>
-					))}
-				</div>
-			)}
-			{!mobile && !me.stationId && <p className="text-sm text-warn">Pick a station to start a checklist.</p>}
 			{(me.name || me.locationName) && (
 				<p className="text-xs text-fg-faint">
 					{me.name}

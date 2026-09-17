@@ -122,7 +122,8 @@ try {
 	assert.equal(rejoin.body.me.stationSource, "join");
 	assert.equal((await api("DELETE", "stations/bridge-01/join-token")).status, 200);
 	assert.equal((await api("POST", "auth/join", { token: minted.body.token }, new Map())).status, 404, "revoked token rejected");
-	assert.equal((await api("GET", "stations")).body.find((s) => s.stationId === "bridge-01").join, undefined);
+	const afterRevoke = (await api("GET", "stations")).body.find((s) => s.stationId === "bridge-01").join;
+	assert.ok(afterRevoke?.path && !afterRevoke.path.endsWith(minted.body.token), "a station always has a link: revoking issues a fresh one");
 	const repick = await api("PUT", "auth/station", { stationId: "bridge-01" });
 	assert.equal(repick.body.stationSource, "pick");
 	const stationList = (await api("GET", "stations")).body.map(({ endpoint: _e, activeRun: _r, join: _j, ...s }) => (s.stationId === "bridge-01" ? { ...s, location: "Location 1" } : s));
@@ -391,7 +392,8 @@ try {
 
 	step = "voice station";
 	send({ type: "transcript", text: "station engine control room", confidence: 1, final: true });
-	await waitFor(() => navs.some((n) => n.stationId === "ecr-01"), "station switch sent to the screen");
+	await waitFor(() => /^The station is set by the station link/.test(lastSpoken()), "spoken station switch refused");
+	assert.ok(!navs.some((n) => n.stationId === "ecr-01"), "no client is ever moved to another station by voice");
 
 	// ---- REST control: start a checklist on a station from an integration, at a chosen item, and steer it
 	step = "rest";
@@ -481,6 +483,14 @@ try {
 	assert.equal(sttCalls.at(-1).url, "/v1/audio/transcriptions");
 	const tiny = await fetch(`${base}/api/stt`, { method: "POST", headers: { cookie }, body: Buffer.alloc(100) });
 	assert.equal((await tiny.json()).text, "", "too short to hear: the recogniser is not bothered");
+
+	// every station has its own permanent client link; admins can read it again at any time
+	step = "station links";
+	const links = (await api("GET", "stations")).body;
+	assert.ok(links.every((st) => /^\/client#\/join\/fvj_/.test(st.join?.path ?? "")), "each station carries its link");
+	assert.equal(new Set(links.map((st) => st.join.path)).size, links.length, "links are unique per station");
+	const again = (await api("GET", "stations")).body;
+	assert.deepEqual(again.map((st) => st.join.path), links.map((st) => st.join.path), "stable until rotated");
 
 	// audit is text only
 	const audit = await api("GET", "audit?limit=50");

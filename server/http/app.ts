@@ -14,7 +14,8 @@ import type { Logger } from "../core/log.js";
 import type { SttAdapter } from "../speech/stt.js";
 import { hashDeckToken, newDeckId, newDeckToken, newJoinToken, tokenHint, verifyDeckToken } from "../store/crypto.js";
 import type { Credentials } from "../store/credentials.js";
-import type { Device, HubSession, HubStore, PendingEnrollment, PromptRecord, Station, StationJoin, VoiceProfile, EventMapping } from "../store/HubStore.js";
+import type { Device, HubData, HubSession, HubStore, PendingEnrollment, PromptRecord, Station, StationJoin, VoiceProfile, EventMapping } from "../store/HubStore.js";
+import { deriveKey, openToken, sealToken } from "../store/crypto.js";
 import { EngineError, type RunEngine } from "../voice/RunEngine.js";
 import { SpeechModels, VOSK_MODELS } from "../speech/models.js";
 import type { Outbox } from "../voice/Outbox.js";
@@ -384,14 +385,41 @@ export function createApp(deps: AppDeps): Hono {
 		return u?.isAdmin ? undefined : fail(c, 403, "FORBIDDEN", "admin only");
 	};
 
-	const stationViews = (): StationView[] => {
+	const joinKey = deriveKey(env.secret);
+	/** Every station has its own client link; the token is kept sealed so Admin can show it again. */
+	const mintJoin = (d: HubData, stationId: string, sub: string | undefined): string => {
+		const token = newJoinToken();
+		const createdAt = new Date(deps.now()).toISOString();
+		d.stationJoins[stationId] = { stationId, tokenHash: hashDeckToken(token), tokenHint: tokenHint(token), sealed: sealToken(token, joinKey), createdAt, createdBy: sub };
+		d.audit.push({ at: createdAt, kind: "station.join.rotated", stationId, sub });
+		return token;
+	};
+	const ensureJoins = async (sub?: string): Promise<void> => {
+		const d0 = store.get();
+		if (d0.stations.every((s) => d0.stationJoins[s.stationId])) return;
+		await store.update((d) => {
+			for (const s of d.stations) if (!d.stationJoins[s.stationId]) mintJoin(d, s.stationId, sub);
+		});
+	};
+	const isAdminCtx = (c: Context<SessionEnv>): boolean => !!store.get().users.find((x) => x.sub === c.get("sessionRow").sub)?.isAdmin;
+
+	const stationViews = (withLinks = false): StationView[] => {
 		const eps = deps.gateway.stations();
 		return store.get().stations.map((s) => {
 			const ep = eps.find((e) => e.stationId === s.stationId);
 			const run = engine.activeRun(s.stationId);
 			const v: StationView = { ...s };
 			const j = store.get().stationJoins[s.stationId];
-			if (j) v.join = { tokenHint: j.tokenHint, createdAt: j.createdAt, createdBy: j.createdBy };
+			if (j) {
+				v.join = { tokenHint: j.tokenHint, createdAt: j.createdAt, createdBy: j.createdBy };
+				if (withLinks && j.sealed) {
+					try {
+						v.join.path = `/client#/join/${openToken(j.sealed, joinKey)}`;
+					} catch {
+						/* sealed with another HUB_SECRET: rotate to get a link again */
+					}
+				}
+			}
 			if (ep) v.endpoint = { endpointId: ep.endpointId, user: ep.user, observers: ep.observers, aec: ep.caps.aec, pushToTalk: ep.caps.pushToTalk, localStt: ep.caps.localStt, localTts: ep.caps.localTts };
 			if (run) {
 				const view = engine.toView(run);
@@ -401,7 +429,10 @@ export function createApp(deps: AppDeps): Hono {
 		});
 	};
 
-	api.get("/stations", (c) => c.json(stationViews()));
+	api.get("/stations", async (c) => {
+		if (isAdminCtx(c)) await ensureJoins(c.get("sessionRow").sub);
+		return c.json(stationViews(isAdminCtx(c)));
+	});
 	api.put("/stations", async (c) => {
 		const denied = requireAdmin(c);
 		if (denied) return denied;
@@ -411,7 +442,8 @@ export function createApp(deps: AppDeps): Hono {
 			d.stations = body.map((s) => ({ stationId: s.stationId, name: s.name, location: str(s.location), defaultProfile: s.defaultProfile ?? null, language: s.language || "en", audioPolicy: s.audioPolicy === "open" ? "open" : "ptt", autoStartAllowed: !!s.autoStartAllowed, verbosity: s.verbosity ?? "full", voiceActions: s.voiceActions !== false, holdToAnswer: s.holdToAnswer === true }));
 			for (const id of Object.keys(d.stationJoins)) if (!d.stations.some((s) => s.stationId === id)) delete d.stationJoins[id];
 		});
-		return c.json(stationViews());
+		await ensureJoins(c.get("sessionRow").sub);
+		return c.json(stationViews(true));
 	});
 
 	// ----- station QR join tokens (admin). The token is returned once; only its hash is kept.
@@ -420,15 +452,14 @@ export function createApp(deps: AppDeps): Hono {
 		if (denied) return denied;
 		const id = c.req.param("id");
 		if (!store.get().stations.some((s) => s.stationId === id)) return fail(c, 404, "STATION_NOT_FOUND", "unknown station");
-		const token = newJoinToken();
 		const sub = c.get("sessionRow").sub;
-		const createdAt = new Date(deps.now()).toISOString();
-		const join: StationJoin = { stationId: id, tokenHash: hashDeckToken(token), tokenHint: tokenHint(token), createdAt, createdBy: sub };
+		let token = "";
 		await store.update((d) => {
-			d.stationJoins[id] = join;
-			d.audit.push({ at: createdAt, kind: "station.join.rotated", stationId: id, sub });
+			token = mintJoin(d, id, sub);
 		});
-		log.info(`station ${id} QR join token rotated by ${sub} (…${join.tokenHint})`);
+		const join = store.get().stationJoins[id];
+		const createdAt = join.createdAt;
+		log.info(`station ${id} link rotated by ${sub} (…${join.tokenHint})`);
 		const path = `/client#/join/${token}`;
 		const base = env.publicUrl ? env.publicUrl.replace(/\/$/, "") : new URL(c.req.url).origin;
 		return c.json<JoinTokenResponse>({ stationId: id, token, tokenHint: join.tokenHint, createdAt, path, url: base + path }, 201);
@@ -449,11 +480,12 @@ export function createApp(deps: AppDeps): Hono {
 	});
 
 	api.get("/status", async (c) => {
+		if (isAdminCtx(c)) await ensureJoins(c.get("sessionRow").sub);
 		const d = store.get();
 		const res: StatusResponse = {
 			hubVersion: deps.version,
 			uptimeSec: Math.round(deps.uptime()),
-			stations: stationViews(),
+			stations: stationViews(isAdminCtx(c)),
 			runs: engine.listRuns(),
 			outbox: { queued: d.outbox.filter((o) => o.state === "queued").length, failed: d.outbox.filter((o) => o.state === "failed").length, entries: d.outbox.slice(-100) },
 			devices: d.devices,
