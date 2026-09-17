@@ -20,6 +20,7 @@ export function TenantsTab() {
 	const [clientId, setClientId] = useState("");
 	const [clientSecret, setClientSecret] = useState("");
 	const [issuer, setIssuer] = useState("");
+	const [place, setPlace] = useState("");
 	const [server, setServer] = useState<{ id: string; name: string; host: string; issuer: string; clientId: string; clientSecret: string } | undefined>();
 	const [copied, setCopied] = useState<string | undefined>();
 	const [replace, setReplace] = useState<{ id: string; clientId: string; clientSecret: string } | undefined>();
@@ -42,14 +43,20 @@ export function TenantsTab() {
 	};
 	const add = () =>
 		run(async () => {
-			await api.post("tenants", { name, tenant, clientId: clientId || undefined, clientSecret: clientSecret || undefined, issuer: issuer || undefined, token: token || undefined, host: host || undefined });
+			await api.post("tenants", { name, location: place.trim() || undefined, tenant, clientId: clientId || undefined, clientSecret: clientSecret || undefined, issuer: issuer || undefined, token: token || undefined, host: host || undefined });
 			setClientId("");
 			setClientSecret("");
-			setIssuer("");
-			setName("");
-			setTenant("");
 			setToken("");
-			setHost("");
+			// with a location: keep tenant name, id and sign-in address for the next location of the same tenant
+			if (place.trim()) {
+				setPlace("");
+				setHost("");
+			} else {
+				setIssuer("");
+				setName("");
+				setTenant("");
+				setHost("");
+			}
 		});
 
 	if (!data) return <p className="text-sm text-fg-muted">{err ?? "Loading…"}</p>;
@@ -92,13 +99,13 @@ export function TenantsTab() {
 							<h2 className="card-title">Tenants to try</h2>
 						</div>
 						<ul className="divide-y divide-line">
-							{[...data.tenants.filter((t) => !t.parent || !data.tenants.some((x) => x.id === t.parent)).flatMap((t) => [t, ...data.tenants.filter((x) => x.parent === t.id)])].map((t) => (
-								<li key={t.id} className={`space-y-2 py-3 pr-4 text-sm ${t.parent && data.tenants.some((x) => x.id === t.parent) ? "pl-10" : "pl-4"}`}>
+							{[...data.tenants].sort((a, b) => `${a.name}\u0000${a.location ?? ""}`.localeCompare(`${b.name}\u0000${b.location ?? ""}`)).map((t) => (
+								<li key={t.id} className="space-y-2 px-4 py-3 text-sm">
 									<div className="flex flex-wrap items-center gap-2">
 										<span className="min-w-0 flex-1 basis-48">
 											<span className="block truncate font-medium">
-												{t.parent && <span className="text-fg-faint">{data.tenants.find((x) => x.id === t.parent)?.name ?? t.parent} / </span>}
 												{t.name}
+												{t.location && <span className="text-fg-muted"> / {t.location}</span>}
 											</span>
 											<span className="block truncate text-xs text-fg-faint">
 												{t.tenant}
@@ -109,11 +116,11 @@ export function TenantsTab() {
 										<button type="button" className="btn btn-sm btn-primary" disabled={busy || data.current?.id === t.id} onClick={() => void switchTenant(t.id)}>
 											{data.current?.id === t.id ? "You are here" : "Open"}
 										</button>
-										{!t.parent && (
+										{
 											<button type="button" className="btn btn-sm" disabled={busy} onClick={() => setServer(server?.id === t.id ? undefined : { id: t.id, name: "", host: "", issuer: t.issuer ?? "", clientId: "", clientSecret: "" })}>
 												Add location
 											</button>
-										)}
+										}
 										<button type="button" className="btn btn-sm" disabled={busy} onClick={() => setReplace(replace?.id === t.id ? undefined : { id: t.id, clientId: t.clientId ?? "", clientSecret: "" })}>
 											New client secret
 										</button>
@@ -188,7 +195,12 @@ export function TenantsTab() {
 						>
 							<div>
 								<label className="label">Name</label>
-								<input className="input" value={name} onChange={(e) => setName(e.target.value)} placeholder="Color Line test" />
+								<input className="input" value={name} onChange={(e) => setName(e.target.value)} placeholder="Color Line" />
+							</div>
+							<div>
+								<label className="label">Location (vessel or site)</label>
+								<input className="input" value={place} onChange={(e) => setPlace(e.target.value)} placeholder="Color Magic" />
+								<p className="help">Add the same tenant once per location. Leave empty when there is only one.</p>
 							</div>
 							<div>
 								<label className="label">Maranics tenant id</label>

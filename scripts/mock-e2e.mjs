@@ -666,11 +666,21 @@ try {
 	assert.equal(far.body.host, "https://api.cloud.maranics.com");
 	assert.equal(far.body.issuer, "https://usermanagement.cloud.maranics.com/farco");
 	assert.equal((await api("POST", "tenants", { name: "Bad Co", tenant: "x", host: "https://api.evil.example", clientId: "c", clientSecret: "s3cret-s3cret" }, adminJar)).status, 400, "only allowed servers");
+	// tenant + location straight from the add form: five "Color Line" rows are fine
+	const loc = await api("POST", "tenants", { name: "Far Co", location: "Magic Two", tenant: "farco", host: "https://api.m2.maranics.com", clientId: "m2", clientSecret: "s3cret-m2-s3cret" }, adminJar);
+	assert.equal(loc.status, 201, JSON.stringify(loc.body));
+	assert.equal(loc.body.id, "far-co-magic-two");
+	assert.equal(loc.body.name, "Far Co");
+	assert.equal(loc.body.location, "Magic Two");
+	assert.equal(loc.body.tenant, "farco");
+	assert.equal((await api("DELETE", "tenants/far-co-magic-two", undefined, adminJar)).status, 200);
 	// one tenant, several servers ("far co / magic"): same client, own address, own sign-in link
 	const magic = await api("POST", "tenants/far-co/servers", { name: "Magic", host: "https://api.magic.maranics.com", issuer: far.body.issuer }, adminJar);
 	assert.equal(magic.status, 201, JSON.stringify(magic.body));
 	assert.equal(magic.body.id, "far-co-magic");
 	assert.equal(magic.body.parent, "far-co");
+	assert.equal(magic.body.name, "Far Co");
+	assert.equal(magic.body.location, "Magic");
 	assert.equal(magic.body.tenant, "farco");
 	assert.equal(magic.body.issuer, far.body.issuer, "people sign in at the same place");
 	assert.equal(magic.body.loginPath, "/t/far-co-magic");

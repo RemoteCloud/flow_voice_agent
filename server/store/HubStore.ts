@@ -87,6 +87,8 @@ export interface TenantEntry {
 	/** Fallback without an SSO client: a pasted access token everyone in the tenant acts with. */
 	tokenEnc?: string;
 	tokenHint?: string;
+	/** Location of this entry (a vessel, a site): several entries may share name and Maranics tenant id and differ here. */
+	location?: string;
 	/** Another server of the same Maranics tenant (one per vessel, "colorline / colormagic"): id of the tenant entry it was added under. */
 	parent?: string;
 	createdAt: string;

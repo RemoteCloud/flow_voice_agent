@@ -49,6 +49,8 @@ export interface TenantView {
 	tokenHint?: string;
 	/** From the token's own `exp` claim when it is a JWT. */
 	tokenExpiresAt?: string;
+	/** A vessel or site; shown as "name / location". */
+	location?: string;
 	/** Set on an extra server of a tenant: the entry it was added under. */
 	parent?: string;
 	createdAt: string;
@@ -161,7 +163,7 @@ export class Tenants {
 		} else if (t.tokenEnc) {
 			const token = openToken(t.tokenEnc, this.deps.sealKey);
 			registerSecret(token);
-			sign = { oidc: undefined, oidcReason: "This tenant uses a pasted access token.", devUser: { sub: `dev:${t.id}`, name: peekJwt(token).name ?? "token user", email: "" }, devToken: token, tokenTenant: { id: t.id, name: t.name } };
+			sign = { oidc: undefined, oidcReason: "This tenant uses a pasted access token.", devUser: { sub: `dev:${t.id}`, name: peekJwt(token).name ?? "token user", email: "" }, devToken: token, tokenTenant: { id: t.id, name: t.location ? `${t.name} / ${t.location}` : t.name } };
 		} else throw new Error("tenant has neither an SSO client nor a token");
 		return {
 			...common,
@@ -206,15 +208,15 @@ export class Tenants {
 			/* sealed with another HUB_SECRET */
 		}
 		const sso = !!t.clientId;
-		return { id: t.id, name: t.name, tenant: t.tenant, host: t.host, mode: sso ? "sso" : "token", clientId: t.clientId, issuer: sso ? this.issuerFor(t) : undefined, loginPath: sso ? `/t/${t.id}` : undefined, tokenHint: t.tokenHint, tokenExpiresAt: exp ? new Date(exp * 1000).toISOString() : undefined, parent: t.parent, createdAt: t.createdAt };
+		return { id: t.id, name: t.name, location: t.location, tenant: t.tenant, host: t.host, mode: sso ? "sso" : "token", clientId: t.clientId, issuer: sso ? this.issuerFor(t) : undefined, loginPath: sso ? `/t/${t.id}` : undefined, tokenHint: t.tokenHint, tokenExpiresAt: exp ? new Date(exp * 1000).toISOString() : undefined, parent: t.parent, createdAt: t.createdAt };
 	}
 
-	async add(p: { name: string; tenant: string; host?: string; issuer?: string; token?: string; clientId?: string; clientSecret?: string }): Promise<TenantView> {
-		const slug = p.name.toLowerCase().replace(/[^a-z0-9]+/g, "-").replace(/^-|-$/g, "").slice(0, 30) || "tenant";
+	async add(p: { name: string; location?: string; tenant: string; host?: string; issuer?: string; token?: string; clientId?: string; clientSecret?: string }): Promise<TenantView> {
+		const slug = `${p.name} ${p.location ?? ""}`.toLowerCase().replace(/[^a-z0-9]+/g, "-").replace(/^-|-$/g, "").slice(0, 40) || "tenant";
 		let id = slug;
 		for (let n = 2; this.entries().some((t) => t.id === id); n++) id = `${slug}-${n}`;
 		const sign = p.clientId && p.clientSecret ? { clientId: p.clientId, clientSecretEnc: sealToken(p.clientSecret, this.deps.sealKey), issuer: p.issuer } : { tokenEnc: sealToken(p.token ?? "", this.deps.sealKey), tokenHint: (p.token ?? "").slice(-6) };
-		const entry: TenantEntry = { id, name: p.name, tenant: p.tenant, host: p.host, ...sign, createdAt: new Date(this.deps.now()).toISOString() };
+		const entry: TenantEntry = { id, name: p.name, location: p.location, tenant: p.tenant, host: p.host, ...sign, createdAt: new Date(this.deps.now()).toISOString() };
 		await this.boot(entry); // fails before anything is stored
 		await this.deps.store.update((d) => {
 			(d.tenants ??= []).push(entry);
@@ -231,7 +233,7 @@ export class Tenants {
 		for (let n = 2; this.entries().some((t) => t.id === id); n++) id = `${root}-${slug}-${n}`;
 		// a location may have its own client; without one it shares the tenant's
 		const own = p.clientId && p.clientSecret ? { clientId: p.clientId, clientSecretEnc: sealToken(p.clientSecret, this.deps.sealKey), tokenEnc: undefined, tokenHint: undefined } : {};
-		const entry: TenantEntry = { ...parent, ...own, id, name: p.name, host: p.host, issuer: p.issuer, parent: root, createdAt: new Date(this.deps.now()).toISOString() };
+		const entry: TenantEntry = { ...parent, ...own, id, name: parent.name, location: p.name, host: p.host, issuer: p.issuer, parent: root, createdAt: new Date(this.deps.now()).toISOString() };
 		await this.boot(entry);
 		await this.deps.store.update((d) => {
 			(d.tenants ??= []).push(entry);
@@ -332,7 +334,7 @@ export class Tenants {
 			const cur = this.parseCookie(getCookie(c, TENANT_COOKIE));
 			const manage = await canManage(c);
 			const curEntry = cur && this.entries().find((t) => t.id === cur.id);
-			return c.json<TenantsResponse>({ current: curEntry ? { id: curEntry.id, name: curEntry.name } : undefined, canManage: manage, central: !!env.centralPassword, mainName: env.maranics?.tenant ?? "main", mainHost: manage ? env.maranics?.host : undefined, tenants: manage ? this.entries().map((t) => this.view(t)) : [] });
+			return c.json<TenantsResponse>({ current: curEntry ? { id: curEntry.id, name: curEntry.location ? `${curEntry.name} / ${curEntry.location}` : curEntry.name } : undefined, canManage: manage, central: !!env.centralPassword, mainName: env.maranics?.tenant ?? "main", mainHost: manage ? env.maranics?.host : undefined, tenants: manage ? this.entries().map((t) => this.view(t)) : [] });
 		});
 		app.post("/api/tenants/leave", (c) => {
 			c.header("Set-Cookie", this.setCookie(undefined));
@@ -343,6 +345,7 @@ export class Tenants {
 			if (!(await canManage(c))) return fail(c, 403, "FORBIDDEN", env.centralPassword ? "sign in to the central admin area first" : "only an admin of the main hub manages tenants");
 			const b = (await c.req.json().catch(() => ({}))) as Record<string, unknown>;
 			const name = str(b.name);
+			const location = str(b.location);
 			const tenant = str(b.tenant);
 			const token = str(b.token)?.replace(/^Bearer\s+/i, "");
 			let host = str(b.host)?.replace(/\/+$/, "");
@@ -377,7 +380,7 @@ export class Tenants {
 				}
 			}
 			try {
-				return c.json(await this.add({ name, tenant, host, issuer, token, clientId, clientSecret }), 201);
+				return c.json(await this.add({ name, location, tenant, host, issuer, token, clientId, clientSecret }), 201);
 			} catch (err) {
 				return fail(c, 502, "TENANT_START", err instanceof Error ? err.message : String(err));
 			}
