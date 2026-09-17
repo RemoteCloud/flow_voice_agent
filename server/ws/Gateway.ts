@@ -18,6 +18,8 @@ export interface GatewayDeps {
 	log: Logger;
 	hubVersion: string;
 	stt: SttAdapter;
+	/** Backup recogniser (STT_BACKUP_ENDPOINT): transcribes for endpoints without recognition of their own (Pi / offline browsers). */
+	sttBackup?: SttAdapter;
 	/** Resolve the browser / device session from the upgrade request (cookie or bearer device token). */
 	authenticate(req: IncomingMessage): Promise<{ session?: HubSession; deviceId?: string } | undefined>;
 	onEndpointChange(stationId: string, endpointId: string | undefined): void;
@@ -257,11 +259,14 @@ export class Gateway implements EngineIo {
 		ep.listening = undefined;
 		this.send(ep, { type: "listen.close" });
 		if (reason === "cancel") return;
-		if (this.deps.stt.kind === "http" && l.bytes > 3200) {
-			const pcm = Buffer.concat(l.chunks);
+		const stt = this.deps.stt.kind === "http" ? this.deps.stt : this.deps.sttBackup;
+		if (stt && l.bytes > 3200) {
+			let pcm = Buffer.concat(l.chunks);
+			// the backup recogniser encodes short windows only (cheap on CPU): keep the last 8 s, where the answer is
+			if (stt !== this.deps.stt && pcm.length > 16000 * 2 * 8) pcm = pcm.subarray(pcm.length - 16000 * 2 * 8);
 			l.chunks.length = 0;
 			try {
-				const r = await this.deps.stt.transcribe(pcm, { language: l.language, bias: l.bias });
+				const r = await stt.transcribe(pcm, { language: l.language, bias: l.bias });
 				await this.engine.onTranscript(ep.stationId, r.text, r.confidence, ep.session);
 			} catch (err) {
 				this.deps.log.warn(`stt failed: ${err instanceof Error ? err.message : String(err)}`);

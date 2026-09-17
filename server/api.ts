@@ -29,7 +29,7 @@ export interface SessionProbeResponse {
 	/** The address the Android app pairs with (also rendered at GET /api/qr.svg). */
 	hubUrl: string;
 	stations: Station[];
-	speech: { stt: "endpoint" | "http"; tts: "endpoint" | "http" };
+	speech: { stt: "endpoint" | "http"; tts: "endpoint" | "http"; /** the hub can transcribe a window the device could not (POST /api/stt) */ sttBackup?: boolean };
 	maranicsConfigured: boolean;
 }
 
@@ -86,7 +86,7 @@ export interface StatusResponse {
 	pendingEnrollments: PendingEnrollment[];
 	sessions: { id: string; sub: string; name?: string; stationId?: string; lastSeenAt: string; createdAt: string; credential: string }[];
 	prompts: { promptId: string; stationId: string; prompt: string; state: string; createdAt: string }[];
-	speech: { stt: "endpoint" | "http"; tts: "endpoint" | "http"; sttUrl?: string };
+	speech: { stt: "endpoint" | "http"; tts: "endpoint" | "http"; sttUrl?: string; sttBackup?: boolean; sttBackupUrl?: string };
 	settings: { readNotices: boolean; tzMode: "utc" | "local"; confirmation: "required" | "optional"; /** Template ids that get a start button on the phone/tablet home screen and in the voice menu; empty or absent → every template. */ startable?: string[]; /** Template id → language the checklist is written in (en/sv/no/fr/de); wins over the station language. */ templateLanguages?: Record<string, string> };
 }
 

@@ -34,6 +34,9 @@ export interface SpeechEnv {
 	sttUrl?: string;
 	sttModel: string;
 	sttApiKey?: string;
+	/** Backup recogniser: the device still transcribes itself, and sends the audio of a window here only when it could not (no model / language pack, nothing recognised). Same API as `sttUrl`. */
+	sttBackupUrl?: string;
+	sttBackupModel: string;
 	/** `endpoint` = device speaks; `http` = GET `ttsUrl?text=` for audio (Piper HTTP server). */
 	ttsMode: "endpoint" | "http";
 	ttsUrl?: string;
@@ -194,6 +197,8 @@ export function parseEnv(e: Env, defaults: { cwd: string } = { cwd: process.cwd(
 			sttUrl,
 			sttModel: s(e, "STT_MODEL") ?? "whisper-1",
 			sttApiKey: s(e, "STT_API_KEY"),
+			sttBackupUrl: normalizeBaseUrl(s(e, "STT_BACKUP_ENDPOINT", "STT_BACKUP_URL")),
+			sttBackupModel: s(e, "STT_BACKUP_MODEL") ?? s(e, "STT_MODEL") ?? "whisper-1",
 			ttsMode: ttsUrl ? "http" : "endpoint",
 			ttsUrl,
 		},

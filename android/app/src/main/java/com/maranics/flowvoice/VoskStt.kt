@@ -151,8 +151,10 @@ class VoskStt(private val context: Context, private val callbacks: Callbacks, pr
         }
     }
 
+    /** Set by the PWA from the hub's boot info: may a window the phone could not transcribe be sent to the hub? */
+    @Volatile var serverBackup = false
+
     /** Listen for `grammar` (a JSON array of phrases) until an utterance ends, `maxMs` passes, or stop() is called. */
-    @SuppressLint("MissingPermission")
     fun start(language: String, grammarJson: String, maxMs: Int): Boolean {
         val model = models[langKey(language)] ?: return false
         stop()
@@ -168,21 +170,42 @@ class VoskStt(private val context: Context, private val callbacks: Callbacks, pr
             callbacks.onError("grammar recogniser: ${e.message}")
             return false
         }
+        return open(rec, language, promptOf(phrases), maxMs)
+    }
+
+    /**
+     * No model for this language on the phone (Norwegian): record the utterance with a plain energy endpointer
+     * (no recogniser running, next to no CPU) and let the hub transcribe it. `hintsJson` = words the hub expects.
+     */
+    fun startServer(language: String, hintsJson: String, maxMs: Int): Boolean {
+        if (!serverBackup || hubUrl().isNullOrBlank()) return false
+        stop()
+        return open(null, language, promptOf(runCatching { JSONArray(hintsJson) }.getOrElse { JSONArray() }), maxMs)
+    }
+
+    private fun promptOf(phrases: JSONArray): String {
+        val out = ArrayList<String>()
+        for (i in 0 until minOf(phrases.length(), 40)) out.add(phrases.optString(i))
+        return out.filter { it.isNotBlank() }.joinToString(", ").take(400)
+    }
+
+    @SuppressLint("MissingPermission")
+    private fun open(rec: Recognizer?, language: String, prompt: String, maxMs: Int): Boolean {
         val minBuf = AudioRecord.getMinBufferSize(SAMPLE_RATE, AudioFormat.CHANNEL_IN_MONO, AudioFormat.ENCODING_PCM_16BIT)
         val record = try {
             AudioRecord(MediaRecorder.AudioSource.VOICE_RECOGNITION, SAMPLE_RATE, AudioFormat.CHANNEL_IN_MONO, AudioFormat.ENCODING_PCM_16BIT, maxOf(minBuf, SAMPLE_RATE / 2))
         } catch (e: Exception) {
-            rec.close()
+            rec?.close()
             callbacks.onError("microphone: ${e.message}")
             return false
         }
         if (record.state != AudioRecord.STATE_INITIALIZED) {
             record.release()
-            rec.close()
+            rec?.close()
             callbacks.onError("microphone not available")
             return false
         }
-        val s = Session(rec, record, maxMs.toLong())
+        val s = Session(rec, record, maxMs.toLong(), language, prompt)
         session = s
         s.thread.start()
         return true
@@ -200,9 +223,40 @@ class VoskStt(private val context: Context, private val callbacks: Callbacks, pr
         io.execute { models.values.forEach { it.close() }; models.clear() }
     }
 
-    private inner class Session(val rec: Recognizer, val record: AudioRecord, val maxMs: Long) {
+    /**
+     * One listen window. `rec` = the grammar recogniser, or null when the hub transcribes (server mode).
+     * The voiced part of the window (plus 300 ms before it) is kept in memory, at most 7.5 s = 240 kB, only so it can be
+     * sent to the hub when nothing was recognised here; it is dropped when the window ends.
+     */
+    private inner class Session(val rec: Recognizer?, val record: AudioRecord, val maxMs: Long, val language: String, val prompt: String) {
         @Volatile var stopping = false
         val thread = Thread({ run() }, "vosk-listen")
+        private val keep = serverBackup && !hubUrl().isNullOrBlank()
+        private val pcm = java.io.ByteArrayOutputStream(if (keep) 96_000 else 0)
+        private val preRoll = java.util.ArrayDeque<ByteArray>()
+        private var floor = -1.0
+        private var voiced = 0
+        private var quiet = 0
+
+        /** Energy gate with a slow noise floor: engine rumble raises the floor, a voice stands out above it. */
+        private fun track(buf: ShortArray, n: Int) {
+            var sum = 0.0
+            for (i in 0 until n) sum += buf[i].toDouble() * buf[i]
+            val rms = Math.sqrt(sum / n)
+            if (floor < 0) floor = rms
+            val loud = rms > maxOf(350.0, floor * 2.2)
+            if (loud) { voiced++; quiet = 0 } else { quiet++; floor = floor * 0.95 + rms * 0.05 }
+            if (!keep) return
+            val bytes = ByteArray(n * 2)
+            for (i in 0 until n) { bytes[2 * i] = (buf[i].toInt() and 0xff).toByte(); bytes[2 * i + 1] = (buf[i].toInt() shr 8).toByte() }
+            if (voiced == 0) {
+                preRoll.addLast(bytes)
+                if (preRoll.size > 3) preRoll.removeFirst()
+            } else if (pcm.size() < SAMPLE_RATE * 15) { // 7.5 s: what the hub's recogniser takes
+                while (preRoll.isNotEmpty()) pcm.write(preRoll.removeFirst())
+                pcm.write(bytes)
+            }
+        }
 
         private fun run() {
             val buf = ShortArray(SAMPLE_RATE / 10) // 100 ms
@@ -214,6 +268,11 @@ class VoskStt(private val context: Context, private val callbacks: Callbacks, pr
                 while (!stopping && System.currentTimeMillis() - started < maxMs) {
                     val n = record.read(buf, 0, buf.size)
                     if (n <= 0) continue
+                    track(buf, n)
+                    if (rec == null) {
+                        if (voiced >= 2 && quiet >= 8) break // 0.8 s of quiet after speech: the answer is over
+                        continue
+                    }
                     if (rec.acceptWaveForm(buf, n)) {
                         deliver(rec.result)
                         delivered = true
@@ -226,15 +285,50 @@ class VoskStt(private val context: Context, private val callbacks: Callbacks, pr
                         if (clean.isNotEmpty()) main.post { callbacks.onPartial(clean) }
                     }
                 }
-                if (!delivered) deliver(rec.finalResult)
+                runCatching { record.stop() } // free the mic before any upload
+                if (!delivered) deliver(rec?.finalResult ?: "{}")
             } catch (e: Exception) {
                 Log.w(TAG, "listen failed", e)
                 main.post { callbacks.onError("grammar recogniser: ${e.message}") }
             } finally {
                 runCatching { record.stop() }
                 record.release()
-                rec.close()
+                rec?.close()
                 if (session === this) session = null
+            }
+        }
+
+        /** Ask the hub. Returns true when it delivered a transcript. */
+        private fun askHub(): Boolean {
+            if (!keep || voiced < 3 || pcm.size() < 6400) return false
+            val hub = hubUrl()?.trimEnd('/') ?: return false
+            main.post { callbacks.onPartial("…") }
+            return try {
+                val q = "language=${java.net.URLEncoder.encode(langKey(language), "UTF-8")}&prompt=${java.net.URLEncoder.encode(prompt, "UTF-8")}"
+                val conn = URL("$hub/api/stt?$q").openConnection() as HttpURLConnection
+                conn.requestMethod = "POST"
+                conn.doOutput = true
+                conn.connectTimeout = 4000
+                conn.readTimeout = 25000
+                conn.setRequestProperty("Content-Type", "application/octet-stream")
+                android.webkit.CookieManager.getInstance().getCookie(hub)?.let { conn.setRequestProperty("Cookie", it) }
+                val body = pcm.toByteArray()
+                conn.setFixedLengthStreamingMode(body.size)
+                conn.outputStream.use { it.write(body) }
+                if (conn.responseCode != 200) throw IllegalStateException("HTTP ${conn.responseCode}")
+                val o = JSONObject(conn.inputStream.bufferedReader().use { it.readText() })
+                val text = o.optString("text").trim()
+                if (text.isEmpty()) false
+                else {
+                    val conf = o.optDouble("confidence", 0.85).toFloat()
+                    main.post { callbacks.onFinal(text, conf) }
+                    true
+                }
+            } catch (e: Exception) {
+                Log.w(TAG, "hub stt failed", e)
+                false
+            } finally {
+                pcm.reset()
             }
         }
 
@@ -242,7 +336,8 @@ class VoskStt(private val context: Context, private val callbacks: Callbacks, pr
             val o = JSONObject(json)
             val text = clean(o.optString("text"))
             if (text.isEmpty()) {
-                main.post { callbacks.onSilence() }
+                // nothing in the grammar matched (or no recogniser here): if somebody did speak, the hub gets one try
+                if (!askHub()) main.post { callbacks.onSilence() }
                 return
             }
             // per-word confidences when setWords(true) produced them

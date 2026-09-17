@@ -33,6 +33,8 @@ export interface AppDeps {
 	outbox: Outbox;
 	gateway: Gateway;
 	stt: SttAdapter;
+	/** Backup recogniser for windows the device could not transcribe (STT_BACKUP_ENDPOINT); absent → POST /api/stt answers 404. */
+	sttBackup?: SttAdapter;
 	log: Logger;
 	version: string;
 	now(): number;
@@ -183,7 +185,7 @@ export function createApp(deps: AppDeps): Hono {
 	// ----- auth
 	api.get("/auth/session", async (c) => {
 		const row = await sessionFromRequest(c);
-		const res: SessionProbeResponse = { authenticated: !!row, me: row ? meOf(row) : undefined, provider: auth.providerView(), hubVersion: deps.version, vesselId: env.vesselId, hubUrl: hubUrlOf(c), stations: store.get().stations, speech: { stt: env.speech.sttMode, tts: env.speech.ttsMode }, maranicsConfigured: !!env.maranics };
+		const res: SessionProbeResponse = { authenticated: !!row, me: row ? meOf(row) : undefined, provider: auth.providerView(), hubVersion: deps.version, vesselId: env.vesselId, hubUrl: hubUrlOf(c), stations: store.get().stations, speech: { stt: env.speech.sttMode, tts: env.speech.ttsMode, sttBackup: !!deps.sttBackup }, maranicsConfigured: !!env.maranics };
 		return c.json(res);
 	});
 
@@ -458,7 +460,7 @@ export function createApp(deps: AppDeps): Hono {
 			pendingEnrollments: d.pendingEnrollments.filter((p) => !p.token),
 			sessions: d.sessions.map((s) => ({ id: s.id, sub: s.sub, name: d.users.find((u) => u.sub === s.sub)?.name, stationId: s.stationId, lastSeenAt: s.lastSeenAt, createdAt: s.createdAt, credential: s.credential?.state ?? (s.sub.startsWith("dev:") ? "dev" : "none") })),
 			prompts: d.prompts.slice(-50).map((p) => ({ promptId: p.promptId, stationId: p.stationId, prompt: p.item.prompt, state: p.state, createdAt: p.createdAt })),
-			speech: { stt: env.speech.sttMode, tts: env.speech.ttsMode, sttUrl: env.speech.sttUrl },
+			speech: { stt: env.speech.sttMode, tts: env.speech.ttsMode, sttUrl: env.speech.sttUrl, sttBackup: !!deps.sttBackup, sttBackupUrl: env.speech.sttBackupUrl },
 			settings: d.settings,
 		};
 		return c.json(res);
@@ -554,6 +556,36 @@ export function createApp(deps: AppDeps): Hono {
 		});
 		return c.json(store.get().mappings);
 	});
+	// ----- backup recognition: the device sends the PCM of ONE listen window it could not transcribe itself.
+	// One transcription at a time (the recogniser is CPU-bound; a queue keeps the box responsive), audio is never stored.
+	const STT_MAX_BYTES = 16000 * 2 * 8; // 8 s of 16 kHz mono 16-bit: an answer, not a conversation (the recogniser encodes 7.7 s)
+	let sttQueue: Promise<unknown> = Promise.resolve();
+	let sttWaiting = 0;
+	api.post("/stt", async (c) => {
+		const backup = deps.sttBackup;
+		if (!backup) return fail(c, 404, "STT_BACKUP_OFF", "no backup recogniser is configured on this hub");
+		if (sttWaiting >= 4) return fail(c, 429, "RATE_LIMITED", "the recogniser is busy");
+		const buf = Buffer.from(await c.req.arrayBuffer());
+		if (buf.length < 3200) return c.json({ text: "" }); // under 100 ms: nothing to hear
+		if (buf.length > STT_MAX_BYTES) return fail(c, 400, "BAD_REQUEST", "audio too long");
+		const language = str(c.req.query("language"))?.slice(0, 2).toLowerCase();
+		const bias = (str(c.req.query("prompt")) ?? "").split(",").map((x) => x.trim()).filter(Boolean).slice(0, 40);
+		sttWaiting++;
+		const job = sttQueue.then(() => backup.transcribe(buf, { language: language === "nb" ? "no" : language, bias }));
+		sttQueue = job.catch(() => undefined);
+		try {
+			const started = deps.now();
+			const r = await job;
+			log.info(`backup stt (${language ?? "?"}, ${(buf.length / 32000).toFixed(1)} s audio) → ${r.text ? `${r.text.split(/\s+/).length} word(s)` : "nothing"} in ${deps.now() - started} ms`);
+			return c.json({ text: r.text, confidence: r.confidence });
+		} catch (err) {
+			log.warn(`backup stt failed: ${err instanceof Error ? err.message : String(err)}`);
+			return fail(c, 502, "STT_BACKUP_FAILED", "the backup recogniser did not answer");
+		} finally {
+			sttWaiting--;
+		}
+	});
+
 	const models = new SpeechModels(env.dataDir, log);
 	// admin: fetch a model onto the hub ahead of time, so the first phone does not wait for it
 	api.post("/models/vosk/:lang", async (c) => {

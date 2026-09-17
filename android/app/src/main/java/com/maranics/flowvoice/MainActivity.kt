@@ -400,6 +400,28 @@ class MainActivity : AppCompatActivity() {
             }
         }
 
+        /** The hub offers backup recognition (boot info): windows the phone cannot transcribe may be sent there. */
+        @JavascriptInterface
+        fun setServerStt(enabled: Boolean) { vosk.serverBackup = enabled }
+
+        /** Is there a grammar model for this language at all? (No → `startListeningServer` when the hub has a backup recogniser.) */
+        @JavascriptInterface
+        fun supportsGrammarStt(language: String): Boolean = vosk.supports(language)
+
+        /** Record one utterance and let the hub transcribe it (languages without a model on the phone). Falls back to the system recogniser. */
+        @JavascriptInterface
+        fun startListeningServer(language: String, hintsJson: String, maxMs: Int, promptId: String) = runOnUiThread {
+            if (!micGranted) {
+                js("window.flowVoiceBridge&&window.flowVoiceBridge.onListenEnd('cancel')")
+                return@runOnUiThread
+            }
+            if (listening) recognizer?.cancel()
+            listening = false
+            tts?.stop()
+            voskListening = vosk.startServer(language, hintsJson, maxMs)
+            if (!voskListening) beginListening(language, preferOffline = language !in offlineUnavailable)
+        }
+
         @JavascriptInterface
         fun setForeground(active: Boolean, text: String) = runOnUiThread {
             if (active) VoiceService.start(this@MainActivity, text) else VoiceService.stop(this@MainActivity)

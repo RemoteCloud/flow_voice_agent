@@ -26,6 +26,12 @@ declare global {
 			/** Open the camera to scan a station poster: the app reloads joined to that station. */
 			scanStation?(): void;
 			hasGrammarStt?(language: string): boolean;
+			/** The hub has a backup recogniser: the app may send it a window it could not transcribe. */
+			setServerStt?(enabled: boolean): void;
+			/** Does a grammar model exist for this language at all (loaded or not)? */
+			supportsGrammarStt?(language: string): boolean;
+			/** Record one utterance (energy endpointer, no recogniser on the phone) and let the hub transcribe it. */
+			startListeningServer?(language: string, hintsJson: string, maxMs: number, promptId: string): void;
 			/** Load / download the model for this language in the background (call when the answer language changes). */
 			prepareGrammarStt?(language: string): void;
 			/** Listen for the given phrases only (JSON array); anything else comes back as silence. */
@@ -49,6 +55,19 @@ declare global {
 
 export type EndpointState = "disconnected" | "connecting" | "observer" | "ready" | "speaking" | "listening" | "thinking";
 
+let forceHubStt = false;
+/** This browser's own recogniser failed before (or `?hubstt=1` asked for it): recognise on the hub. `?hubstt=0` resets. */
+function hubSttPreferred(): boolean {
+	if (forceHubStt) return true;
+	try {
+		const q = new URLSearchParams(location.search).get("hubstt");
+		if (q === "1" || q === "0") localStorage.setItem("fv.hubStt", q);
+		return localStorage.getItem("fv.hubStt") === "1";
+	} catch {
+		return false;
+	}
+}
+
 export interface EndpointCallbacks {
 	onState(state: EndpointState, text?: string): void;
 	onRun(run: RunView | null): void;
@@ -57,6 +76,8 @@ export interface EndpointCallbacks {
 	onError(message: string): void;
 	onRole(role: "endpoint" | "observer"): void;
 	onNavigate?(page: "picker" | "run", opts: { runId?: string; stationId?: string }): void;
+	/** The endpoint changed how it recognises speech (browser recogniser unusable → the hub's): reconnect so the hub learns the new capabilities. */
+	onRestart?(): void;
 }
 
 export interface EndpointOptions {
@@ -73,6 +94,8 @@ export interface EndpointOptions {
 	handsFree?: boolean;
 	/** Noisy bridge: the mic opens only while push-to-talk is held, never on its own after a prompt. */
 	holdToAnswer?: boolean;
+	/** Hub boot info: a backup recogniser is configured (POST /api/stt). */
+	serverBackup?: boolean;
 }
 
 const IDLE = "idle";
@@ -109,9 +132,13 @@ export class AudioEndpoint {
 		private readonly opts: EndpointOptions,
 		private readonly cb: EndpointCallbacks,
 	) {
-		const localStt = opts.sttOnEndpoint && (hasAndroid() ? window.FlowVoiceAndroid!.hasLocalStt() : !!(window.SpeechRecognition ?? window.webkitSpeechRecognition));
+		// Browsers (Mac, Windows, Raspberry Pi): the built-in recogniser when there is a working one; otherwise — no API at all
+		// (Chromium on a Pi, Firefox), or it failed before on this machine (no internet on board) — the mic is streamed to the hub.
+		const browserStt = !!(window.SpeechRecognition ?? window.webkitSpeechRecognition) && !(opts.serverBackup && hubSttPreferred());
+		const localStt = opts.sttOnEndpoint && (hasAndroid() ? window.FlowVoiceAndroid!.hasLocalStt() : browserStt);
 		this.handsFree = !!opts.handsFree;
 		this.capabilities = { input: [hasAndroid() ? "android-mic" : "browser-mic"], sampleRate: 16000, aec: false, pushToTalk: opts.pushToTalk && !this.handsFree, wakeWord: false, localTts: true, localStt };
+		window.FlowVoiceAndroid?.setServerStt?.(!!opts.serverBackup);
 		window.FlowVoiceAndroid?.prepareGrammarStt?.(opts.answerLanguage || opts.language);
 		window.flowVoiceBridge = {
 			onSpoken: (promptId) => {
@@ -524,6 +551,12 @@ export class AudioEndpoint {
 				a.startListeningGrammar(stt, JSON.stringify(this.grammar), maxMs, this.listenPromptId ?? "");
 				return;
 			}
+			// no model for this language on the phone (Norwegian): the hub's recogniser takes the prompt windows.
+			// Never the idle window: open-mic chatter must not keep the hub's CPU busy.
+			if (this.opts.serverBackup && a.startListeningServer && a.supportsGrammarStt && !a.supportsGrammarStt(stt) && this.listenPromptId !== IDLE) {
+				a.startListeningServer(stt, JSON.stringify(this.grammar?.length ? this.grammar : this.bias), maxMs, this.listenPromptId ?? "");
+				return;
+			}
 			if (a.startListeningWith) a.startListeningWith(stt, extra, this.bias.join(","), maxMs, this.listenPromptId ?? "");
 			else if (a.startListeningIn) a.startListeningIn(stt, extra, maxMs, this.listenPromptId ?? "");
 			else a.startListening(stt, maxMs, this.listenPromptId ?? "");
@@ -553,6 +586,18 @@ export class AudioEndpoint {
 		};
 		rec.onerror = (ev: SpeechRecognitionErrorEvent) => {
 			if (ev.error === "no-speech" || ev.error === "aborted") return;
+			// Chrome's recogniser is a cloud service: no internet / blocked / language missing → hand recognition to the hub for good
+			if (this.opts.serverBackup && (ev.error === "network" || ev.error === "service-not-allowed" || ev.error === "language-not-supported")) {
+				try {
+					localStorage.setItem("fv.hubStt", "1");
+				} catch {
+					/* storage unavailable: the switch lasts for this page only */
+				}
+				forceHubStt = true;
+				this.cb.onError("The browser's speech recognition is not available here. Switching to the hub's recogniser…");
+				this.cb.onRestart?.();
+				return;
+			}
 			this.cb.onError(`speech recognition: ${ev.error}`);
 		};
 		rec.onend = () => {

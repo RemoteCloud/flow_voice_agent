@@ -101,6 +101,7 @@ export function VoiceProvider({ children }: { children: ReactNode }) {
 		setStationId(undefined);
 	}, []);
 
+	const startRef = useRef<((wanted?: string) => Promise<void>) | undefined>(undefined);
 	const start = useCallback(
 		async (wanted?: string) => {
 			const sid = wanted ?? me.stationId;
@@ -115,7 +116,7 @@ export function VoiceProvider({ children }: { children: ReactNode }) {
 			setError(undefined);
 			const endpoint = new AudioEndpoint(
 				// phones / tablets have no settings of their own: language and hold-to-answer come from the station (and the run language from the template)
-				{ stationId: sid, endpointId: endpointId(), language: (mobile ? "" : langRef.current) || station?.language || "en", answerLanguage: mobile ? "" : answerLangRef.current, holdToAnswer: mobile ? !!station?.holdToAnswer : holdRef.current, sttOnEndpoint: boot.speech.stt === "endpoint", pushToTalk: !open, handsFree: handsFree || open },
+				{ stationId: sid, endpointId: endpointId(), language: (mobile ? "" : langRef.current) || station?.language || "en", answerLanguage: mobile ? "" : answerLangRef.current, holdToAnswer: mobile ? !!station?.holdToAnswer : holdRef.current, sttOnEndpoint: boot.speech.stt === "endpoint", serverBackup: !!boot.speech.sttBackup, pushToTalk: !open, handsFree: handsFree || open },
 				{
 					onState: (s, t) => {
 						setState(s);
@@ -125,6 +126,10 @@ export function VoiceProvider({ children }: { children: ReactNode }) {
 					onEvent: (e) => setEvents((prev) => [e, ...prev].slice(0, 30)),
 					onTranscript: (t, final) => setTranscript(final ? "" : t),
 					onError: (m) => setError(m),
+					onRestart: () => {
+						stop();
+						window.setTimeout(() => void startRef.current?.(sid), 400);
+					},
 					onRole: setRole,
 					onNavigate: (page, opts) => {
 						if (opts.stationId && opts.stationId !== sid) {
@@ -151,8 +156,9 @@ export function VoiceProvider({ children }: { children: ReactNode }) {
 				setStationId(undefined);
 			}
 		},
-		[me.stationId, stationId, stations, boot.speech.stt, handsFree, stop, setStation],
+		[me.stationId, stationId, stations, boot.speech.stt, boot.speech.sttBackup, handsFree, stop, setStation],
 	);
+	startRef.current = start;
 
 	// station switched by voice: reconnect once the session carries the new station
 	useEffect(() => {

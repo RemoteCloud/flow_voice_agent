@@ -9,6 +9,7 @@
  *   npm run mock          (builds nothing: expects dist/server.mjs from `npm run build:server`)
  */
 import assert from "node:assert/strict";
+import http from "node:http";
 import { spawn } from "node:child_process";
 import { cpSync, mkdtempSync, rmSync } from "node:fs";
 import os from "node:os";
@@ -23,9 +24,22 @@ const fake = await startFakeMaranics({ port: 0, tenant: "demo" });
 const dataDir = mkdtempSync(path.join(os.tmpdir(), "flow-voice-e2e-"));
 cpSync(path.join(root, "deploy", "data-template"), dataDir, { recursive: true }); // stations, mappings, the arrival-bridge voice profile
 const log = [];
+// fake backup recogniser (OpenAI-compatible): answers "ja" and records what it was asked
+const sttCalls = [];
+const sttServer = http.createServer(async (req, res) => {
+	const chunks = [];
+	for await (const c of req) chunks.push(c);
+	const body = Buffer.concat(chunks).toString("latin1");
+	sttCalls.push({ url: req.url, language: /name="language"\r\n\r\n(\w+)/.exec(body)?.[1], prompt: /name="prompt"\r\n\r\n([^\r]*)/.exec(body)?.[1], bytes: body.length });
+	res.writeHead(200, { "content-type": "application/json" });
+	res.end(JSON.stringify({ text: " Ja. [BLANK_AUDIO]", segments: [{ avg_logprob: -0.2, no_speech_prob: 0.05 }] }));
+});
+await new Promise((r) => sttServer.listen(0, "127.0.0.1", r));
+const sttUrl = `http://127.0.0.1:${sttServer.address().port}`;
+
 const hub = spawn(process.execPath, ["dist/server.mjs"], {
 	cwd: root,
-	env: { ...process.env, HUB_SECRET: "e2e-secret-0123456789abcdef", HUB_PORT: String(port), HUB_DATA_DIR: dataDir, HUB_PUBLIC_DIR: path.join(root, "dist", "public"), HUB_TENANT: "demo", HUB_MARANICS_HOST: fake.url, DEV_USER: "Bridge Officer", DEV_MARANICS_TOKEN: "t0k3n", SERVICE_TOKENS: "svc-token", LOG_LEVEL: "debug", LISTEN_MS: "1500", CONFIRM_MS: "1500", EXCHANGE_MS: "20000" },
+	env: { ...process.env, HUB_SECRET: "e2e-secret-0123456789abcdef", HUB_PORT: String(port), HUB_DATA_DIR: dataDir, HUB_PUBLIC_DIR: path.join(root, "dist", "public"), HUB_TENANT: "demo", HUB_MARANICS_HOST: fake.url, DEV_USER: "Bridge Officer", DEV_MARANICS_TOKEN: "t0k3n", SERVICE_TOKENS: "svc-token", STT_BACKUP_ENDPOINT: sttUrl, LOG_LEVEL: "debug", LISTEN_MS: "1500", CONFIRM_MS: "1500", EXCHANGE_MS: "20000" },
 	stdio: ["ignore", "pipe", "pipe"],
 });
 hub.stdout.on("data", (d) => log.push(String(d)));
@@ -455,11 +469,25 @@ try {
 	assert.deepEqual(modelList.map((m) => m.language).sort(), ["de", "en", "fr", "sv"]);
 	assert.equal((await fetch(`${base}/models/vosk/xx.zip`)).status, 404);
 
+	// backup recognition: the phone posts the PCM of a window it could not transcribe; the hub asks the recogniser once
+	step = "backup stt";
+	assert.equal((await api("GET", "auth/session")).body.speech.sttBackup, true, "boot info advertises the backup recogniser");
+	const pcm = Buffer.alloc(16000 * 2, 1); // one second
+	const sttRes = await fetch(`${base}/api/stt?language=nb&prompt=${encodeURIComponent("ja, nei, bekreft")}`, { method: "POST", headers: { "content-type": "application/octet-stream", cookie }, body: pcm });
+	assert.equal(sttRes.status, 200);
+	assert.deepEqual((await sttRes.json()).text, "Ja.", "non-speech tags are stripped");
+	assert.equal(sttCalls.at(-1).language, "no");
+	assert.equal(sttCalls.at(-1).prompt, "ja, nei, bekreft");
+	assert.equal(sttCalls.at(-1).url, "/v1/audio/transcriptions");
+	const tiny = await fetch(`${base}/api/stt`, { method: "POST", headers: { cookie }, body: Buffer.alloc(100) });
+	assert.equal((await tiny.json()).text, "", "too short to hear: the recogniser is not bothered");
+
 	// audit is text only
 	const audit = await api("GET", "audit?limit=50");
 	assert.ok(audit.body.some((a) => a.kind === "item.committed" && a.transcript === "Pilot on board five minutes ago."));
 
 	ws.close();
+	sttServer.close();
 	console.log("mock-e2e: OK —", spoken.length, "utterances,", fake.values.length, "values written to Flow");
 	console.log(spoken.map((s) => `  APP  ${s}`).join("\n"));
 } catch (err) {
