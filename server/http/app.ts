@@ -14,7 +14,7 @@ import type { Logger } from "../core/log.js";
 import type { SttAdapter } from "../speech/stt.js";
 import { hashDeckToken, newDeckId, newDeckToken, newJoinToken, tokenHint, verifyDeckToken } from "../store/crypto.js";
 import type { Credentials } from "../store/credentials.js";
-import type { Device, HubData, HubSession, HubStore, PendingEnrollment, PromptRecord, Station, StationJoin, VoiceProfile, EventMapping } from "../store/HubStore.js";
+import type { Device, HubData, HubSession, HubStore, PendingEnrollment, PromptRecord, Station, StationJoin, StationTemplateRule, VoiceProfile, EventMapping } from "../store/HubStore.js";
 import { deriveKey, openToken, sealToken } from "../store/crypto.js";
 import { EngineError, type RunEngine } from "../voice/RunEngine.js";
 import { SpeechModels, VOSK_MODELS } from "../speech/models.js";
@@ -59,6 +59,21 @@ function hmacOk(secret: string, raw: string, header: string | undefined): boolea
 	const expected = createHmac("sha256", secret).update(raw).digest("hex");
 	if (given.length !== expected.length) return false;
 	return timingSafeEqual(Buffer.from(given, "utf8"), Buffer.from(expected, "utf8"));
+}
+
+/** Station → per-template rules: only known access values and languages survive; an empty rule is dropped. */
+function templateRules(raw: unknown): Record<string, StationTemplateRule> | undefined {
+	if (!raw || typeof raw !== "object" || Array.isArray(raw)) return undefined;
+	const out: Record<string, StationTemplateRule> = {};
+	for (const [id, v] of Object.entries(raw as Record<string, unknown>)) {
+		if (!id.trim() || !v || typeof v !== "object") continue;
+		const r = v as { access?: unknown; language?: unknown };
+		const rule: StationTemplateRule = {};
+		if (r.access === "start" || r.access === "use" || r.access === "off") rule.access = r.access;
+		if (typeof r.language === "string" && /^(en|sv|no|fr|de)$/.test(r.language)) rule.language = r.language;
+		if (rule.access || rule.language) out[id] = rule;
+	}
+	return Object.keys(out).length ? out : undefined;
 }
 
 export function createApp(deps: AppDeps): Hono {
@@ -439,7 +454,7 @@ export function createApp(deps: AppDeps): Hono {
 		const body = (await c.req.json().catch(() => undefined)) as Station[] | undefined;
 		if (!Array.isArray(body) || !body.every((s) => isObj(s) && str(s.stationId) && str(s.name))) return fail(c, 400, "BAD_REQUEST", "array of stations expected");
 		await store.update((d) => {
-			d.stations = body.map((s) => ({ stationId: s.stationId, name: s.name, location: str(s.location), defaultProfile: s.defaultProfile ?? null, language: s.language || "en", audioPolicy: s.audioPolicy === "open" ? "open" : "ptt", autoStartAllowed: !!s.autoStartAllowed, verbosity: s.verbosity ?? "full", voiceActions: s.voiceActions !== false, holdToAnswer: s.holdToAnswer === true }));
+			d.stations = body.map((s) => ({ stationId: s.stationId, name: s.name, location: str(s.location), defaultProfile: s.defaultProfile ?? null, language: s.language || "en", audioPolicy: s.audioPolicy === "open" ? "open" : "ptt", autoStartAllowed: !!s.autoStartAllowed, verbosity: s.verbosity ?? "full", voiceActions: s.voiceActions !== false, holdToAnswer: s.holdToAnswer === true, templates: templateRules(s.templates) }));
 			for (const id of Object.keys(d.stationJoins)) if (!d.stations.some((s) => s.stationId === id)) delete d.stationJoins[id];
 		});
 		await ensureJoins(c.get("sessionRow").sub);

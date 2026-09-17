@@ -62,6 +62,17 @@ export interface Station {
 	voiceActions?: boolean;
 	/** Noisy place: on phones / tablets the mic opens only while the button is held (the app has no switch of its own). */
 	holdToAnswer?: boolean;
+	/**
+	 * What this station may do per template id. `start` = start new ones and work on open ones, `use` = only work on
+	 * open ones (started elsewhere), `off` = not shown here. No entry → the hub-wide Start buttons list decides.
+	 * `language` = the language the checklist is run in on this station (wins over the hub-wide template language).
+	 */
+	templates?: Record<string, StationTemplateRule>;
+}
+
+export interface StationTemplateRule {
+	access?: "start" | "use" | "off";
+	language?: string;
 }
 
 /**

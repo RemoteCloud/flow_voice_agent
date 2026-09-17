@@ -211,7 +211,7 @@ export class RunEngine {
 
 	// ------------------------------------------------------------ picker
 
-	async listPicks(session: HubSession): Promise<ChecklistPick[]> {
+	async listPicks(session: HubSession, stationId: string | undefined = session.stationId): Promise<ChecklistPick[]> {
 		const api = await this.deps.credentials.apiSettings(session);
 		if (!api) throw noCredential();
 		const flows = await this.deps.flows.listFlows(api, "Active", 1, 200);
@@ -226,8 +226,8 @@ export class RunEngine {
 		}
 		const picks: ChecklistPick[] = [];
 		const settings = this.deps.store.get().settings;
-		const allow = settings.startable?.length ? new Set(settings.startable) : undefined;
-		const startable = (templateId: string | undefined) => !allow || (!!templateId && allow.has(templateId));
+		const station = this.deps.store.get().stations.find((s) => s.stationId === stationId);
+		const access = (templateId: string | undefined) => this.templateAccess(templateId, station);
 		for (const f of flows.data.items) {
 			const detail = await this.deps.flows.getFlow(api, f.flowId);
 			if (!detail.ok) continue;
@@ -247,8 +247,9 @@ export class RunEngine {
 				lastActivity: f.createdAt,
 				source: "instance",
 				activeRunId: running?.runId,
-				startable: startable(f.templateId),
-				language: this.templateLang(f.templateId),
+				startable: access(f.templateId) !== "off",
+				access: access(f.templateId),
+				language: this.templateLang(f.templateId, station),
 			});
 		}
 		const templates = await this.deps.flows.listTemplates(api);
@@ -264,7 +265,7 @@ export class RunEngine {
 					needsScreen = tasks.length - voice;
 					readiness = voice === 0 && tasks.length > 0 ? "none" : needsScreen === 0 ? "full" : "partial";
 				}
-				picks.push({ templateId: t.id, templateName: t.name, refId: t.refId, state: "not_started", readiness, needsScreen, source: "template", startable: startable(t.id), language: this.templateLang(t.id) });
+				picks.push({ templateId: t.id, templateName: t.name, refId: t.refId, state: "not_started", readiness, needsScreen, source: "template", startable: access(t.id) === "start", access: access(t.id), language: this.templateLang(t.id, station) });
 			}
 		}
 		return picks;
@@ -313,12 +314,14 @@ export class RunEngine {
 		let instanceId = p.instanceId;
 		if (!instanceId) {
 			if (!p.templateId) throw new EngineError(400, "BAD_REQUEST", "instanceId or templateId is required");
+			if (this.templateAccess(p.templateId, station) !== "start") throw new EngineError(403, "NOT_STARTABLE_HERE", `this checklist cannot be started on ${station.name}`);
 			const created = await this.deps.flows.createFlow(api, p.templateId);
 			if (!created.ok) throw new EngineError(502, "MARANICS", `create checklist: ${created.message}`);
 			instanceId = created.data.flowId;
 		}
 		const detail = await this.deps.flows.getFlow(api, instanceId);
 		if (!detail.ok) throw new EngineError(502, "MARANICS", `read checklist: ${detail.message}`);
+		if (p.instanceId && this.templateAccess(detail.data.templateId, station) === "off") throw new EngineError(403, "NOT_USED_HERE", `this checklist is not used on ${station.name}`);
 		const run = this.newRun(detail.data, station, session, user?.name, await this.templateDetail(api, detail.data.templateId));
 		await this.save(run);
 		this.emit("run.started", run, { text: run.templateName });
@@ -344,7 +347,7 @@ export class RunEngine {
 			startedAt: iso(now),
 			updatedAt: iso(now),
 			users: session ? [{ sub: session.sub, name: userName, sessionId: session.id }] : [],
-			language: this.templateLang(flow.templateId) ?? this.deps.io.endpointLanguage(station.stationId) ?? profile?.language ?? station.language ?? this.deps.policy.defaultLanguage,
+			language: this.templateLang(flow.templateId, station) ?? this.deps.io.endpointLanguage(station.stationId) ?? profile?.language ?? station.language ?? this.deps.policy.defaultLanguage,
 			verbosity: station.verbosity ?? "full",
 			attempts: 0,
 			skipped: [],
@@ -392,13 +395,13 @@ export class RunEngine {
 			startedAt: iso(now),
 			updatedAt: iso(now),
 			users: [],
-			language: p.language ?? this.templateLang(p.templateId) ?? this.stationLang(station.stationId),
+			language: p.language ?? this.templateLang(p.templateId, station) ?? this.stationLang(station.stationId),
 			verbosity: station.verbosity ?? "full",
 			attempts: 0,
 			skipped: [],
 			trigger: p.trigger,
 			callbackUrl: p.callbackUrl,
-			pendingReason: tr(p.language ?? this.templateLang(p.templateId) ?? this.stationLang(station.stationId), "ready", { name: templateName }),
+			pendingReason: tr(p.language ?? this.templateLang(p.templateId, station) ?? this.stationLang(station.stationId), "ready", { name: templateName }),
 		};
 		await this.save(run);
 		this.emit("run.pending", run, { text: run.pendingReason });
@@ -590,8 +593,17 @@ export class RunEngine {
 	}
 
 	/** Admin → Start buttons: the language a template is written (and therefore spoken and answered) in. */
-	private templateLang(templateId: string | undefined): string | undefined {
-		return templateId ? this.deps.store.get().settings.templateLanguages?.[templateId] : undefined;
+	private templateLang(templateId: string | undefined, station?: Station): string | undefined {
+		if (!templateId) return undefined;
+		return station?.templates?.[templateId]?.language ?? this.deps.store.get().settings.templateLanguages?.[templateId];
+	}
+
+	/** Station rule first (Admin → Stations → Checklists here), else the hub-wide Start buttons list (empty → everything). */
+	templateAccess(templateId: string | undefined, station?: Station): "start" | "use" | "off" {
+		const rule = templateId ? station?.templates?.[templateId]?.access : undefined;
+		if (rule) return rule;
+		const allow = this.deps.store.get().settings.startable;
+		return !allow?.length || (!!templateId && allow.includes(templateId)) ? "start" : "off";
 	}
 
 	/** The endpoint's chosen language wins over the station's configured one. */
@@ -1235,7 +1247,7 @@ export class RunEngine {
 		}
 		let picks: ChecklistPick[];
 		try {
-			picks = (await this.listPicks(session)).filter((p) => p.readiness !== "none" && p.startable !== false);
+			picks = (await this.listPicks(session, stationId)).filter((p) => p.readiness !== "none" && p.startable !== false);
 		} catch (err) {
 			this.deps.log.warn(`menu: ${err instanceof Error ? err.message : String(err)}`);
 			return;

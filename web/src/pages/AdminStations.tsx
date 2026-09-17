@@ -1,5 +1,5 @@
 import { useEffect, useState } from "react";
-import type { JoinTokenResponse, Station, StationView, StatusResponse, VoiceProfile } from "../../../server/api.js";
+import type { ChecklistPick, JoinTokenResponse, Station, StationView, StatusResponse, VoiceProfile } from "../../../server/api.js";
 import { encodeQr, qrToSvg } from "../../../server/core/qr.js";
 import { api, toApiError } from "../api.js";
 import { QrCode } from "../components/QrCode.js";
@@ -24,8 +24,13 @@ export function StationsTab({ s, reload, canEdit }: { s: StatusResponse; reload:
 	const [minted, setMinted] = useState<Record<string, Minted>>({});
 	const [base, setBase] = useState(() => location.origin);
 
+	const [templates, setTemplates] = useState<ChecklistPick[] | undefined>();
 	useEffect(() => {
 		api.get<VoiceProfile[]>("profiles").then(setProfiles, () => setProfiles([]));
+		api.get<ChecklistPick[]>("checklists").then(
+			(p) => setTemplates(p.filter((x) => x.source === "template")),
+			() => setTemplates([]),
+		);
 	}, []);
 	// pick up server-side changes (another admin, portable files) while nothing is being edited here
 	useEffect(() => {
@@ -257,6 +262,7 @@ export function StationsTab({ s, reload, canEdit }: { s: StatusResponse; reload:
 									</label>
 								</div>
 							</div>
+							<TemplateRules rules={st.templates} templates={templates} stationLanguage={st.language} canEdit={canEdit} onChange={(t) => edit(i, { templates: t })} />
 							{!isNew && <JoinPanel station={live} minted={minted[st.stationId]} base={base} setBase={setBase} canEdit={canEdit} onMint={() => void mint(st.stationId)} onRevoke={() => void revoke(st.stationId)} />}
 						</div>
 					</section>
@@ -264,6 +270,80 @@ export function StationsTab({ s, reload, canEdit }: { s: StatusResponse; reload:
 			})}
 			{!rows.length && <p className="text-sm text-fg-muted">No stations. Add one above.</p>}
 		</div>
+	);
+}
+
+type Rules = NonNullable<Station["templates"]>;
+
+/** Per station: which checklists can be started here, which can only be worked on, which are hidden, and their language. */
+function TemplateRules({ rules, templates, stationLanguage, canEdit, onChange }: { rules: Station["templates"]; templates: ChecklistPick[] | undefined; stationLanguage: string; canEdit: boolean; onChange: (r: Station["templates"]) => void }) {
+	const r: Rules = rules ?? {};
+	const count = Object.keys(r).length;
+	const set = (id: string, patch: Rules[string]) => {
+		const next: Rules = { ...r, [id]: { ...r[id], ...patch } };
+		if (!next[id]?.access) delete next[id]!.access;
+		if (!next[id]?.language) delete next[id]!.language;
+		if (!next[id]?.access && !next[id]?.language) delete next[id];
+		onChange(Object.keys(next).length ? next : undefined);
+	};
+	const all = (access: "start" | "use" | "off" | undefined) => {
+		const next: Rules = {};
+		for (const t of templates ?? []) {
+			const rule = { ...r[t.templateId], access };
+			if (!rule.access) delete rule.access;
+			if (rule.access || rule.language) next[t.templateId] = rule;
+		}
+		onChange(Object.keys(next).length ? next : undefined);
+	};
+	return (
+		<details className="rounded-lg border border-line" open={count > 0}>
+			<summary className="cursor-pointer px-3 py-2 text-sm font-medium">
+				Checklists on this station <span className="font-normal text-fg-muted">{count ? `· ${count} set here` : "· hub default for all"}</span>
+			</summary>
+			{!templates ? (
+				<p className="px-3 py-2 text-sm text-fg-muted">Loading checklists…</p>
+			) : (
+				<>
+					<div className="flex flex-wrap items-center gap-2 border-t border-line px-3 py-2 text-xs text-fg-muted">
+						<span>All:</span>
+						<button type="button" className="btn btn-sm" disabled={!canEdit} onClick={() => all("start")}>
+							Start and use
+						</button>
+						<button type="button" className="btn btn-sm" disabled={!canEdit} onClick={() => all("use")}>
+							Use only
+						</button>
+						<button type="button" className="btn btn-sm" disabled={!canEdit} onClick={() => all("off")}>
+							Not here
+						</button>
+						<button type="button" className="btn btn-sm btn-ghost" disabled={!canEdit} onClick={() => all(undefined)}>
+							Hub default
+						</button>
+					</div>
+					<ul className="divide-y divide-line border-t border-line">
+						{templates.map((t) => (
+							<li key={t.templateId} className="flex flex-wrap items-center gap-2 px-3 py-2 text-sm">
+								<span className="min-w-0 flex-1 basis-40 truncate">{t.templateName}</span>
+								<select className="input w-auto py-1 text-xs" value={r[t.templateId]?.access ?? ""} disabled={!canEdit} onChange={(e) => set(t.templateId, { access: (e.target.value || undefined) as Rules[string]["access"] })} title="Start and use: start button here. Use only: open ones started elsewhere can be worked on here, no start button. Not here: hidden on this station.">
+									<option value="">Hub default</option>
+									<option value="start">Start and use</option>
+									<option value="use">Use only</option>
+									<option value="off">Not here</option>
+								</select>
+								<select className="input w-auto py-1 text-xs" value={r[t.templateId]?.language ?? ""} disabled={!canEdit} onChange={(e) => set(t.templateId, { language: e.target.value || undefined })} title="Language this checklist is spoken and answered in on this station">
+									<option value="">{t.language ? `Hub: ${t.language}` : `Station: ${stationLanguage}`}</option>
+									<option value="en">English</option>
+									<option value="no">Norsk</option>
+									<option value="sv">Svenska</option>
+									<option value="de">Deutsch</option>
+									<option value="fr">Français</option>
+								</select>
+							</li>
+						))}
+						{!templates.length && <li className="px-3 py-2 text-sm text-fg-muted">No templates visible to this sign-in.</li>}
+					</ul>
+				</>
+			)}
+		</details>
 	);
 }
 

@@ -106,6 +106,8 @@ export interface ChecklistPick {
 	activeRunId?: string;
 	/** false when an admin left this template out of the home-screen start buttons (Admin → Start buttons). */
 	startable?: boolean;
+	/** What the asking station may do with it: start new ones, only work on open ones, or nothing. */
+	access?: "start" | "use" | "off";
 	/** Language set for this template in Admin → Start buttons (absent → the station's language). */
 	language?: string;
 }

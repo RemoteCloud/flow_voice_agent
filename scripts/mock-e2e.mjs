@@ -466,6 +466,26 @@ try {
 	await api("POST", `runs/${svRun.runId}/abandon`);
 	await api("PUT", "settings", { templateLanguages: {} });
 
+	// per station: start and use / use only / not here, and a language per template that beats the hub-wide one
+	step = "station checklists";
+	const plain = (await api("GET", "stations")).body.map(({ endpoint, activeRun, join, ...st }) => st);
+	const ruled = plain.map((st) => (st.stationId === "bridge-01" ? { ...st, templates: { "tpl-engine": { access: "use", language: "de" }, "tpl-departure": { access: "off" }, junk: { access: "maybe", language: "xx" } } } : st));
+	const savedRules = (await api("PUT", "stations", ruled)).body.find((st) => st.stationId === "bridge-01").templates;
+	assert.deepEqual(savedRules, { "tpl-engine": { access: "use", language: "de" }, "tpl-departure": { access: "off" } }, "unknown values are dropped");
+	const herePicks = (await api("GET", "checklists")).body;
+	const engTpl = herePicks.find((p) => p.source === "template" && p.templateId === "tpl-engine");
+	assert.equal(engTpl.access, "use");
+	assert.equal(engTpl.startable, false, "use only: no start button");
+	assert.equal(engTpl.language, "de", "station language for the template");
+	assert.equal(herePicks.find((p) => p.source === "template" && p.templateId === "tpl-departure").access, "off");
+	const refusedStart = await api("POST", "runs", { templateId: "tpl-engine", stationId: "bridge-01" });
+	assert.equal(refusedStart.status, 403, JSON.stringify(refusedStart.body));
+	assert.equal(refusedStart.body.error?.code ?? refusedStart.body.code, "NOT_STARTABLE_HERE");
+	const elsewhere = await api("POST", "runs", { templateId: "tpl-engine", stationId: "ecr-01" });
+	assert.ok(elsewhere.status < 300 && elsewhere.body.language !== "de", `another station still starts it: ${elsewhere.status}`);
+	await api("POST", `runs/${elsewhere.body.runId}/abandon`);
+	await api("PUT", "stations", plain);
+
 	step = "speech models";
 	const modelList = await (await fetch(`${base}/models/vosk`)).json();
 	assert.deepEqual(modelList.map((m) => m.language).sort(), ["de", "en", "fr", "sv"]);
