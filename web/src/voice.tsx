@@ -116,7 +116,7 @@ export function VoiceProvider({ children }: { children: ReactNode }) {
 			setError(undefined);
 			const endpoint = new AudioEndpoint(
 				// phones / tablets have no settings of their own: language and hold-to-answer come from the station (and the run language from the template)
-				{ stationId: sid, endpointId: endpointId(), language: (mobile ? "" : langRef.current) || station?.language || "en", answerLanguage: mobile ? "" : answerLangRef.current, holdToAnswer: mobile ? !!station?.holdToAnswer : holdRef.current, sttOnEndpoint: boot.speech.stt === "endpoint", serverBackup: !!boot.speech.sttBackup, pushToTalk: !open, handsFree: handsFree || open },
+				{ stationId: sid, endpointId: endpointId(), language: (mobile ? "" : langRef.current) || station?.language || "en", answerLanguage: mobile ? "" : answerLangRef.current, holdToAnswer: mobile ? !!station?.holdToAnswer : holdRef.current, sttOnEndpoint: boot.speech.stt === "endpoint", serverBackup: !!boot.speech.sttBackup, serverTts: boot.speech.tts === "http", pushToTalk: !open, handsFree: handsFree || open },
 				{
 					onState: (s, t) => {
 						setState(s);

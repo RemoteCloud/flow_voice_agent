@@ -37,9 +37,21 @@ const sttServer = http.createServer(async (req, res) => {
 await new Promise((r) => sttServer.listen(0, "127.0.0.1", r));
 const sttUrl = `http://127.0.0.1:${sttServer.address().port}`;
 
+// fake voice server (Piper HTTP): answers a tiny WAV and records what it was asked
+const ttsCalls = [];
+const ttsServer = http.createServer(async (req, res) => {
+	const chunks = [];
+	for await (const c of req) chunks.push(c);
+	ttsCalls.push(JSON.parse(Buffer.concat(chunks).toString("utf8")));
+	res.writeHead(200, { "content-type": "audio/wav" });
+	res.end(Buffer.concat([Buffer.from("RIFF"), Buffer.alloc(60)]));
+});
+await new Promise((r) => ttsServer.listen(0, "127.0.0.1", r));
+const ttsUrl = `http://127.0.0.1:${ttsServer.address().port}`;
+
 const hub = spawn(process.execPath, ["dist/server.mjs"], {
 	cwd: root,
-	env: { ...process.env, HUB_SECRET: "e2e-secret-0123456789abcdef", HUB_PORT: String(port), HUB_DATA_DIR: dataDir, HUB_PUBLIC_DIR: path.join(root, "dist", "public"), HUB_PUBLIC_URL: `http://127.0.0.1:${port}`, HUB_TENANT: "demo", HUB_MARANICS_HOST: fake.url, DEV_USER: "Bridge Officer", DEV_MARANICS_TOKEN: "t0k3n", CENTRAL_PASSWORD: "central-pass-e2e", SERVICE_TOKENS: "svc-token", STT_BACKUP_ENDPOINT: sttUrl, LOG_LEVEL: "debug", LISTEN_MS: "1500", CONFIRM_MS: "1500", EXCHANGE_MS: "20000" },
+	env: { ...process.env, HUB_SECRET: "e2e-secret-0123456789abcdef", HUB_PORT: String(port), HUB_DATA_DIR: dataDir, HUB_PUBLIC_DIR: path.join(root, "dist", "public"), HUB_PUBLIC_URL: `http://127.0.0.1:${port}`, HUB_TENANT: "demo", HUB_MARANICS_HOST: fake.url, DEV_USER: "Bridge Officer", DEV_MARANICS_TOKEN: "t0k3n", CENTRAL_PASSWORD: "central-pass-e2e", SERVICE_TOKENS: "svc-token", STT_BACKUP_ENDPOINT: sttUrl, TTS_ENDPOINT: ttsUrl, LOG_LEVEL: "debug", LISTEN_MS: "1500", CONFIRM_MS: "1500", EXCHANGE_MS: "20000" },
 	stdio: ["ignore", "pipe", "pipe"],
 });
 hub.stdout.on("data", (d) => log.push(String(d)));
@@ -639,6 +651,19 @@ try {
 	assert.equal((await api("GET", "tenants", undefined, adminJar)).body.canManage, false, "signed out of the central area");
 	assert.equal((await api("GET", "auth/me", undefined, tPhone)).status, 401, "a removed tenant's cookie falls back to the main hub");
 
+	// server-side voice: signed-in clients fetch the sentence as a WAV in the checklist's language
+	step = "server voice";
+	assert.equal((await api("GET", "auth/session")).body.speech.tts, "http");
+	const ttsRes = await fetch(`${base}/api/tts?lang=nb-NO&text=${encodeURIComponent("Punkt en. Er rampen oppe?")}`, { headers: { cookie } });
+	assert.equal(ttsRes.status, 200);
+	assert.equal(ttsRes.headers.get("content-type"), "audio/wav");
+	assert.equal(Buffer.from(await ttsRes.arrayBuffer()).subarray(0, 4).toString(), "RIFF");
+	assert.equal(ttsCalls.at(-1).voice, "no_NO-talesyntese-medium");
+	await fetch(`${base}/api/tts?lang=no&text=${encodeURIComponent("Punkt en. Er rampen oppe?")}`, { headers: { cookie } });
+	assert.equal(ttsCalls.length, 1, "a repeated sentence comes from the hub's cache");
+	assert.equal((await fetch(`${base}/api/tts?lang=no&text=hei`)).status, 401, "no voice for strangers");
+	assert.equal((await fetch(`${base}/api/tts?lang=es&text=hola`, { headers: { cookie } })).status, 404);
+
 	step = "speech models";
 	const modelList = await (await fetch(`${base}/models/vosk`)).json();
 	assert.deepEqual(modelList.map((m) => m.language).sort(), ["de", "en", "fr", "sv"]);
@@ -671,6 +696,7 @@ try {
 
 	ws.close();
 	sttServer.close();
+	ttsServer.close();
 	console.log("mock-e2e: OK —", spoken.length, "utterances,", fake.values.length, "values written to Flow");
 	console.log(spoken.map((s) => `  APP  ${s}`).join("\n"));
 } catch (err) {

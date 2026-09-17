@@ -40,6 +40,8 @@ export interface SpeechEnv {
 	/** `endpoint` = device speaks; `http` = GET `ttsUrl?text=` for audio (Piper HTTP server). */
 	ttsMode: "endpoint" | "http";
 	ttsUrl?: string;
+	/** Raw `TTS_VOICES` (language=piper voice, comma-separated); defaults in `speech/tts.ts`. */
+	ttsVoices?: string;
 }
 
 export interface PolicyEnv {
@@ -207,6 +209,7 @@ export function parseEnv(e: Env, defaults: { cwd: string } = { cwd: process.cwd(
 			sttBackupModel: s(e, "STT_BACKUP_MODEL") ?? s(e, "STT_MODEL") ?? "whisper-1",
 			ttsMode: ttsUrl ? "http" : "endpoint",
 			ttsUrl,
+			ttsVoices: s(e, "TTS_VOICES"),
 		},
 		policy: {
 			listenMs: n(e, "LISTEN_MS", 8000),

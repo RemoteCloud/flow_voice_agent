@@ -12,6 +12,7 @@ import { isJoinToken } from "../protocol.js";
 import type { HubEnv } from "../env.js";
 import type { Logger } from "../core/log.js";
 import type { SttAdapter } from "../speech/stt.js";
+import { MAX_TTS_CHARS, type HttpTts } from "../speech/tts.js";
 import { hashDeckToken, newDeckId, newDeckToken, newJoinToken, tokenHint, verifyDeckToken } from "../store/crypto.js";
 import type { Credentials } from "../store/credentials.js";
 import type { Device, HubData, HubSession, HubStore, PendingEnrollment, PromptRecord, Station, StationJoin, StationTemplateRule, VoiceProfile, EventMapping } from "../store/HubStore.js";
@@ -36,6 +37,7 @@ export interface AppDeps {
 	stt: SttAdapter;
 	/** Backup recogniser for windows the device could not transcribe (STT_BACKUP_ENDPOINT); absent → POST /api/stt answers 404. */
 	sttBackup?: SttAdapter;
+	tts?: HttpTts;
 	log: Logger;
 	version: string;
 	now(): number;
@@ -616,6 +618,22 @@ export function createApp(deps: AppDeps): Hono {
 	const STT_MAX_BYTES = 16000 * 2 * 8; // 8 s of 16 kHz mono 16-bit: an answer, not a conversation (the recogniser encodes 7.7 s)
 	let sttQueue: Promise<unknown> = Promise.resolve();
 	let sttWaiting = 0;
+	// Server-side voice: the sentence the hub wants spoken, as a WAV from the voice server. Signed-in clients only.
+	api.get("/tts", async (c) => {
+		if (!deps.tts) return fail(c, 404, "TTS_OFF", "this hub has no voice server (TTS_ENDPOINT)");
+		const text = (c.req.query("text") ?? "").trim();
+		const lang = c.req.query("lang") ?? "en";
+		if (!text || text.length > MAX_TTS_CHARS) return fail(c, 400, "BAD_REQUEST", `text is required, at most ${MAX_TTS_CHARS} characters`);
+		if (!deps.tts.supports(lang)) return fail(c, 404, "TTS_NO_VOICE", `no server voice for ${lang}`);
+		try {
+			const wav = await deps.tts.speak(text, lang);
+			return c.body(new Uint8Array(wav), 200, { "content-type": "audio/wav", "cache-control": "private, max-age=3600" });
+		} catch (err) {
+			log.warn(`voice server: ${err instanceof Error ? err.message : String(err)}`);
+			return fail(c, 502, "TTS_FAILED", "the voice server did not answer");
+		}
+	});
+
 	api.post("/stt", async (c) => {
 		const backup = deps.sttBackup;
 		if (!backup) return fail(c, 404, "STT_BACKUP_OFF", "no backup recogniser is configured on this hub");

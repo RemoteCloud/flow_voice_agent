@@ -74,6 +74,8 @@ services:
       # Backup recogniser (the `whisper` service below): devices transcribe themselves and send a window here only when
       # they could not; browsers without speech recognition (Raspberry Pi, offline PCs) stream their mic to it.
       STT_BACKUP_ENDPOINT: ${STT_BACKUP_ENDPOINT:-http://whisper:8080}
+      TTS_ENDPOINT: ${TTS_ENDPOINT:-http://piper:5000}
+      TTS_VOICES: ${TTS_VOICES:-}
       TZ: ${TZ:-Europe/Oslo}
       TZ_MODE: ${TZ_MODE:-utc}
       DEFAULT_LANGUAGE: ${DEFAULT_LANGUAGE:-en}
@@ -112,6 +114,20 @@ services:
       - speech
     mem_limit: 700m
     # no CPU cap: a request is a ~1 s burst on all cores; capping below the thread count makes it 3x slower for the same work
+
+  # Server-side voice: Piper (neural TTS, CPU only), voices baked into the image, no ports published (hub-only network).
+  # Build once on the host:  docker build -t flowvoice-piper:local /opt/flowvoice/piper-build   (deploy/piper/Dockerfile)
+  # ~350 MB RAM with two voices loaded, ~1 s per sentence, idle = 0 CPU. The hub caches sentences in RAM.
+  piper:
+    image: flowvoice-piper:local
+    container_name: flowvoice-piper
+    restart: unless-stopped
+    read_only: true
+    tmpfs:
+      - /tmp
+    networks:
+      - speech
+    mem_limit: 900m
 
 volumes:
   flowvoice-data: {}

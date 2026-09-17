@@ -96,6 +96,8 @@ export interface EndpointOptions {
 	holdToAnswer?: boolean;
 	/** Hub boot info: a backup recogniser is configured (POST /api/stt). */
 	serverBackup?: boolean;
+	/** Hub boot info: the hub has a voice server (GET /api/tts): the same voice on every computer, in the checklist's language. */
+	serverTts?: boolean;
 }
 
 const IDLE = "idle";
@@ -141,6 +143,10 @@ export class AudioEndpoint {
 	private idleTimer: number | undefined;
 	private speakingNow = false;
 	private warnedVoice = new Set<string>();
+	/** Server voice being played right now. */
+	private ttsAudio: HTMLAudioElement | undefined;
+	/** Languages the voice server turned down: do not ask again. */
+	private noServerVoice = new Set<string>();
 	private speakSeq = 0;
 	/** Android: the utterance in flight; resolved by flowVoiceBridge.onSpoken (or a safety timeout). */
 	private pendingSpoken: { promptId: string; finish: () => void } | undefined;
@@ -268,6 +274,7 @@ export class AudioEndpoint {
 
 	stop(): void {
 		this.closed = true;
+		this.stopServerVoice();
 		this.clearIdleTimer();
 		this.stopListen("cancel");
 		this.ws?.close(1000, "endpoint stopped");
@@ -448,6 +455,10 @@ export class AudioEndpoint {
 				window.FlowVoiceAndroid!.speak(text, language, promptId);
 			});
 		}
+		if (this.opts.serverTts && !this.noServerVoice.has(language) && (await this.speakFromHub(text, language))) {
+			this.send({ type: "spoken", promptId });
+			return;
+		}
 		// Chrome loads its voice list late: without it the first sentences would fall back to the default English voice
 		if ("speechSynthesis" in window && !window.speechSynthesis.getVoices().length) {
 			await new Promise<void>((ready) => {
@@ -485,6 +496,42 @@ export class AudioEndpoint {
 			// Chrome sometimes never fires onend for long utterances
 			window.setTimeout(done, 3000 + text.length * 120);
 		});
+	}
+
+	private stopServerVoice(): void {
+		const a = this.ttsAudio;
+		this.ttsAudio = undefined;
+		if (!a) return;
+		a.pause();
+		a.dispatchEvent(new Event("fv-stop"));
+	}
+
+	/** Play the sentence with the hub's voice. False = not played (no voice for the language, hub or autoplay trouble): the browser voice takes over. */
+	private async speakFromHub(text: string, language: string): Promise<boolean> {
+		this.stopServerVoice();
+		let url: string | undefined;
+		try {
+			const res = await fetch(`/api/tts?lang=${encodeURIComponent(language)}&text=${encodeURIComponent(text)}`, { credentials: "same-origin" });
+			if (res.status === 404) this.noServerVoice.add(language);
+			if (!res.ok) return false;
+			url = URL.createObjectURL(await res.blob());
+			const audio = new Audio(url);
+			this.ttsAudio = audio;
+			window.speechSynthesis?.cancel();
+			await new Promise<void>((resolve, reject) => {
+				const timer = window.setTimeout(resolve, 8000 + text.length * 150);
+				const end = () => (window.clearTimeout(timer), resolve());
+				audio.onended = end;
+				audio.addEventListener("fv-stop", end);
+				audio.onerror = () => (window.clearTimeout(timer), reject(new Error("audio")));
+				audio.play().catch((err) => (window.clearTimeout(timer), reject(err)));
+			});
+			return true;
+		} catch {
+			return false;
+		} finally {
+			if (url) URL.revokeObjectURL(url);
+		}
 	}
 
 	// ------------------------------------------------------------ STT

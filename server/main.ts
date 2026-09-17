@@ -11,6 +11,7 @@ import { ROLE_HEADER, SESSION_COOKIE, Tenants, type Core } from "./tenants.js";
 import { createApp, upgradeAuthenticator } from "./http/app.js";
 import { OidcAuth } from "./http/auth.js";
 import { FlowsClient } from "./maranics/FlowsClient.js";
+import { HttpTts, parseVoices } from "./speech/tts.js";
 import { OidcClient } from "./oidc/OidcClient.js";
 import { EndpointStt, HttpStt } from "./speech/stt.js";
 import { Credentials } from "./store/credentials.js";
@@ -54,6 +55,7 @@ async function run(): Promise<void> {
 		const auth = new OidcAuth({ store, provider, oidc: env.oidc, tenant: env.maranics?.tenant, sealKey, now, log, unconfiguredReason: env.oidcReason, devUser: env.devUser, tokenTenant: env.tokenTenant });
 		const flows = new FlowsClient({ timeoutMs: 10_000 });
 		const stt = env.speech.sttMode === "http" && env.speech.sttUrl ? new HttpStt({ url: env.speech.sttUrl, model: env.speech.sttModel, apiKey: env.speech.sttApiKey }, log) : new EndpointStt();
+		const tts = env.speech.ttsUrl ? new HttpTts({ url: env.speech.ttsUrl, voices: parseVoices(env.speech.ttsVoices), log }) : undefined;
 		const sttBackup = env.speech.sttBackupUrl ? new HttpStt({ url: env.speech.sttBackupUrl, model: env.speech.sttBackupModel, apiKey: env.speech.sttApiKey, timeoutMs: 20000 }, log) : undefined;
 		const gateway = new Gateway({
 			log,
@@ -93,7 +95,7 @@ async function run(): Promise<void> {
 		});
 		engine = new RunEngine({ store, flows, credentials, outbox, log, now, policy: env.policy, io: gateway, vesselId: env.vesselId });
 		gateway.attachEngine(engine);
-		const app = createApp({ env, store, auth, credentials, engine, outbox, gateway, stt, sttBackup, log, version: HUB_VERSION, now, uptime: () => (now() - startedAt) / 1000 });
+		const app = createApp({ env, store, auth, credentials, engine, outbox, gateway, stt, sttBackup, tts, log, version: HUB_VERSION, now, uptime: () => (now() - startedAt) / 1000 });
 		await engine.recover();
 		outbox.start();
 		gateway.start();
@@ -156,7 +158,7 @@ async function run(): Promise<void> {
 	const server = serve({ fetch: dispatch, hostname: env.host, port: env.port, createServer }, (info) => {
 		log.info(`Flow Voice hub ${HUB_VERSION} listening on http://${info.address}:${info.port} (data ${env.dataDir}, public ${env.publicDir})`);
 		log.info(`Maranics: ${env.maranics ? `${env.maranics.host} tenant ${env.maranics.tenant}` : "NOT configured (HUB_TENANT + HUB_MARANICS_HOST)"}; sign-in: ${env.oidc ? env.oidc.issuer : env.devUser ? `dev user "${env.devUser.name}"` : "not configured"}`);
-		log.info(`speech: STT ${env.speech.sttMode}${env.speech.sttUrl ? ` (${env.speech.sttUrl})` : " (on the endpoint)"}, TTS ${env.speech.ttsMode}${env.speech.sttBackupUrl ? `, backup STT ${env.speech.sttBackupUrl}` : ""}`);
+		log.info(`speech: STT ${env.speech.sttMode}${env.speech.sttUrl ? ` (${env.speech.sttUrl})` : " (on the endpoint)"}, TTS ${env.speech.ttsMode}${env.speech.ttsUrl ? ` (${env.speech.ttsUrl})` : ""}${env.speech.sttBackupUrl ? `, backup STT ${env.speech.sttBackupUrl}` : ""}`);
 	});
 	(server as unknown as import("node:http").Server).on("upgrade", (req, socket, head) => {
 		const picked = tenants.pick(req.headers.cookie);
