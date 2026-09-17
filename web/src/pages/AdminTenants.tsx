@@ -172,12 +172,15 @@ export function TenantsTab() {
 								<label className="label">Client secret</label>
 								<input className="input mono" type="password" autoComplete="off" value={clientSecret} onChange={(e) => setClientSecret(e.target.value)} />
 							</div>
+							<div className="sm:col-span-2">
+								<label className="label">Maranics server address</label>
+								<input className="input mono" value={host} onChange={(e) => setHost(e.target.value)} placeholder={data.mainHost ?? "https://api.cloud.maranics.com"} />
+								<p className="help">Where this tenant lives. Leave empty for the same server as the main hub{data.mainHost ? ` (${data.mainHost.replace(/^https?:\/\//, "")})` : ""}. Sign-in is found from it.</p>
+							</div>
 							<details className="sm:col-span-2">
-								<summary className="cursor-pointer text-xs text-fg-muted">Different Maranics environment, or no client yet?</summary>
-								<label className="label mt-2">Sign-in address (issuer). Leave empty: same as the main hub, with this tenant id</label>
+								<summary className="cursor-pointer text-xs text-fg-muted">Sign-in on another address, or no client yet?</summary>
+								<label className="label mt-2">Sign-in address (issuer). Leave empty: worked out from the server address and tenant id</label>
 								<input className="input mono" value={issuer} onChange={(e) => setIssuer(e.target.value)} placeholder="https://um.cloud.maranics.com/colorline" />
-								<label className="label mt-2">API host (leave empty to use the main hub's)</label>
-								<input className="input mono" value={host} onChange={(e) => setHost(e.target.value)} placeholder="https://api.cloud.maranics.com" />
 								<label className="label mt-2">No client yet: paste an access token instead. Everyone then acts as that user, until it expires</label>
 								<textarea className="input mono text-xs" rows={2} value={token} onChange={(e) => setToken(e.target.value)} placeholder="eyJ…" />
 							</details>

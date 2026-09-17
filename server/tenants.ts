@@ -58,6 +58,8 @@ export interface TenantsResponse {
 	/** True when tenants are managed in the central admin area (`/central`) rather than by main-hub admins. */
 	central: boolean;
 	mainName: string;
+	/** Maranics server of the main hub: what a new tenant uses when none is given. */
+	mainHost?: string;
 	tenants: TenantView[];
 }
 
@@ -116,9 +118,19 @@ export class Tenants {
 		return this.deps.store.get().tenants ?? [];
 	}
 	/** Issuer of a tenant: its own, or the main hub's with the tenant segment swapped (same UserManagement). */
-	issuerFor(t: { tenant: string; issuer?: string }): string | undefined {
+	issuerFor(t: { tenant: string; issuer?: string; host?: string }): string | undefined {
 		if (t.issuer) return t.issuer;
 		const base = this.deps.env;
+		// its own Maranics server: sign-in lives next to the API (api.<env> → usermanagement.<env>/<tenant>)
+		if (t.host && t.host !== base.maranics?.host) {
+			try {
+				const u = new URL(t.host);
+				if (u.hostname.startsWith("api.")) return `${u.protocol}//usermanagement.${u.hostname.slice(4)}${u.port ? `:${u.port}` : ""}/${encodeURIComponent(t.tenant)}`;
+			} catch {
+				/* fall through */
+			}
+			return undefined;
+		}
 		const tail = `/${encodeURIComponent(base.maranics?.tenant ?? "")}`;
 		return base.oidc && base.maranics && base.oidc.issuer.endsWith(tail) ? `${base.oidc.issuer.slice(0, -tail.length)}/${encodeURIComponent(t.tenant)}` : undefined;
 	}
@@ -132,11 +144,11 @@ export class Tenants {
 		let sign: Pick<HubEnv, "oidc" | "oidcReason" | "devUser" | "devToken" | "tokenTenant">;
 		if (t.clientId && t.clientSecretEnc) {
 			const issuer = this.issuerFor(t);
-			if (!issuer) throw new Error("no sign-in address (issuer): the main hub has none to derive it from, so give the tenant its own");
+			if (!issuer) throw new Error("no sign-in address (issuer): it cannot be worked out from the server address, so give the tenant its own");
 			if (!base.publicUrl) throw new Error("HUB_PUBLIC_URL must be set for tenant sign-in");
 			const secret = openToken(t.clientSecretEnc, this.deps.sealKey);
 			registerSecret(secret);
-			if (t.issuer && !same) umApiBaseUrl = `${new URL(issuer).origin}/external/api`;
+			if (!same) umApiBaseUrl = `${new URL(issuer).origin}/external/api`;
 			sign = {
 				oidc: { issuer, clientId: t.clientId, clientSecret: secret, redirectUri: `${base.publicUrl}/api/auth/callback`, scopes: base.oidc?.scopes ?? "openid email profile offline_access", prompt: base.oidc?.prompt, audience: t.clientId, postLogoutRedirectUri: base.oidc?.postLogoutRedirectUri, clockSkewSec: base.oidc?.clockSkewSec ?? 120, httpTimeoutMs: base.oidc?.httpTimeoutMs ?? 8000, flowMaxAgeSec: base.oidc?.flowMaxAgeSec ?? 600 },
 				oidcReason: undefined,
@@ -301,7 +313,7 @@ export class Tenants {
 			const cur = this.parseCookie(getCookie(c, TENANT_COOKIE));
 			const manage = await canManage(c);
 			const curEntry = cur && this.entries().find((t) => t.id === cur.id);
-			return c.json<TenantsResponse>({ current: curEntry ? { id: curEntry.id, name: curEntry.name } : undefined, canManage: manage, central: !!env.centralPassword, mainName: env.maranics?.tenant ?? "main", tenants: manage ? this.entries().map((t) => this.view(t)) : [] });
+			return c.json<TenantsResponse>({ current: curEntry ? { id: curEntry.id, name: curEntry.name } : undefined, canManage: manage, central: !!env.centralPassword, mainName: env.maranics?.tenant ?? "main", mainHost: manage ? env.maranics?.host : undefined, tenants: manage ? this.entries().map((t) => this.view(t)) : [] });
 		});
 		app.post("/api/tenants/leave", (c) => {
 			c.header("Set-Cookie", this.setCookie(undefined));

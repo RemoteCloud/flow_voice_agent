@@ -659,6 +659,14 @@ try {
 	assert.ok((await api("GET", "checklists", undefined, ssoJar)).body.length > 0, "the user's own token reads Maranics");
 	assert.equal((await api("PUT", "tenants/sso-co/client", { clientId: fake.oidc.clientId, clientSecret: fake.oidc.clientSecret }, ssoJar)).status, 403, "a tenant admin is not the central admin");
 	assert.equal((await api("DELETE", "tenants/sso-co", undefined, adminJar)).status, 200);
+	// a tenant on its own Maranics server: the sign-in address is worked out from the server address
+	assert.ok((await api("GET", "tenants", undefined, adminJar)).body.mainHost, "the form knows the main hub's server");
+	const far = await api("POST", "tenants", { name: "Far Co", tenant: "farco", host: "https://api.cloud.maranics.com/", clientId: "c", clientSecret: "s3cret-s3cret" }, adminJar);
+	assert.equal(far.status, 201, JSON.stringify(far.body));
+	assert.equal(far.body.host, "https://api.cloud.maranics.com");
+	assert.equal(far.body.issuer, "https://usermanagement.cloud.maranics.com/farco");
+	assert.equal((await api("POST", "tenants", { name: "Bad Co", tenant: "x", host: "https://api.evil.example", clientId: "c", clientSecret: "s3cret-s3cret" }, adminJar)).status, 400, "only allowed servers");
+	assert.equal((await api("DELETE", "tenants/far-co", undefined, adminJar)).status, 200);
 	assert.equal((await api("POST", "central/logout", undefined, adminJar)).status, 200);
 	assert.equal((await api("GET", "tenants", undefined, adminJar)).body.canManage, false, "signed out of the central area");
 	assert.equal((await api("GET", "auth/me", undefined, tPhone)).status, 401, "a removed tenant's cookie falls back to the main hub");
