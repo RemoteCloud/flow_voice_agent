@@ -97,8 +97,16 @@ export interface TemplateTask {
 	spokenPrompt?: string;
 }
 
+/** A discard reason as configured in Flow (per template, or the tenant-wide list). `POST /flows/{id}/status {action:"discard", reason}` matches on `name`. */
+export interface DiscardReason {
+	name: string;
+	requireComment: boolean;
+}
+
 export interface TemplateDetail extends TemplateInfo {
 	sections: { id: string; name: string; order: number; tasks: TemplateTask[] }[];
+	/** The template's own discard reasons; empty → the tenant-wide list applies. */
+	discardReasons: DiscardReason[];
 }
 
 export interface PageEnvelope<T> {
@@ -274,7 +282,18 @@ export function toTemplateDetail(raw: unknown): TemplateDetail | undefined {
 		})
 		.filter((s): s is TemplateDetail["sections"][number] => !!s)
 		.sort((a, b) => a.order - b.order);
-	return { ...info, sections };
+	return { ...info, sections, discardReasons: parseDiscardReasons(raw.discardReasons) };
+}
+
+export function parseDiscardReasons(raw: unknown): DiscardReason[] {
+	if (!Array.isArray(raw)) return [];
+	return raw
+		.map((x): DiscardReason | undefined => {
+			if (!isObj(x)) return undefined;
+			const name = str(x.name) ?? str(x.title);
+			return name ? { name, requireComment: x.requireComment === true } : undefined;
+		})
+		.filter((x): x is DiscardReason => !!x);
 }
 
 function envelope<T>(body: unknown, mapItem: (x: unknown, i: number) => T | undefined, page: number, pageSize: number): PageEnvelope<T> {
@@ -431,5 +450,10 @@ export class FlowsClient {
 			if (!d) throw new Error("unexpected template payload");
 			return d;
 		});
+	}
+
+	/** Tenant-wide discard reasons (`GET /discardReasons` on the Templates API); used when a template has none of its own. */
+	getDiscardReasons(s: ApiSettings): Promise<ClientResult<DiscardReason[]>> {
+		return this.templatesRequest(s, "/discardReasons", (b) => parseDiscardReasons(isObj(b) && Array.isArray(b.items) ? b.items : b));
 	}
 }

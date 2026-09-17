@@ -33,6 +33,14 @@ const T1 = "tpl-engine";
 const T2 = "tpl-departure";
 const T3 = "NauticAI/ArrivalChecklist";
 
+/** Tenant-wide discard reasons (Templates API `GET /discardReasons`); the fixtures carry no template-level list. */
+export const DISCARD_REASONS = [
+	{ id: "dr-1", name: "Created by mistake or duplicate", requireComment: false, requirePicture: false, default: false },
+	{ id: "dr-2", name: "No longer needed", requireComment: false, requirePicture: false, default: false },
+	{ id: "dr-3", name: "Wrong checklist", requireComment: false, requirePicture: false, default: false },
+	{ id: "dr-4", name: "Other", requireComment: true, requirePicture: false, default: false },
+];
+
 const NA_OPTIONS = [
 	{ title: "Yes", value: "Yes" },
 	{ title: "No", value: "No" },
@@ -324,7 +332,7 @@ export async function startFakeMaranics({ token = "t0k3n", tenant = "demo", port
 		res.writeHead(status, { "content-type": "application/json", "content-length": Buffer.byteLength(text), ...headers });
 		res.end(text);
 	};
-	const problem = (res, status, code, title) => json(res, status, { type: "about:blank", title: title ?? code, status, code });
+	const problem = (res, status, code, detail) => json(res, status, { type: "about:blank", title: code, status, code, ...(detail ? { detail } : {}) });
 	const redirect = (res, base, params) => {
 		const u = new URL(base);
 		for (const [k, v] of Object.entries(params)) if (v !== undefined) u.searchParams.set(k, v);
@@ -527,7 +535,14 @@ export async function startFakeMaranics({ token = "t0k3n", tenant = "demo", port
 			const body = await readBody(req);
 			const f = flows.find((x) => x.flowId === decodeURIComponent(m[1]));
 			if (!f) return problem(res, 404, "FLOW_NOT_FOUND");
+			const unknown = Object.keys(body ?? {}).find((k) => !["action", "reason", "comment", "force"].includes(k));
+			if (unknown) return problem(res, 422, "UNKNOWN_FIELD", `unknown field ${unknown}; allowed: action, reason, comment, force`);
 			const action = String(body?.action ?? "").toLowerCase();
+			if (action === "discard") {
+				const reason = DISCARD_REASONS.find((x) => x.name === body?.reason);
+				if (!reason) return problem(res, 422, "VALUE_INVALID", "The given discard reason is not allowed in application options");
+				if (reason.requireComment && !String(body?.comment ?? "").trim()) return problem(res, 422, "VALUE_INVALID", "The given discard reason requires a comment to be non-empty");
+			}
 			if (action === "complete") {
 				if (f.tasks.some((t) => t.status !== "Done" && t.controls[0].type !== "Sign")) return problem(res, 422, "STATE_TRANSITION_INVALID", "open tasks remain");
 				f.status = "Completed";
@@ -554,6 +569,7 @@ export async function startFakeMaranics({ token = "t0k3n", tenant = "demo", port
 		}
 
 		// ---- Templates API ----
+		if (method === "GET" && url.pathname === "/app/templates/discardReasons") return json(res, 200, DISCARD_REASONS);
 		if (method === "GET" && url.pathname === "/app/templates/templates") {
 			// Real templates app: SearchString + SearchInTitle/SearchInRefId flags (no generic `search`).
 			const search = (url.searchParams.get("SearchString") ?? "").trim().toLowerCase();

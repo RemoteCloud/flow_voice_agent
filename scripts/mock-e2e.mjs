@@ -407,6 +407,26 @@ try {
 	const ab = await svc("POST", `runs/${restRun.runId}/abandon`);
 	assert.equal(ab.status, 200);
 
+	// screen discard: reasons come from Flow (tenant list here), "Other" needs a comment, the status body is exactly what v3 accepts
+	step = "screen discard";
+	const dRes = await svc("POST", "runs", { stationId: "bridge-01", templateId: "NauticAI/ArrivalChecklist" }, { "idempotency-key": "rest-2" });
+	const dRun = await dRes.json();
+	assert.equal(dRes.status, 201);
+	const reasons = await api("GET", `templates/${encodeURIComponent("NauticAI/ArrivalChecklist")}/discard-reasons`);
+	assert.deepEqual(reasons.body.reasons.map((r) => r.code), ["Created by mistake or duplicate", "No longer needed", "Wrong checklist", "Other"], "discard reasons read from Flow");
+	assert.equal(reasons.body.reasons.at(-1).requireComment, true);
+	const noComment = await api("POST", `runs/${dRun.runId}/discard`, { reasonCode: "Other" });
+	assert.equal(noComment.status, 422, JSON.stringify(noComment.body));
+	assert.match(noComment.body.message ?? noComment.body.error ?? "", /requires a comment/);
+	const badReason = await api("POST", `runs/${dRun.runId}/discard`, { reasonCode: "duplicate" });
+	assert.equal(badReason.status, 422, "a reason Flow does not know is refused");
+	const discarded = await api("POST", `runs/${dRun.runId}/discard`, { reasonCode: "Other", comment: "started twice" });
+	assert.equal(discarded.status, 200, JSON.stringify(discarded.body));
+	assert.equal(discarded.body.state, "abandoned");
+	assert.deepEqual(fake.statusChanges.at(-1)?.body, { action: "discard", reason: "Other", comment: "started twice" });
+	assert.equal(fake.statusChanges.at(-1)?.flowId, dRun.instanceId);
+
+
 	// audit is text only
 	const audit = await api("GET", "audit?limit=50");
 	assert.ok(audit.body.some((a) => a.kind === "item.committed" && a.transcript === "Pilot on board five minutes ago."));

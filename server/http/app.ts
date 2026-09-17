@@ -15,7 +15,7 @@ import type { SttAdapter } from "../speech/stt.js";
 import { hashDeckToken, newDeckId, newDeckToken, newJoinToken, tokenHint, verifyDeckToken } from "../store/crypto.js";
 import type { Credentials } from "../store/credentials.js";
 import type { Device, HubSession, HubStore, PendingEnrollment, PromptRecord, Station, StationJoin, VoiceProfile, EventMapping } from "../store/HubStore.js";
-import { DISCARD_REASONS, EngineError, type RunEngine } from "../voice/RunEngine.js";
+import { EngineError, type RunEngine } from "../voice/RunEngine.js";
 import type { Outbox } from "../voice/Outbox.js";
 import type { Gateway } from "../ws/Gateway.js";
 import { OidcAuth } from "./auth.js";
@@ -363,7 +363,12 @@ export function createApp(deps: AppDeps): Hono {
 		}),
 	);
 	api.post("/runs/:id/abandon", (c) => handle(c, async () => c.json(await engine.abandon(c.req.param("id"), "stopped on screen"))));
-	api.get("/templates/:id/discard-reasons", (c) => c.json({ reasons: DISCARD_REASONS }));
+	api.get("/templates/:id/discard-reasons", (c) =>
+		handle(c, async () => {
+			const id = c.req.param("id");
+			return c.json({ reasons: await engine.discardReasons(c.get("sessionRow"), id === "any" ? undefined : id) });
+		}),
+	);
 	api.post("/interpret", async (c) => {
 		const body = (await c.req.json().catch(() => ({}))) as { type?: string; text?: string; options?: { title: string; value: string }[] };
 		if (!str(body.type) || !str(body.text)) return fail(c, 400, "BAD_REQUEST", "type and text are required");

@@ -171,7 +171,7 @@ export interface RunRecord {
 	/** Task ids the user skipped, offered again in the sweep. */
 	skipped: string[];
 	/** A spoken complete / discard waiting for its confirmation. */
-	pendingAction?: { kind: "complete" | "discard"; reasonCode?: string; reasonTitle?: string; step: "reason" | "confirm" };
+	pendingAction?: { kind: "complete" | "discard"; reasonCode?: string; reasonTitle?: string; step: "reason" | "confirm"; reasons?: { code: string; title: string; requireComment: boolean }[] };
 	sweepOffered?: boolean;
 }
 

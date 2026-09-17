@@ -10,7 +10,7 @@
  */
 import type { Logger } from "../core/log.js";
 import type { PolicyEnv } from "../env.js";
-import type { FlowDetail, FlowsClient, TemplateDetail } from "../maranics/FlowsClient.js";
+import type { DiscardReason, FlowDetail, FlowsClient, TemplateDetail } from "../maranics/FlowsClient.js";
 import type { ChecklistPick, ExchangeState, HubEvent, HubEventType, RunItem, RunView } from "../protocol.js";
 import type { Credentials } from "../store/credentials.js";
 import type { HubSession, HubStore, PromptRecord, RunRecord, Station, VoiceProfile } from "../store/HubStore.js";
@@ -21,11 +21,18 @@ import { normLang, t as tr } from "./i18n.js";
 import { grammarFor } from "./grammar.js";
 import { normalizeTranscript, wordsToNumber } from "./interpret.js";
 
-export const DISCARD_REASONS = [
-	{ code: "duplicate", title: "Created by mistake or duplicate" },
-	{ code: "not_needed", title: "No longer needed" },
-	{ code: "wrong_template", title: "Wrong checklist" },
-	{ code: "other", title: "Other" },
+/** What the screen and the voice menu offer: `code` is the Flow reason name (the status body sends it as `reason`). */
+export interface DiscardOption {
+	code: string;
+	title: string;
+	requireComment: boolean;
+}
+
+/** Last resort when neither the template nor the tenant list can be read (Flow will still validate the name). */
+export const DISCARD_REASONS: DiscardOption[] = [
+	{ code: "Not applicable", title: "Not applicable", requireComment: false },
+	{ code: "Unnecessary", title: "Unnecessary", requireComment: false },
+	{ code: "Other", title: "Other", requireComment: true },
 ];
 
 export interface EngineIo {
@@ -409,6 +416,28 @@ export class RunEngine {
 	}
 
 	private readonly templates = new Map<string, { at: number; detail: TemplateDetail }>();
+	private tenantReasons?: { at: number; reasons: DiscardReason[] };
+
+	/**
+	 * Discard reasons Flow will accept for `templateId`: the template's own list when it has one, else the tenant-wide
+	 * list, else the static fallback. Both are cached for five minutes; a failed read falls back rather than blocking.
+	 */
+	async discardReasons(session: HubSession, templateId: string | undefined): Promise<DiscardOption[]> {
+		const api = await this.deps.credentials.apiSettings(session);
+		if (!api) return DISCARD_REASONS;
+		const tpl = await this.templateDetail(api, templateId);
+		let reasons = tpl?.discardReasons ?? [];
+		if (!reasons.length) {
+			const now = Number(this.deps.now());
+			if (!this.tenantReasons || now - this.tenantReasons.at >= 5 * 60_000) {
+				const res = await this.deps.flows.getDiscardReasons(api);
+				if (res.ok) this.tenantReasons = { at: now, reasons: res.data };
+				else this.deps.log.warn(`discard reasons unavailable (${res.message}); using the built-in list`);
+			}
+			reasons = this.tenantReasons?.reasons ?? [];
+		}
+		return reasons.length ? reasons.map((x) => ({ code: x.name, title: x.name, requireComment: x.requireComment })) : DISCARD_REASONS;
+	}
 
 	/**
 	 * The template behind a flow, cached briefly. The v3 flow read does not carry a checkbox's option list
@@ -1019,7 +1048,7 @@ export class RunEngine {
 				await this.beginComplete(r);
 				return;
 			case "discard":
-				await this.beginDiscard(r);
+				await this.beginDiscard(r, session);
 				return;
 			case "list":
 			case "help":
@@ -1320,15 +1349,16 @@ export class RunEngine {
 		await this.listenAction(r);
 	}
 
-	private async beginDiscard(r: RunRecord): Promise<void> {
+	private async beginDiscard(r: RunRecord, session: HubSession | undefined): Promise<void> {
 		if (!this.voiceActionsAllowed(r)) {
 			await this.say(r, tr(r.language, "discard_on_screen"));
 			return;
 		}
 		this.clearTimers(r.runId);
 		this.deps.io.stopListening(r.stationId);
-		r.pendingAction = { kind: "discard", step: "reason" };
-		const list = DISCARD_REASONS.map((x, i) => `${spokenNumber(i + 1, r.language)}, ${x.title}`).join(". ");
+		const reasons = session ? await this.discardReasons(session, r.templateId) : DISCARD_REASONS;
+		r.pendingAction = { kind: "discard", step: "reason", reasons };
+		const list = reasons.map((x, i) => `${spokenNumber(i + 1, r.language)}, ${x.title}`).join(". ");
 		await this.say(r, tr(r.language, "discard_reasons", { name: r.templateName, list }));
 		await this.listenAction(r);
 	}
@@ -1354,11 +1384,12 @@ export class RunEngine {
 		}
 		if (a.kind === "discard" && a.step === "reason") {
 			const n = wordsToNumber(t.replace(/^(reason|orsak|årsak|motif|grund|number|nummer)\s+/, ""));
-			const byNum = n !== undefined && Number.isInteger(n) && n >= 1 && n <= DISCARD_REASONS.length ? DISCARD_REASONS[n - 1] : undefined;
-			const byName = DISCARD_REASONS.find((x) => t.includes(normalizeTranscript(x.title)) || normalizeTranscript(x.title).includes(t));
+			const options = a.reasons?.length ? a.reasons : DISCARD_REASONS;
+			const byNum = n !== undefined && Number.isInteger(n) && n >= 1 && n <= options.length ? options[n - 1] : undefined;
+			const byName = options.find((x) => t.includes(normalizeTranscript(x.title)) || normalizeTranscript(x.title).includes(t));
 			const reason = byNum ?? byName;
 			if (!reason) {
-				const list = DISCARD_REASONS.map((x, i) => `${spokenNumber(i + 1, r.language)}, ${x.title}`).join(". ");
+				const list = options.map((x, i) => `${spokenNumber(i + 1, r.language)}, ${x.title}`).join(". ");
 				await this.say(r, tr(r.language, "discard_reasons", { name: r.templateName, list }));
 				await this.listenAction(r);
 				return;
@@ -1605,8 +1636,12 @@ export class RunEngine {
 		const api = await this.deps.credentials.apiSettings(session);
 		if (!api) throw noCredential();
 		if (r.instanceId) {
-			const res = await this.deps.flows.setStatus(api, r.instanceId, "discard", { reasonId: reasonCode, reason: reasonCode, comment });
-			if (!res.ok) throw new EngineError(res.status === 422 ? 422 : 502, "MARANICS", `discard checklist: ${res.message}`);
+			// v3 accepts exactly {action, reason, comment, force}; `reason` is the discard reason's name (template list or tenant list).
+			const res = await this.deps.flows.setStatus(api, r.instanceId, "discard", comment ? { reason: reasonCode, comment } : { reason: reasonCode });
+			if (!res.ok) {
+				this.deps.log.warn(`discard of ${r.instanceId} (${reasonCode}) refused by Flow: ${res.message}`);
+				throw new EngineError(res.status === 422 ? 422 : 502, "MARANICS", `discard checklist: ${res.message}`);
+			}
 		}
 		await this.abandon(runId, `discarded: ${reasonCode}`);
 		await this.audit(r, "run.discarded", { sub: session.sub, text: `${reasonCode}${comment ? ` — ${comment}` : ""}` });

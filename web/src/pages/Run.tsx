@@ -321,7 +321,7 @@ export function RunPage({ runId, mobile = false }: { runId: string; mobile?: boo
 					}
 				/>
 			)}
-			{discardOpen && <DiscardDialog onClose={() => setDiscardOpen(false)} onSubmit={(reasonCode, comment) => act("discard", { reasonCode, comment }).then(() => setDiscardOpen(false))} />}
+			{discardOpen && <DiscardDialog templateId={run.templateId} onClose={() => setDiscardOpen(false)} onSubmit={(reasonCode, comment) => act("discard", { reasonCode, comment }).then(() => setDiscardOpen(false))} />}
 		</div>
 	);
 }
@@ -488,13 +488,16 @@ function ManualDialog({ item, onClose, onSubmit }: { item: RunItem; onClose: () 
 	);
 }
 
-function DiscardDialog({ onClose, onSubmit }: { onClose: () => void; onSubmit: (reasonCode: string, comment?: string) => Promise<void> }) {
-	const [reasons, setReasons] = useState<{ code: string; title: string }[]>([]);
+type DiscardOption = { code: string; title: string; requireComment: boolean };
+
+function DiscardDialog({ templateId, onClose, onSubmit }: { templateId?: string; onClose: () => void; onSubmit: (reasonCode: string, comment?: string) => Promise<void> }) {
+	const [reasons, setReasons] = useState<DiscardOption[]>([]);
 	const [reason, setReason] = useState("");
 	const [comment, setComment] = useState("");
 	useEffect(() => {
-		void api.get<{ reasons: { code: string; title: string }[] }>("templates/any/discard-reasons").then((r) => setReasons(r.reasons));
-	}, []);
+		void api.get<{ reasons: DiscardOption[] }>(`templates/${encodeURIComponent(templateId ?? "any")}/discard-reasons`).then((r) => setReasons(r.reasons));
+	}, [templateId]);
+	const needComment = reasons.find((r) => r.code === reason)?.requireComment ?? false;
 	return (
 		<div className="fixed inset-0 z-20 flex items-center justify-center bg-black/60 p-4" onClick={onClose}>
 			<div className="card w-full max-w-md" onClick={(e) => e.stopPropagation()}>
@@ -511,12 +514,12 @@ function DiscardDialog({ onClose, onSubmit }: { onClose: () => void; onSubmit: (
 							</option>
 						))}
 					</select>
-					<input className="input" placeholder="Comment (optional)" value={comment} onChange={(e) => setComment(e.target.value)} />
+					<input className="input" placeholder={needComment ? "Comment (required for this reason)" : "Comment (optional)"} value={comment} onChange={(e) => setComment(e.target.value)} />
 					<div className="flex justify-end gap-2">
 						<button type="button" className="btn" onClick={onClose}>
 							Cancel
 						</button>
-						<button type="button" className="btn btn-danger" disabled={!reason} onClick={() => void onSubmit(reason, comment || undefined)}>
+						<button type="button" className="btn btn-danger" disabled={!reason || (needComment && !comment.trim())} onClick={() => void onSubmit(reason, comment.trim() || undefined)}>
 							Discard
 						</button>
 					</div>
