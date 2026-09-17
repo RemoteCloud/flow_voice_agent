@@ -104,6 +104,25 @@ const ECHO_GUARD_MS = 2500;
 
 const hasAndroid = () => typeof window !== "undefined" && !!window.FlowVoiceAndroid;
 
+/** Norwegian is tagged nb-NO, no-NO or nn-NO depending on the platform. */
+const VOICE_ALIASES: Record<string, string[]> = { nb: ["nb", "no", "nn"], no: ["nb", "no", "nn"] };
+
+/** Best installed voice for a BCP-47 tag: exact tag, then same language; local voices before network ones. */
+export function pickVoice(tag: string): SpeechSynthesisVoice | undefined {
+	const voices = window.speechSynthesis.getVoices();
+	const want = tag.toLowerCase().replace("_", "-");
+	const base = want.split("-")[0]!;
+	const langs = VOICE_ALIASES[base] ?? [base];
+	const rank = (v: SpeechSynthesisVoice) => {
+		const l = v.lang.toLowerCase().replace("_", "-");
+		if (l === want) return 0;
+		return langs.includes(l.split("-")[0]!) ? 1 : 9;
+	};
+	return voices
+		.filter((v) => rank(v) < 9)
+		.sort((a, b) => rank(a) - rank(b) || Number(b.localService) - Number(a.localService))[0];
+}
+
 export class AudioEndpoint {
 	private ws: WebSocket | undefined;
 	private closed = false;
@@ -121,6 +140,7 @@ export class AudioEndpoint {
 	private handsFree = false;
 	private idleTimer: number | undefined;
 	private speakingNow = false;
+	private warnedVoice = new Set<string>();
 	private speakSeq = 0;
 	/** Android: the utterance in flight; resolved by flowVoiceBridge.onSpoken (or a safety timeout). */
 	private pendingSpoken: { promptId: string; finish: () => void } | undefined;
@@ -407,7 +427,7 @@ export class AudioEndpoint {
 
 	// ------------------------------------------------------------ TTS
 
-	private speak(text: string, language: string, promptId: string): Promise<void> {
+	private async speak(text: string, language: string, promptId: string): Promise<void> {
 		if (hasAndroid()) {
 			// Resolve only when Android reports the utterance done (flowVoiceBridge.onSpoken); resolving
 			// early would re-arm the idle mic, whose startListening() stops TTS mid-sentence.
@@ -428,6 +448,13 @@ export class AudioEndpoint {
 				window.FlowVoiceAndroid!.speak(text, language, promptId);
 			});
 		}
+		// Chrome loads its voice list late: without it the first sentences would fall back to the default English voice
+		if ("speechSynthesis" in window && !window.speechSynthesis.getVoices().length) {
+			await new Promise<void>((ready) => {
+				const t = window.setTimeout(ready, 700);
+				window.speechSynthesis.addEventListener("voiceschanged", () => (window.clearTimeout(t), ready()), { once: true });
+			});
+		}
 		return new Promise((resolve) => {
 			if (!("speechSynthesis" in window)) {
 				this.send({ type: "spoken", promptId });
@@ -437,6 +464,13 @@ export class AudioEndpoint {
 			window.speechSynthesis.cancel();
 			const u = new SpeechSynthesisUtterance(text);
 			u.lang = language.length === 2 ? { en: "en-GB", no: "nb-NO", nb: "nb-NO", sv: "sv-SE", de: "de-DE", fr: "fr-FR", da: "da-DK" }[language] ?? language : language;
+			// a language tag alone is not enough: Chrome and Safari on a Mac keep the default (English) voice unless one is set
+			const voice = pickVoice(u.lang);
+			if (voice) u.voice = voice;
+			else if (window.speechSynthesis.getVoices().length && !this.warnedVoice.has(u.lang)) {
+				this.warnedVoice.add(u.lang);
+				this.cb.onError(`This device has no ${u.lang} voice, so the text is read with another voice. Add one in the system settings (Mac: System Settings → Accessibility → Spoken Content → System voice → Manage voices).`);
+			}
 			u.rate = 0.95;
 			let finished = false;
 			const done = () => {
