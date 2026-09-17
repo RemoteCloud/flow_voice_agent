@@ -253,6 +253,7 @@ export class RunEngine {
 			});
 		}
 		const templates = await this.deps.flows.listTemplates(api);
+		if (!templates.ok) this.deps.log.warn(`Maranics templates: ${templates.message}`);
 		if (templates.ok) {
 			for (const t of templates.data.items) {
 				if (t.status && !/active/i.test(t.status)) continue;

@@ -572,6 +572,8 @@ export async function startFakeMaranics({ token = "t0k3n", tenant = "demo", port
 		if (method === "GET" && url.pathname === "/app/templates/discardReasons") return json(res, 200, DISCARD_REASONS);
 		if (method === "GET" && url.pathname === "/app/templates/templates") {
 			// Real templates app: SearchString + SearchInTitle/SearchInRefId flags (no generic `search`).
+			// …and it refuses a list without a status group, exactly like the real one
+			if (!["ActiveAndDraft", "Deactivated", "Archived"].some((k) => url.searchParams.get(k) === "true")) return json(res, 400, { message: "You need to define at least one status" });
 			const search = (url.searchParams.get("SearchString") ?? "").trim().toLowerCase();
 			const inTitle = url.searchParams.get("SearchInTitle") !== "false";
 			const inRefId = url.searchParams.get("SearchInRefId") === "true";

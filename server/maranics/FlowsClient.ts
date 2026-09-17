@@ -435,7 +435,8 @@ export class FlowsClient {
 	}
 
 	listTemplates(s: ApiSettings, search?: string, page = 1, pageSize = 200): Promise<ClientResult<{ items: TemplateInfo[]; total: number }>> {
-		const q = query({ ActiveAndDraft: false, page, pageSize, SearchString: search, SearchInTitle: search ? true : undefined });
+		// the Templates API wants at least one status group (ActiveAndDraft / Deactivated / Archived), else 400 "You need to define at least one status"
+		const q = query({ ActiveAndDraft: true, page, pageSize, SearchString: search, SearchInTitle: search ? true : undefined });
 		return this.templatesRequest(s, `/templates${q}`, (b, h) => {
 			const rows = Array.isArray(b) ? b : isObj(b) && Array.isArray(b.items) ? b.items : isObj(b) && Array.isArray(b.data) ? b.data : [];
 			const items = rows.map(toTemplateInfo).filter((t): t is TemplateInfo => !!t);
