@@ -547,6 +547,11 @@ try {
 	assert.equal((await api("POST", "interpret", { type: "Checkbox", text: "ja", answers: ["körbro"], answersOnly: true })).body.ok, false);
 	assert.equal((await api("POST", "interpret", { type: "Checkbox", text: "hivt körbro", answers: ["körbro"], answersOnly: true })).body.valueText, "körbro");
 	assert.equal((await api("PUT", "library/entry", { templateId: "tpl-engine", wordsOnly: false })).body.templates[0].wordsOnly, false);
+	assert.equal(entry.wordMatch, "normal");
+	assert.equal((await api("PUT", "library/entry", { templateId: "tpl-engine", wordMatch: "loose" })).body.templates[0].wordMatch, "loose");
+	assert.equal((await api("POST", "interpret", { type: "Checkbox", text: "kurbo hivt", answers: ["körbro"], answersOnly: true, answerMatch: "loose" })).body.valueText, "körbro");
+	assert.equal((await api("POST", "interpret", { type: "Checkbox", text: "kurbo hivt", answers: ["körbro"], answersOnly: true, answerMatch: "exact" })).body.ok, false);
+	await api("PUT", "library/entry", { templateId: "tpl-engine", wordMatch: "normal" });
 	const regPicks = (await api("GET", "checklists")).body;
 	assert.ok(regPicks.filter((p) => p.templateId === "tpl-engine").every((p) => p.access === "start" && p.language === "sv"));
 	assert.ok(regPicks.filter((p) => p.templateId !== "tpl-engine").every((p) => p.access === "off"), "a non-empty register is the whole offer");

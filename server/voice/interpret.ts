@@ -21,6 +21,8 @@ export interface InterpretContext {
 	answers?: string[];
 	/** Checklist setting "only the marked words count": an item with answer words refuses a plain yes / confirm / no. */
 	answersOnly?: boolean;
+	/** How close a heard word must be to a marked one (checklist setting): exact = 1, normal = 0.75, loose = 0.6. */
+	answerMatch?: number;
 }
 
 export type Interpretation =
@@ -566,14 +568,63 @@ function fuzzyScore(a: string, b: string): number {
 
 const NEGATION = /(^| )(not|no|isn t|ikke|nei|inte|nej|nicht|nein|kein|pas|non)( |$)/;
 
-/** The answer word the transcript contains as whole words ("the ramp is up now" ⊇ "up"); never inside a negation. */
-export function heardAnswer(normalized: string, answers: string[] | undefined): string | undefined {
+export const ANSWER_MATCH = { exact: 1, normal: 0.75, loose: 0.6 } as const;
+export type AnswerMatch = keyof typeof ANSWER_MATCH;
+
+/** Letters as a recogniser may spell them: "kjørebro" and "körbro" differ less once ø / ö / å / æ are folded. */
+const fold = (s: string) => s.replace(/[öøó]/g, "o").replace(/[äæ]/g, "a").replace(/å/g, "a").replace(/[éèê]/g, "e").replace(/ü/g, "u");
+function similarity(a: string, b: string): number {
+	if (a === b) return 1;
+	const m = a.length;
+	const n = b.length;
+	if (!m || !n) return 0;
+	let prev = Array.from({ length: n + 1 }, (_, i) => i);
+	for (let i = 1; i <= m; i++) {
+		const cur = [i];
+		for (let j = 1; j <= n; j++) cur[j] = Math.min(prev[j]! + 1, cur[j - 1]! + 1, prev[j - 1]! + (a[i - 1] === b[j - 1] ? 0 : 1));
+		prev = cur;
+	}
+	return 1 - prev[n]! / Math.max(m, n);
+}
+
+/**
+ * The answer word the transcript contains ("the ramp is up now" ⊇ "up"); never inside a negation. `match` < 1 also takes
+ * a word the recogniser got nearly right ("kjørebro" for "körbro", "kjøre bro" split in two). Short words stay exact.
+ */
+export function heardAnswer(normalized: string, answers: string[] | undefined, match: number = ANSWER_MATCH.normal): string | undefined {
 	if (!answers?.length || NEGATION.test(normalized)) return undefined;
 	const hay = ` ${normalized} `;
 	return answers.find((a) => {
 		const n = normalizeTranscript(a);
-		return !!n && hay.includes(` ${n} `);
-	});
+		if (!n) return false;
+		if (hay.includes(` ${n} `)) return true;
+		// anywhere in a longer sentence, also inflected or compounded: "körbron er hivt", "körbroen", "hovedkörbro".
+		// Short words ("up", "on") stay whole-word only, or "supper" would count as "up".
+		if (n.length < 5) return false;
+		if (!n.includes(" ")) return normalized.split(" ").some((w) => w.startsWith(n) || (w.endsWith(n) && w.length <= n.length + 8));
+		if (hay.includes(` ${n}`)) return true;
+		return false;
+	}) ?? nearAnswer(normalized, answers, match);
+}
+
+function nearAnswer(normalized: string, answers: string[], match: number): string | undefined {
+	if (match >= 1) return undefined;
+	const words = normalized.split(" ").filter(Boolean);
+	let best: { answer: string; score: number } | undefined;
+	for (const a of answers) {
+		const n = normalizeTranscript(a);
+		if (n.length < 4) continue; // "up", "on", "av": one wrong letter is another word
+		const target = fold(n.replace(/ /g, ""));
+		const span = n.split(" ").length;
+		// the recogniser may split a compound ("kjøre bro") or join two words: try windows of span-1 … span+1 words
+		for (let size = Math.max(1, span - 1); size <= span + 1; size++) {
+			for (let i = 0; i + size <= words.length; i++) {
+				const score = similarity(fold(words.slice(i, i + size).join("")), target);
+				if (score >= match && (!best || score > best.score)) best = { answer: a, score };
+			}
+		}
+	}
+	return best?.answer;
 }
 
 export function interpret(type: string, transcript: string, ctx: InterpretContext, phrases?: string[]): Interpretation {
@@ -582,7 +633,7 @@ export function interpret(type: string, transcript: string, ctx: InterpretContex
 	const raw = transcript.trim();
 	const normalized = normalizeTranscript(raw);
 	if (!normalized) return { ok: false, reason: "empty", message: msg("m_empty"), confidence: 0 };
-	const heard = heardAnswer(normalized, ctx.answers);
+	const heard = heardAnswer(normalized, ctx.answers, ctx.answerMatch);
 	if (heard) {
 		const said = heard.trim();
 		const opts = ctx.options ?? [];

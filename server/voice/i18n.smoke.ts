@@ -1,5 +1,5 @@
 import assert from "node:assert/strict";
-import { normLang, spokenNumber, t } from "./i18n.js";
+import { spokenText, normLang, spokenNumber, t } from "./i18n.js";
 import { controlWord, interpret, parseClock, parseRelative, wordsToNumber, type InterpretContext } from "./interpret.js";
 import { startAnnouncement } from "./checklist.js";
 import type { RunItem } from "../protocol.js";
@@ -11,6 +11,12 @@ const ok = (r: ReturnType<typeof interpret>) => {
 };
 
 export async function run(): Promise<void> {
+	// spoken text: no "slash", brackets or list marks
+	assert.equal(spokenText("Körbro / ramp hivt", "sv"), "Körbro, ramp hivt");
+	assert.equal(spokenText("Baugport (fremre) lukket/sikret", "no"), "Baugport, fremre, lukket, sikret");
+	assert.equal(spokenText("- Pilot_on_board *", "en"), "Pilot on board");
+	assert.equal(spokenText("Lys & signal", "no"), "Lys og signal");
+	assert.equal(spokenText("Started 12:13, level 1/2, -4 degrees.", "en"), "Started 12:13, level 1/2, -4 degrees.");
 	assert.equal(normLang("nb-NO"), "no");
 	assert.equal(normLang("sv-SE"), "sv");
 	assert.equal(normLang("fr"), "fr");

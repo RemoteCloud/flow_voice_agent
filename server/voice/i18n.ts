@@ -463,3 +463,23 @@ export function spokenNumber(n: number, lang: Lang | string = "en"): string {
 			return n < 20 ? EN[n] : ones ? `${EN_TENS[tens]}-${EN[ones]}` : EN_TENS[tens];
 	}
 }
+
+const AND: Record<string, string> = { en: "and", sv: "och", no: "og", fr: "et", de: "und" };
+/**
+ * Text as it should be spoken: a voice reads "/" as "slash" and stumbles on brackets, underscores and list marks, so
+ * they become short pauses or nothing. Digits keep their own separators ("12:13", "1/2", "3.5", "-4").
+ */
+export function spokenText(text: string, lang: string): string {
+	return text
+		.replace(/\s*&\s*/g, ` ${AND[normLang(lang)] ?? "and"} `)
+		.replace(/(?<!\d)\s*[/\\|]+\s*|\s*[/\\|]+\s*(?!\d)/g, ", ")
+		.replace(/[()[\]{}<>]/g, ", ")
+		.replace(/[_*#~^`"“”«»=+]+/g, " ")
+		.replace(/(^|\s)[-–—•·]+(?=\s|$)/g, "$1")
+		.replace(/\s+([,.;:!?])/g, "$1")
+		.replace(/,(\s*,)+/g, ",")
+		.replace(/,\s*([.;:!?])/g, "$1")
+		.replace(/\s{2,}/g, " ")
+		.replace(/^[\s,]+|[\s,]+$/g, "")
+		.trim();
+}

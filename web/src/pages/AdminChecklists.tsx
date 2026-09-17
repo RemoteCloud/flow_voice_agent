@@ -49,7 +49,7 @@ export function ChecklistsTab({ canEdit }: { canEdit: boolean }) {
 	};
 	const add = (id: string) => act(id, () => api.post<LibraryView>("library", { templateId: id })).then(() => setOpen(id));
 	const remove = (id: string) => act(id, () => api.del<LibraryView>(`library?templateId=${encodeURIComponent(id)}`));
-	const saveEntry = (id: string, patch: { language?: string; words?: Record<string, string[]>; wordsOnly?: boolean }) => act(`save:${id}`, () => api.put<LibraryView>("library/entry", { templateId: id, ...patch }));
+	const saveEntry = (id: string, patch: { language?: string; words?: Record<string, string[]>; wordsOnly?: boolean; wordMatch?: "exact" | "normal" | "loose" }) => act(`save:${id}`, () => api.put<LibraryView>("library/entry", { templateId: id, ...patch }));
 
 	const notAdded = avail?.filter((a) => !a.registered) ?? [];
 	return (
@@ -124,6 +124,17 @@ export function ChecklistsTab({ canEdit }: { canEdit: boolean }) {
 											<span className="font-medium">Accept a plain yes, confirm or no</span>
 											<span className="block text-xs text-fg-muted">{t.wordsOnly ? "Off: items with marked words only accept an answer that contains one, like \"hivt körbro\". Items without words work as usual." : "On: yes or confirm also answers an item. Turn off to require the marked word."}</span>
 										</span>
+									</label>
+									<label className="flex flex-wrap items-center gap-2 border-t border-line px-4 py-3 text-sm">
+										<span className="min-w-0 flex-1 basis-64">
+											<span className="font-medium">How exact must the word be heard</span>
+											<span className="block text-xs text-fg-muted">The recogniser often gets a word nearly right, like "kjørbro" for "körbro". Short words (up, on) are always exact.</span>
+										</span>
+										<select className="input w-auto py-1 text-xs" value={t.wordMatch} disabled={!canEdit || !!busy} onChange={(e) => void saveEntry(t.templateId, { wordMatch: e.target.value as "exact" | "normal" | "loose" })}>
+											<option value="exact">Exact: the word itself</option>
+											<option value="normal">Normal: a letter or so off</option>
+											<option value="loose">Loose: sounds roughly like it</option>
+										</select>
 									</label>
 									<ItemWords entry={t} canEdit={canEdit} onChange={(words) => void saveEntry(t.templateId, { words })} />
 									<div className="flex flex-wrap items-center gap-2 border-t border-line px-4 py-2 text-xs text-fg-faint">

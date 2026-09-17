@@ -11,6 +11,7 @@ import { WebSocketServer, type WebSocket } from "ws";
 import type { Logger } from "../core/log.js";
 import { parseEndpointMessage, PROTOCOL_VERSION, WS_CLOSE_PROTOCOL, WS_CLOSE_REPLACED, WS_CLOSE_UNAUTHORIZED, type EndpointCapabilities, type ExchangeState, type HubEvent, type HubToEndpointMessage, type RunView } from "../protocol.js";
 import type { SttAdapter } from "../speech/stt.js";
+import { spokenText } from "../voice/i18n.js";
 import type { HubSession } from "../store/HubStore.js";
 import type { EngineIo, RunEngine } from "../voice/RunEngine.js";
 
@@ -279,7 +280,8 @@ export class Gateway implements EngineIo {
 
 	// ------------------------------------------------------------ EngineIo
 
-	speak(stationId: string, promptId: string, text: string, language: string): Promise<void> {
+	speak(stationId: string, promptId: string, rawText: string, language: string): Promise<void> {
+		const text = spokenText(rawText, language) || rawText; // no "slash", brackets or list marks read out loud
 		const ep = this.endpoints.get(stationId);
 		const msg: HubToEndpointMessage = { type: "speak", promptId, text, language, bargeIn: !!ep?.caps.aec, audioFormat: ep?.caps.localTts === false ? "wav" : "none" };
 		for (const o of this.observers) if (o.stationId === stationId) this.send(o, { type: "status", state: "speaking", text });

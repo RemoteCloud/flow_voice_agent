@@ -26,6 +26,20 @@ export async function run(): Promise<void> {
 	assert.equal(interpret("Checkbox", "no", strict).ok, false);
 	assert.equal(ok(interpret("Checkbox", "yes", { ...ctx, answersOnly: true })).value, "OK", "an item without words still takes yes");
 
+	assert.equal(ok(interpret("Checkbox", "ja nå er körbron hivt og sikret", strict)).valueText, "körbro", "inflected, inside a sentence");
+	assert.equal(ok(interpret("Checkbox", "hovedkörbro er oppe", strict)).valueText, "körbro");
+	assert.equal(interpret("Checkbox", "ikke körbron", strict).ok, false);
+
+	// near misses of the recogniser: tolerance per checklist
+	assert.equal(ok(interpret("Checkbox", "kjørbro hivt", strict)).valueText, "körbro", "normal takes one wrong letter");
+	assert.equal(ok(interpret("Checkbox", "kjørebro hivt", strict)).valueText, "körbro", "normal takes the Norwegian spelling");
+	assert.equal(interpret("Checkbox", "kjempebra hivt", strict).ok, false, "another word is too far");
+	assert.equal(interpret("Checkbox", "kurbo hivt", strict).ok, false, "normal: too far");
+	assert.equal(ok(interpret("Checkbox", "kurbo hivt", { ...strict, answerMatch: 0.6 })).valueText, "körbro", "loose takes it");
+	assert.equal(ok(interpret("Checkbox", "kjøre bro hivt", { ...strict, answerMatch: 0.6 })).valueText, "körbro", "loose, and split in two words");
+	assert.equal(interpret("Checkbox", "kjørbro hivt", { ...strict, answerMatch: 1 }).ok, false, "exact");
+	assert.equal(interpret("Checkbox", "us", { ...ctx, answers: ["up"], answersOnly: true, answerMatch: 0.6 }).ok, false, "short words stay exact");
+
 	// numbers
 	assert.equal(wordsToNumber("twenty point five"), 20.5);
 	assert.equal(wordsToNumber("one hundred and twelve"), 112);

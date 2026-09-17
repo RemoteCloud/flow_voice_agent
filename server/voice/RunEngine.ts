@@ -19,7 +19,7 @@ import { CHECKBOX_CHECKED, CHECKBOX_NOT_DONE, checkboxCheckedValue, controlWord,
 import type { Outbox } from "./Outbox.js";
 import { normLang, t as tr } from "./i18n.js";
 import { grammarFor } from "./grammar.js";
-import { normalizeTranscript, wordsToNumber } from "./interpret.js";
+import { ANSWER_MATCH, normalizeTranscript, wordsToNumber } from "./interpret.js";
 
 /** What the screen and the voice menu offer: `code` is the Flow reason name (the status body sends it as `reason`). */
 export interface DiscardOption {
@@ -167,7 +167,7 @@ export class RunEngine {
 	}
 
 	private interpretCtx(r: RunRecord, item: RunItem, utteredAt: Date): InterpretContext {
-		return { utteredAt, tzMode: this.deps.store.get().settings.tzMode, timeZone: this.deps.policy.timeZone, maxPastHours: this.deps.policy.maxPastHours, options: item.options, language: normLang(r.language), answers: item.expected, answersOnly: !!r.templateId && !!this.deps.store.get().settings.wordsOnly?.includes(r.templateId) };
+		return { utteredAt, tzMode: this.deps.store.get().settings.tzMode, timeZone: this.deps.policy.timeZone, maxPastHours: this.deps.policy.maxPastHours, options: item.options, language: normLang(r.language), answers: item.expected, answersOnly: !!r.templateId && !!this.deps.store.get().settings.wordsOnly?.includes(r.templateId), answerMatch: ANSWER_MATCH[this.deps.store.get().settings.wordMatch?.[r.templateId ?? ""] ?? "normal"] };
 	}
 
 	runsForUser(sub: string): RunRecord[] {
@@ -1794,7 +1794,7 @@ export class RunEngine {
 	}
 
 	/** `Interpretation` re-exported for the HTTP layer's manual-value preview. */
-	preview(type: string, text: string, options?: { title: string; value: string }[], answers?: string[], answersOnly?: boolean): Interpretation {
-		return interpret(type, text, { utteredAt: new Date(this.deps.now()), tzMode: this.deps.store.get().settings.tzMode, timeZone: this.deps.policy.timeZone, maxPastHours: this.deps.policy.maxPastHours, options, language: normLang(this.deps.policy.defaultLanguage), answers, answersOnly });
+	preview(type: string, text: string, options?: { title: string; value: string }[], answers?: string[], answersOnly?: boolean, answerMatch?: number): Interpretation {
+		return interpret(type, text, { utteredAt: new Date(this.deps.now()), tzMode: this.deps.store.get().settings.tzMode, timeZone: this.deps.policy.timeZone, maxPastHours: this.deps.policy.maxPastHours, options, language: normLang(this.deps.policy.defaultLanguage), answers, answersOnly, answerMatch });
 	}
 }

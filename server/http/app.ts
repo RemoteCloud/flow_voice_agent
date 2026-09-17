@@ -13,6 +13,7 @@ import type { HubEnv } from "../env.js";
 import type { Logger } from "../core/log.js";
 import type { SttAdapter } from "../speech/stt.js";
 import { MAX_TTS_CHARS, type HttpTts } from "../speech/tts.js";
+import { ANSWER_MATCH, type AnswerMatch } from "../voice/interpret.js";
 import { hashDeckToken, newDeckId, newDeckToken, newJoinToken, tokenHint, verifyDeckToken } from "../store/crypto.js";
 import type { Credentials } from "../store/credentials.js";
 import type { Device, HubData, HubSession, HubStore, PendingEnrollment, PromptRecord, Station, StationJoin, StationTemplateRule, VoiceProfile, EventMapping } from "../store/HubStore.js";
@@ -399,9 +400,9 @@ export function createApp(deps: AppDeps): Hono {
 		}),
 	);
 	api.post("/interpret", async (c) => {
-		const body = (await c.req.json().catch(() => ({}))) as { type?: string; text?: string; options?: { title: string; value: string }[]; answers?: unknown; answersOnly?: unknown };
+		const body = (await c.req.json().catch(() => ({}))) as { type?: string; text?: string; options?: { title: string; value: string }[]; answers?: unknown; answersOnly?: unknown; answerMatch?: unknown };
 		if (!str(body.type) || !str(body.text)) return fail(c, 400, "BAD_REQUEST", "type and text are required");
-		return c.json(engine.preview(body.type as string, body.text as string, body.options, Array.isArray(body.answers) ? body.answers.filter((a): a is string => typeof a === "string") : undefined, body.answersOnly === true));
+		return c.json(engine.preview(body.type as string, body.text as string, body.options, Array.isArray(body.answers) ? body.answers.filter((a): a is string => typeof a === "string") : undefined, body.answersOnly === true, typeof body.answerMatch === "string" && body.answerMatch in ANSWER_MATCH ? ANSWER_MATCH[body.answerMatch as AnswerMatch] : undefined));
 	});
 
 	// ----- stations / devices / status (admin screens; every signed-in user can read, admins write)
@@ -672,7 +673,7 @@ export function createApp(deps: AppDeps): Hono {
 	// ----- central checklist register (Admin → Checklist setup); template ids may contain "/" so they travel in the body / query
 	const libraryView = (): LibraryView => {
 		const d = store.get();
-		return { templates: Object.values(d.library ?? {}).sort((a, b) => a.name.localeCompare(b.name)).map((t) => ({ ...t, language: d.settings.templateLanguages?.[t.templateId], words: d.settings.itemAnswers?.[t.templateId] ?? {}, wordsOnly: !!d.settings.wordsOnly?.includes(t.templateId) })) };
+		return { templates: Object.values(d.library ?? {}).sort((a, b) => a.name.localeCompare(b.name)).map((t) => ({ ...t, language: d.settings.templateLanguages?.[t.templateId], words: d.settings.itemAnswers?.[t.templateId] ?? {}, wordsOnly: !!d.settings.wordsOnly?.includes(t.templateId), wordMatch: d.settings.wordMatch?.[t.templateId] ?? "normal" })) };
 	};
 	api.get("/library", (c) => c.json(libraryView()));
 	api.get("/library/available", (c) => handle(c, async () => c.json({ templates: await engine.availableTemplates(c.get("sessionRow")) })));
@@ -704,10 +705,15 @@ export function createApp(deps: AppDeps): Hono {
 	api.put("/library/entry", async (c) => {
 		const denied = requireAdmin(c);
 		if (denied) return denied;
-		const body = (await c.req.json().catch(() => ({}))) as { templateId?: unknown; language?: unknown; words?: unknown; wordsOnly?: unknown };
+		const body = (await c.req.json().catch(() => ({}))) as { templateId?: unknown; language?: unknown; words?: unknown; wordsOnly?: unknown; wordMatch?: unknown };
 		const id = str(body.templateId);
 		if (!id || !store.get().library?.[id]) return fail(c, 404, "NOT_FOUND", "checklist is not in the register");
 		await store.update((d) => {
+			if (body.wordMatch === "exact" || body.wordMatch === "normal" || body.wordMatch === "loose") {
+				const m = (d.settings.wordMatch ??= {});
+				if (body.wordMatch === "normal") delete m[id];
+				else m[id] = body.wordMatch;
+			}
 			if (typeof body.wordsOnly === "boolean") {
 				const rest = (d.settings.wordsOnly ?? []).filter((x) => x !== id);
 				d.settings.wordsOnly = body.wordsOnly ? [...rest, id] : rest;

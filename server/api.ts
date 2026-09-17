@@ -6,7 +6,7 @@ import type { AuditEntry, Device, LibraryTemplate, EventMapping, OutboxEntry, Pe
 export type { LibraryTemplate };
 /** `GET /api/library`: the central checklist register with its language and trigger words. */
 export interface LibraryView {
-	templates: (LibraryTemplate & { language?: string; words: Record<string, string[]>; /** Only the marked words count: no plain yes / confirm / no on items that have words. */ wordsOnly: boolean })[];
+	templates: (LibraryTemplate & { language?: string; words: Record<string, string[]>; /** Only the marked words count: no plain yes / confirm / no on items that have words. */ wordsOnly: boolean; /** How close a heard word must be to a marked one. */ wordMatch: "exact" | "normal" | "loose" })[];
 }
 /** `GET /api/library/available`: what the Templates app offers, flagged when already in the register. */
 export interface LibraryAvailable {
