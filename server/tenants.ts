@@ -222,14 +222,16 @@ export class Tenants {
 		return this.view(entry);
 	}
 	/** Another server of the same tenant: same Maranics tenant id and client (or token), its own address, stations and data. */
-	async addServer(parentId: string, p: { name: string; host: string; issuer?: string }): Promise<TenantView | undefined> {
+	async addServer(parentId: string, p: { name: string; host: string; issuer?: string; clientId?: string; clientSecret?: string }): Promise<TenantView | undefined> {
 		const parent = this.entries().find((x) => x.id === parentId);
 		if (!parent) return undefined;
 		const root = parent.parent ?? parent.id;
 		const slug = p.name.toLowerCase().replace(/[^a-z0-9]+/g, "-").replace(/^-|-$/g, "").slice(0, 30) || "server";
 		let id = `${root}-${slug}`;
 		for (let n = 2; this.entries().some((t) => t.id === id); n++) id = `${root}-${slug}-${n}`;
-		const entry: TenantEntry = { ...parent, id, name: p.name, host: p.host, issuer: p.issuer, parent: root, createdAt: new Date(this.deps.now()).toISOString() };
+		// a location may have its own client; without one it shares the tenant's
+		const own = p.clientId && p.clientSecret ? { clientId: p.clientId, clientSecretEnc: sealToken(p.clientSecret, this.deps.sealKey), tokenEnc: undefined, tokenHint: undefined } : {};
+		const entry: TenantEntry = { ...parent, ...own, id, name: p.name, host: p.host, issuer: p.issuer, parent: root, createdAt: new Date(this.deps.now()).toISOString() };
 		await this.boot(entry);
 		await this.deps.store.update((d) => {
 			(d.tenants ??= []).push(entry);
@@ -386,6 +388,9 @@ export class Tenants {
 			const rawHost = str(b.host);
 			const rawIssuer = str(b.issuer);
 			if (!name || !rawHost) return fail(c, 400, "BAD_REQUEST", "name and server address are required");
+			const clientId = str(b.clientId);
+			const clientSecret = str(b.clientSecret);
+			if (!!clientId !== !!clientSecret) return fail(c, 400, "BAD_REQUEST", "give both client id and client secret, or neither");
 			const check = (raw: string): URL => {
 				const u = new URL(raw);
 				const allowed = env.maranics?.allowedHosts ?? [];
@@ -402,7 +407,7 @@ export class Tenants {
 				return fail(c, 400, "BAD_REQUEST", `address: ${err instanceof Error ? err.message : "invalid"}`);
 			}
 			try {
-				const v = await this.addServer(c.req.param("id"), { name, host, issuer });
+				const v = await this.addServer(c.req.param("id"), { name, host, issuer, clientId, clientSecret });
 				return v ? c.json(v, 201) : fail(c, 404, "NOT_FOUND", "unknown tenant");
 			} catch (err) {
 				return fail(c, 502, "TENANT_START", err instanceof Error ? err.message : String(err));

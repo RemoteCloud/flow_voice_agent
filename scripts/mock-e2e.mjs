@@ -676,6 +676,13 @@ try {
 	assert.equal(magic.body.loginPath, "/t/far-co-magic");
 	const own = await api("POST", "tenants/far-co/servers", { name: "Fantasy", host: "https://api.fantasy.maranics.com" }, adminJar);
 	assert.equal(own.body.issuer, "https://usermanagement.fantasy.maranics.com/farco", "or at the server's own sign-in");
+	assert.equal(own.body.clientId, "c", "a location shares the tenant's client unless it has its own");
+	const sep = await api("POST", "tenants/far-co/servers", { name: "Hybrid", host: "https://api.hybrid.maranics.com", clientId: "loc-client", clientSecret: "l0cation-s3cret" }, adminJar);
+	assert.equal(sep.status, 201, JSON.stringify(sep.body));
+	assert.equal(sep.body.clientId, "loc-client");
+	assert.ok(!JSON.stringify((await api("GET", "tenants", undefined, adminJar)).body).includes("l0cation-s3cret"), "a location's secret never comes back");
+	assert.equal((await api("POST", "tenants/far-co/servers", { name: "Half", host: "https://api.half.maranics.com", clientId: "only-id" }, adminJar)).status, 400);
+	assert.equal((await api("DELETE", "tenants/far-co-hybrid", undefined, adminJar)).status, 200);
 	assert.equal((await api("POST", "tenants/far-co/servers", { name: "X" }, adminJar)).status, 400);
 	assert.equal((await api("POST", "tenants/nope/servers", { name: "X", host: "https://api.x.maranics.com" }, adminJar)).status, 404);
 	for (const id of ["far-co-magic", "far-co-fantasy"]) assert.equal((await api("DELETE", `tenants/${id}`, undefined, adminJar)).status, 200);

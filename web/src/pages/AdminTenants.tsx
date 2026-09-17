@@ -20,7 +20,7 @@ export function TenantsTab() {
 	const [clientId, setClientId] = useState("");
 	const [clientSecret, setClientSecret] = useState("");
 	const [issuer, setIssuer] = useState("");
-	const [server, setServer] = useState<{ id: string; name: string; host: string; issuer: string } | undefined>();
+	const [server, setServer] = useState<{ id: string; name: string; host: string; issuer: string; clientId: string; clientSecret: string } | undefined>();
 	const [copied, setCopied] = useState<string | undefined>();
 	const [replace, setReplace] = useState<{ id: string; clientId: string; clientSecret: string } | undefined>();
 
@@ -110,8 +110,8 @@ export function TenantsTab() {
 											{data.current?.id === t.id ? "You are here" : "Open"}
 										</button>
 										{!t.parent && (
-											<button type="button" className="btn btn-sm" disabled={busy} onClick={() => setServer(server?.id === t.id ? undefined : { id: t.id, name: "", host: "", issuer: t.issuer ?? "" })}>
-												Add server
+											<button type="button" className="btn btn-sm" disabled={busy} onClick={() => setServer(server?.id === t.id ? undefined : { id: t.id, name: "", host: "", issuer: t.issuer ?? "", clientId: "", clientSecret: "" })}>
+												Add location
 											</button>
 										)}
 										<button type="button" className="btn btn-sm" disabled={busy} onClick={() => setReplace(replace?.id === t.id ? undefined : { id: t.id, clientId: t.clientId ?? "", clientSecret: "" })}>
@@ -132,15 +132,20 @@ export function TenantsTab() {
 									)}
 									{server?.id === t.id && (
 										<div className="space-y-2 rounded-lg border border-line p-3">
-											<p className="text-xs text-fg-muted">Another server of {t.name}, for example one per vessel. Same tenant id and client; its own stations, checklists and sign-in link.</p>
+											<p className="text-xs text-fg-muted">A location of {t.name}, for example one vessel with its own server. Same tenant id; its own stations, checklists and sign-in link.</p>
 											<div className="flex flex-wrap gap-2">
 												<input className="input min-w-0 flex-1 basis-40 text-xs" placeholder="Name, e.g. Color Magic" value={server.name} onChange={(e) => setServer({ ...server, name: e.target.value })} />
 												<input className="input mono min-w-0 flex-1 basis-64 text-xs" placeholder="Server address, https://api.…" value={server.host} onChange={(e) => setServer({ ...server, host: e.target.value })} />
 											</div>
 											<div className="flex flex-wrap gap-2">
+												<input className="input mono min-w-0 flex-1 basis-40 text-xs" autoComplete="off" placeholder="Client id of this location" value={server.clientId} onChange={(e) => setServer({ ...server, clientId: e.target.value })} />
+												<input className="input mono min-w-0 flex-1 basis-56 text-xs" type="password" autoComplete="off" placeholder="Client secret of this location" value={server.clientSecret} onChange={(e) => setServer({ ...server, clientSecret: e.target.value })} />
+											</div>
+											<p className="text-xs text-fg-faint">Leave both empty to share the client of {t.name}.</p>
+											<div className="flex flex-wrap gap-2">
 												<input className="input mono min-w-0 flex-1 basis-64 text-xs" placeholder="Sign-in address (empty: worked out from the server address)" value={server.issuer} onChange={(e) => setServer({ ...server, issuer: e.target.value })} />
-												<button type="button" className="btn btn-sm btn-primary self-start" disabled={busy || !server.name.trim() || !server.host.trim()} onClick={() => void run(() => api.post(`tenants/${encodeURIComponent(t.id)}/servers`, { name: server.name, host: server.host, issuer: server.issuer || undefined })).then(() => setServer(undefined))}>
-													Add server
+												<button type="button" className="btn btn-sm btn-primary self-start" disabled={busy || !server.name.trim() || !server.host.trim() || !server.clientId.trim() !== !server.clientSecret.trim()} onClick={() => void run(() => api.post(`tenants/${encodeURIComponent(t.id)}/servers`, { name: server.name, host: server.host, issuer: server.issuer || undefined, clientId: server.clientId.trim() || undefined, clientSecret: server.clientSecret.trim() || undefined })).then(() => setServer(undefined))}>
+													Add location
 												</button>
 											</div>
 											<p className="text-xs text-fg-faint">Sign-in address is filled with this tenant's. Keep it when people sign in at the same place; clear it when the server has its own sign-in.</p>
