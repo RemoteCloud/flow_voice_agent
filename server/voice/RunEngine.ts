@@ -303,6 +303,7 @@ export class RunEngine {
 				existing.instanceId = created.data.flowId;
 			}
 			const wasPending = existing.state === "pending";
+			existing.language = this.templateLang(existing.templateId, station) ?? existing.language; // language set in Admin after the run began
 			await this.refreshItems(existing, api, station);
 			existing.state = "active";
 			existing.pendingReason = undefined;
@@ -1757,9 +1758,11 @@ export class RunEngine {
 	/** The station's endpoint (re)connected: continue an active run from the next item. */
 	async onEndpointReady(stationId: string, session?: HubSession): Promise<void> {
 		const r = this.activeRun(stationId);
-		const lang = this.deps.io.endpointLanguage(stationId);
+		// the checklist's own language (Checklist setup / station rule) always wins; only without one does the run follow the client
+		const fixed = r ? this.templateLang(r.templateId, this.deps.store.get().stations.find((x) => x.stationId === stationId)) : undefined;
+		const lang = fixed ?? this.deps.io.endpointLanguage(stationId);
 		if (r && lang && r.language !== lang) {
-			r.language = lang; // the phone switched language: the rest of the run follows it
+			r.language = lang;
 			await this.save(r);
 		}
 		if (!r) {

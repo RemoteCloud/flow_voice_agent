@@ -464,6 +464,22 @@ try {
 	await waitFor(() => listenOpen, "listen window of the Swedish run");
 	assert.equal(listenOpen.language, "sv", "listen.open carries the run language");
 	await api("POST", `runs/${svRun.runId}/abandon`);
+	// a client that connects after the run began reports the station language: the checklist language still wins
+	const svRun2 = (await api("POST", "runs", { templateId: "tpl-engine", stationId: "ecr-01" })).body;
+	assert.equal(svRun2.language, "sv");
+	const ws2 = new WebSocket(`ws://127.0.0.1:${port}/v1/audio`, { headers: { cookie } });
+	await new Promise((resolve, reject) => {
+		ws2.once("open", resolve);
+		ws2.once("error", reject);
+	});
+	ws2.send(JSON.stringify({ type: "hello", endpointId: "e2e-late", stationId: "ecr-01", capabilities: { pushToTalk: true, localStt: true, localTts: true, aec: false }, language: "en" }));
+	await new Promise((r) => setTimeout(r, 600));
+	assert.equal((await api("GET", `runs/${svRun2.runId}`)).body.language, "sv", "a client hello must not reset the checklist language");
+	ws2.close();
+	await new Promise((r) => setTimeout(r, 200));
+	await api("POST", `runs/${svRun2.runId}/abandon`);
+	const meNow = (await api("GET", "auth/me")).body;
+	if (meNow.stationId !== "bridge-01") await api("PUT", "auth/station", { stationId: "bridge-01" });
 	await api("PUT", "settings", { templateLanguages: {} });
 
 	// per station: start and use / use only / not here, and a language per template that beats the hub-wide one

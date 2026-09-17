@@ -51,6 +51,14 @@ export function StationsTab({ s, reload, canEdit }: { s: StatusResponse; reload:
 		setRows((r) => r.map((st, k) => (k === i ? { ...st, ...patch } : st)));
 		setDirty(true);
 	};
+	/** Selects and tick boxes save at once on a saved station, unless typed edits are still waiting for the Save button. */
+	const pick = (i: number, patch: Partial<Station>) => {
+		const isSaved = s.stations.some((x) => x.stationId === rows[i]?.stationId);
+		if (dirty || !isSaved) return edit(i, patch);
+		const next = rows.map((st, k) => (k === i ? { ...st, ...patch } : st));
+		setRows(next);
+		void save(next);
+	};
 	const save = async (list: Station[] = rows) => {
 		try {
 			await api.put("stations", list);
@@ -229,7 +237,7 @@ export function StationsTab({ s, reload, canEdit }: { s: StatusResponse; reload:
 								</div>
 								<div>
 									<label className="label">Language</label>
-									<select className="input" value={st.language} disabled={!canEdit} onChange={(e) => edit(i, { language: e.target.value })}>
+									<select className="input" value={st.language} disabled={!canEdit} onChange={(e) => pick(i, { language: e.target.value })}>
 										{LANGS.map((l) => (
 											<option key={l} value={l}>
 												{l}
@@ -239,14 +247,14 @@ export function StationsTab({ s, reload, canEdit }: { s: StatusResponse; reload:
 								</div>
 								<div>
 									<label className="label">Audio policy</label>
-									<select className="input" value={st.audioPolicy} disabled={!canEdit} onChange={(e) => edit(i, { audioPolicy: e.target.value === "open" ? "open" : "ptt" })}>
+									<select className="input" value={st.audioPolicy} disabled={!canEdit} onChange={(e) => pick(i, { audioPolicy: e.target.value === "open" ? "open" : "ptt" })}>
 										<option value="ptt">Push to talk</option>
 										<option value="open">Open mic (hands-free, voice auto-starts)</option>
 									</select>
 								</div>
 								<div>
 									<label className="label">Verbosity</label>
-									<select className="input" value={st.verbosity ?? "full"} disabled={!canEdit} onChange={(e) => edit(i, { verbosity: e.target.value as Station["verbosity"] })}>
+									<select className="input" value={st.verbosity ?? "full"} disabled={!canEdit} onChange={(e) => pick(i, { verbosity: e.target.value as Station["verbosity"] })}>
 										<option value="full">Full</option>
 										<option value="short">Short</option>
 										<option value="silent">Silent</option>
@@ -254,7 +262,7 @@ export function StationsTab({ s, reload, canEdit }: { s: StatusResponse; reload:
 								</div>
 								<div>
 									<label className="label">Default profile</label>
-									<select className="input" value={st.defaultProfile ?? ""} disabled={!canEdit} onChange={(e) => edit(i, { defaultProfile: e.target.value || null })}>
+									<select className="input" value={st.defaultProfile ?? ""} disabled={!canEdit} onChange={(e) => pick(i, { defaultProfile: e.target.value || null })}>
 										<option value="">None</option>
 										{profiles.map((p) => (
 											<option key={p.profileId} value={p.profileId}>
@@ -265,15 +273,15 @@ export function StationsTab({ s, reload, canEdit }: { s: StatusResponse; reload:
 								</div>
 								<div className="flex flex-col justify-end gap-2 text-sm">
 									<label className="flex items-center gap-2">
-										<input type="checkbox" checked={st.voiceActions !== false} disabled={!canEdit} onChange={(e) => edit(i, { voiceActions: e.target.checked })} />
+										<input type="checkbox" checked={st.voiceActions !== false} disabled={!canEdit} onChange={(e) => pick(i, { voiceActions: e.target.checked })} />
 										Complete / discard by voice (two-step)
 									</label>
 									<label className="flex items-center gap-2">
-										<input type="checkbox" checked={!!st.holdToAnswer} disabled={!canEdit} onChange={(e) => edit(i, { holdToAnswer: e.target.checked })} />
+										<input type="checkbox" checked={!!st.holdToAnswer} disabled={!canEdit} onChange={(e) => pick(i, { holdToAnswer: e.target.checked })} />
 										Hold to answer on phones / tablets (noisy place)
 									</label>
 									<label className="flex items-center gap-2">
-										<input type="checkbox" checked={!!st.autoStartAllowed} disabled={!canEdit} onChange={(e) => edit(i, { autoStartAllowed: e.target.checked })} />
+										<input type="checkbox" checked={!!st.autoStartAllowed} disabled={!canEdit} onChange={(e) => pick(i, { autoStartAllowed: e.target.checked })} />
 										Triggered runs may start unattended
 									</label>
 								</div>
