@@ -270,7 +270,13 @@ export function StationsTab({ s, reload, canEdit }: { s: StatusResponse; reload:
 									</label>
 								</div>
 							</div>
-							<TemplateRules rules={st.templates} templates={templates} stationLanguage={st.language} canEdit={canEdit} onChange={(t) => edit(i, { templates: t })} />
+							<TemplateRules rules={st.templates} templates={templates} stationLanguage={st.language} canEdit={canEdit} onChange={(t) => {
+								// checklists save at once (no trip to the Save button) unless other edits are still pending
+								const next = rows.map((x, k) => (k === i ? { ...x, templates: t } : x));
+								setRows(next);
+								if (isNew || dirty) setDirty(true);
+								else void save(next);
+							}} />
 							{!isNew && <JoinPanel station={live} minted={minted[st.stationId]} base={base} setBase={setBase} canEdit={canEdit} onMint={() => void mint(st.stationId)} onRevoke={() => void revoke(st.stationId)} />}
 						</div>
 					</section>
@@ -323,7 +329,7 @@ function TemplateRules({ rules, templates, stationLanguage, canEdit, onChange }:
 		<div className="rounded-lg border border-line">
 			<div className="px-3 py-2">
 				<h3 className="text-sm font-medium">Checklists on this station</h3>
-				<p className="text-xs text-fg-muted">{ids.length ? "Only the checklists added here are available on this station." : "Nothing added: the hub-wide Start buttons list applies. Add checklists to limit this station to them."}</p>
+				<p className="text-xs text-fg-muted">{ids.length ? "Only the checklists added here are available on this station. Changes here are saved at once." : "Nothing added: the hub-wide Start buttons list applies. Add checklists to limit this station to them."}</p>
 			</div>
 			{ids.length > 0 && (
 				<ul className="divide-y divide-line border-t border-line">
