@@ -277,7 +277,7 @@ export function StationsTab({ s, reload, canEdit }: { s: StatusResponse; reload:
 										Triggered runs may start unattended
 									</label>
 								</div>
-							</div>
+								<div className="sm:col-span-2">
 							<TemplateRules rules={st.templates} templates={templates} stationLanguage={st.language} canEdit={canEdit} onChange={(t) => {
 								// checklists save at once (no trip to the Save button) unless other edits are still pending
 								const next = rows.map((x, k) => (k === i ? { ...x, templates: t } : x));
@@ -285,6 +285,8 @@ export function StationsTab({ s, reload, canEdit }: { s: StatusResponse; reload:
 								if (isNew || dirty) setDirty(true);
 								else void save(next);
 							}} />
+								</div>
+							</div>
 							{!isNew && <JoinPanel station={live} minted={minted[st.stationId]} base={base} setBase={setBase} canEdit={canEdit} onMint={() => void mint(st.stationId)} onRevoke={() => void revoke(st.stationId)} />}
 						</div>
 					</section>
