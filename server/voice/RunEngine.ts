@@ -598,10 +598,12 @@ export class RunEngine {
 		return station?.templates?.[templateId]?.language ?? this.deps.store.get().settings.templateLanguages?.[templateId];
 	}
 
-	/** Station rule first (Admin → Stations → Checklists here), else the hub-wide Start buttons list (empty → everything). */
+	/** Station list first (Admin → Stations → Checklists on this station: only what was added), else the hub-wide Start buttons list (empty → everything). */
 	templateAccess(templateId: string | undefined, station?: Station): "start" | "use" | "off" {
 		const rule = templateId ? station?.templates?.[templateId]?.access : undefined;
 		if (rule) return rule;
+		// a station with its own list offers only what was added to it
+		if (station?.templates && Object.keys(station.templates).length) return templateId && station.templates[templateId] ? "start" : "off";
 		const allow = this.deps.store.get().settings.startable;
 		return !allow?.length || (!!templateId && allow.includes(templateId)) ? "start" : "off";
 	}

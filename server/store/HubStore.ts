@@ -64,7 +64,7 @@ export interface Station {
 	holdToAnswer?: boolean;
 	/**
 	 * What this station may do per template id. `start` = start new ones and work on open ones, `use` = only work on
-	 * open ones (started elsewhere), `off` = not shown here. No entry → the hub-wide Start buttons list decides.
+	 * open ones (started elsewhere), `off` = not shown here. A station with entries offers only those templates; no entries at all → the hub-wide Start buttons list decides.
 	 * `language` = the language the checklist is run in on this station (wins over the hub-wide template language).
 	 */
 	templates?: Record<string, StationTemplateRule>;

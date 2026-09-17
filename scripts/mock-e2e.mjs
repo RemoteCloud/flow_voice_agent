@@ -478,6 +478,8 @@ try {
 	assert.equal(engTpl.startable, false, "use only: no start button");
 	assert.equal(engTpl.language, "de", "station language for the template");
 	assert.equal(herePicks.find((p) => p.source === "template" && p.templateId === "tpl-departure").access, "off");
+	assert.ok(herePicks.filter((p) => p.templateId === "NauticAI/ArrivalChecklist" || p.refId === "NauticAI/ArrivalChecklist").every((p) => p.access === "off"), "not added to the station → not available there");
+	assert.ok(herePicks.some((p) => p.access === "off" && p.templateId !== "tpl-departure"), "templates outside the station list are off");
 	const refusedStart = await api("POST", "runs", { templateId: "tpl-engine", stationId: "bridge-01" });
 	assert.equal(refusedStart.status, 403, JSON.stringify(refusedStart.body));
 	assert.equal(refusedStart.body.error?.code ?? refusedStart.body.code, "NOT_STARTABLE_HERE");
