@@ -87,7 +87,7 @@ export interface StatusResponse {
 	sessions: { id: string; sub: string; name?: string; stationId?: string; lastSeenAt: string; createdAt: string; credential: string }[];
 	prompts: { promptId: string; stationId: string; prompt: string; state: string; createdAt: string }[];
 	speech: { stt: "endpoint" | "http"; tts: "endpoint" | "http"; sttUrl?: string };
-	settings: { readNotices: boolean; tzMode: "utc" | "local"; confirmation: "required" | "optional"; /** Template ids that get a start button on the phone/tablet home screen and in the voice menu; empty or absent → every template. */ startable?: string[] };
+	settings: { readNotices: boolean; tzMode: "utc" | "local"; confirmation: "required" | "optional"; /** Template ids that get a start button on the phone/tablet home screen and in the voice menu; empty or absent → every template. */ startable?: string[]; /** Template id → language the checklist is written in (en/sv/no/fr/de); wins over the station language. */ templateLanguages?: Record<string, string> };
 }
 
 export interface EnrollRequest {

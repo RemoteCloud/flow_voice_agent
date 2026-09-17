@@ -28,7 +28,7 @@ import java.util.zip.ZipInputStream
  * Models live in filesDir/vosk/<lang>. English ships in the APK (assets/vosk/en.zip, fetched at build
  * time); other languages are downloaded once from alphacephei.com when the crew picks them.
  */
-class VoskStt(private val context: Context, private val callbacks: Callbacks) {
+class VoskStt(private val context: Context, private val callbacks: Callbacks, private val hubUrl: () -> String? = { null }) {
     interface Callbacks {
         fun onPartial(text: String)
         fun onFinal(text: String, confidence: Float)
@@ -59,6 +59,9 @@ class VoskStt(private val context: Context, private val callbacks: Callbacks) {
     @Volatile private var session: Session? = null
 
     fun hasModel(language: String): Boolean = models.containsKey(langKey(language))
+
+    /** Is there a grammar model for this language at all (loaded or not)? */
+    fun supports(language: String): Boolean = langKey(language) in MODELS
 
     /** Load (unpack / download first if needed) the model for `language` in the background. Safe to call often. */
     fun prepare(language: String) {
@@ -99,11 +102,25 @@ class VoskStt(private val context: Context, private val callbacks: Callbacks) {
                 fromAssets.use { input -> FileOutputStream(tmp).use { input.copyTo(it) } }
             } else {
                 main.post { callbacks.onModelState(key, "downloading") }
-                val conn = URL("$MODEL_BASE$name.zip").openConnection() as HttpURLConnection
-                conn.connectTimeout = 15000
-                conn.readTimeout = 60000
-                if (conn.responseCode != 200) throw IllegalStateException("HTTP ${conn.responseCode} for $name")
-                conn.inputStream.use { input -> FileOutputStream(tmp).use { input.copyTo(it) } }
+                // the hub first (a vessel network has no internet; the hub keeps a copy), then the public mirror
+                val sources = listOfNotNull(hubUrl()?.trimEnd('/')?.let { "$it/models/vosk/$key.zip" }, "$MODEL_BASE$name.zip")
+                var last: Exception? = null
+                var done = false
+                for (src in sources) {
+                    try {
+                        val conn = URL(src).openConnection() as HttpURLConnection
+                        conn.connectTimeout = 15000
+                        conn.readTimeout = 300000 // the hub may be fetching its own copy first
+                        if (conn.responseCode != 200) throw IllegalStateException("HTTP ${conn.responseCode} from $src")
+                        conn.inputStream.use { input -> FileOutputStream(tmp).use { input.copyTo(it) } }
+                        done = true
+                        break
+                    } catch (e: Exception) {
+                        Log.w(TAG, "model $key: $src failed", e)
+                        last = e
+                    }
+                }
+                if (!done) throw last ?: IllegalStateException("no source for $name")
             }
             unzip(tmp, dir, name)
             return dir

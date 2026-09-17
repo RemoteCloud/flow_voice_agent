@@ -437,6 +437,24 @@ try {
 	await api("PUT", "settings", { startable: [] });
 	assert.ok((await api("GET", "checklists")).body.every((p) => p.startable === true), "empty list → everything startable");
 
+	// checklist language is set per template in Admin and wins over the station's; the listen window tells the phone
+	step = "template language";
+	const setLang = await api("PUT", "settings", { templateLanguages: { "tpl-engine": "sv", bogus: "xx" } });
+	assert.deepEqual(setLang.body.templateLanguages, { "tpl-engine": "sv" }, "only known languages are kept");
+	assert.ok((await api("GET", "checklists")).body.filter((p) => p.templateId === "tpl-engine").every((p) => p.language === "sv"));
+	listenOpen = undefined;
+	const svRun = (await api("POST", "runs", { templateId: "tpl-engine", stationId: "bridge-01" })).body;
+	assert.equal(svRun.language, "sv", "run takes the template language");
+	await waitFor(() => listenOpen, "listen window of the Swedish run");
+	assert.equal(listenOpen.language, "sv", "listen.open carries the run language");
+	await api("POST", `runs/${svRun.runId}/abandon`);
+	await api("PUT", "settings", { templateLanguages: {} });
+
+	step = "speech models";
+	const modelList = await (await fetch(`${base}/models/vosk`)).json();
+	assert.deepEqual(modelList.map((m) => m.language).sort(), ["de", "en", "fr", "sv"]);
+	assert.equal((await fetch(`${base}/models/vosk/xx.zip`)).status, 404);
+
 	// audit is text only
 	const audit = await api("GET", "audit?limit=50");
 	assert.ok(audit.body.some((a) => a.kind === "item.committed" && a.transcript === "Pilot on board five minutes ago."));

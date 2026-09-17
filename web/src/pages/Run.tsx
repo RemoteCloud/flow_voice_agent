@@ -213,7 +213,7 @@ export function RunPage({ runId, mobile = false }: { runId: string; mobile?: boo
 									<button type="button" className="btn btn-ghost" onClick={() => v.stop()}>
 										Voice off
 									</button>
-									<LanguageSelect />
+									{!mobile && <LanguageSelect />}
 								</div>
 								{!mobile && (
 									<label className="flex items-center gap-2 text-sm">

@@ -106,6 +106,8 @@ export interface ChecklistPick {
 	activeRunId?: string;
 	/** false when an admin left this template out of the home-screen start buttons (Admin → Start buttons). */
 	startable?: boolean;
+	/** Language set for this template in Admin → Start buttons (absent → the station's language). */
+	language?: string;
 }
 
 // ---------------------------------------------------------------- AEP
@@ -135,7 +137,7 @@ export type EndpointMessage =
 export type HubToEndpointMessage =
 	| { type: "hello"; protocol: number; hubVersion: string; stationId: string; role: "endpoint" | "observer"; runId?: string }
 	| { type: "speak"; promptId: string; text: string; language: string; bargeIn: boolean; audioFormat?: "opus" | "wav" | "none" }
-	| { type: "listen.open"; promptId: string; maxMs: number; vad: boolean; bias?: string[]; expect?: string; grammar?: string[] }
+	| { type: "listen.open"; promptId: string; maxMs: number; vad: boolean; bias?: string[]; expect?: string; grammar?: string[]; /** Language of the run: the endpoint recognises in it (the checklist decides, not the phone). */ language?: string }
 	| { type: "listen.close" }
 	| { type: "status"; state: ExchangeState; text?: string }
 	| { type: "released"; by?: string }

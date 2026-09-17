@@ -60,6 +60,8 @@ export interface Station {
 	verbosity?: "full" | "short" | "silent";
 	/** Complete / discard may be confirmed by voice (two-step). Default true; false = screen only (spec 21.3). */
 	voiceActions?: boolean;
+	/** Noisy place: on phones / tablets the mic opens only while the button is held (the app has no switch of its own). */
+	holdToAnswer?: boolean;
 }
 
 /**
@@ -224,7 +226,7 @@ export interface HubData {
 	outbox: OutboxEntry[];
 	audit: AuditEntry[];
 	idempotency: Record<string, { at: string; result: string }>;
-	settings: { readNotices: boolean; tzMode: "utc" | "local"; confirmation: "required" | "optional"; /** Template ids that get a start button on the phone/tablet home screen and in the voice menu; empty or absent → every template. */ startable?: string[] };
+	settings: { readNotices: boolean; tzMode: "utc" | "local"; confirmation: "required" | "optional"; /** Template ids that get a start button on the phone/tablet home screen and in the voice menu; empty or absent → every template. */ startable?: string[]; /** Template id → language the checklist is written in (en/sv/no/fr/de); wins over the station language. */ templateLanguages?: Record<string, string> };
 }
 
 export function emptyData(): HubData {

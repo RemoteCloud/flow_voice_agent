@@ -69,6 +69,28 @@ export function StationsTab({ s, reload, canEdit }: { s: StatusResponse; reload:
 			setErr(toApiError(e).message);
 		}
 	};
+	const [newName, setNewName] = useState("");
+	const [newLocation, setNewLocation] = useState("");
+	const [newLang, setNewLang] = useState("en");
+	/** One step for the common case: create the station, save it, and show its QR poster. */
+	const createWithQr = async () => {
+		const name = newName.trim();
+		if (!name) return;
+		const slug = name.toLowerCase().replace(/[^a-z0-9]+/g, "-").replace(/^-|-$/g, "") || "station";
+		let stationId = slug;
+		for (let n = 2; rows.some((r) => r.stationId === stationId); n++) stationId = `${slug}-${n}`;
+		const list = [...rows, { stationId, name, location: newLocation.trim() || undefined, language: newLang, audioPolicy: "ptt", autoStartAllowed: false, verbosity: "full", voiceActions: true, defaultProfile: null } as Station];
+		try {
+			await api.put("stations", list);
+			setRows(list);
+			setDirty(false);
+			setNewName("");
+			setNewLocation("");
+			await mint(stationId);
+		} catch (e) {
+			setErr(toApiError(e).message);
+		}
+	};
 	const revoke = async (stationId: string) => {
 		if (!confirm("Revoke this QR code? Posters carrying it stop working; phones already joined stay signed in.")) return;
 		try {
@@ -106,6 +128,41 @@ export function StationsTab({ s, reload, canEdit }: { s: StatusResponse; reload:
 					</button>
 				</div>
 			</div>
+			<section className="card">
+				<div className="card-head">
+					<h2 className="card-title">New station with QR code</h2>
+				</div>
+				<form
+					className="card-body grid gap-3 sm:grid-cols-[1fr_1fr_auto_auto] sm:items-end"
+					onSubmit={(e) => {
+						e.preventDefault();
+						void createWithQr();
+					}}
+				>
+					<div>
+						<label className="label">Name</label>
+						<input className="input" value={newName} onChange={(e) => setNewName(e.target.value)} placeholder="Bridge" disabled={!canEdit} />
+					</div>
+					<div>
+						<label className="label">Vessel / location</label>
+						<input className="input" value={newLocation} onChange={(e) => setNewLocation(e.target.value)} placeholder="MF Example" disabled={!canEdit} />
+					</div>
+					<div>
+						<label className="label">Language</label>
+						<select className="input" value={newLang} onChange={(e) => setNewLang(e.target.value)} disabled={!canEdit}>
+							{LANGS.map((l) => (
+								<option key={l} value={l}>
+									{l}
+								</option>
+							))}
+						</select>
+					</div>
+					<button type="submit" className="btn btn-primary" disabled={!canEdit || !newName.trim() || dirty} title={dirty ? "Save or discard the edits below first" : undefined}>
+						Create + QR
+					</button>
+				</form>
+				<p className="help px-4 pb-3">The QR code appears on the new station's card below: print it and scan it with the phone or tablet. The device is then locked to this station.</p>
+			</section>
 			{err && <p className="text-sm text-danger">{err}</p>}
 			{json && (
 				<section className="card">
@@ -189,6 +246,10 @@ export function StationsTab({ s, reload, canEdit }: { s: StatusResponse; reload:
 									<label className="flex items-center gap-2">
 										<input type="checkbox" checked={st.voiceActions !== false} disabled={!canEdit} onChange={(e) => edit(i, { voiceActions: e.target.checked })} />
 										Complete / discard by voice (two-step)
+									</label>
+									<label className="flex items-center gap-2">
+										<input type="checkbox" checked={!!st.holdToAnswer} disabled={!canEdit} onChange={(e) => edit(i, { holdToAnswer: e.target.checked })} />
+										Hold to answer on phones / tablets (noisy place)
 									</label>
 									<label className="flex items-center gap-2">
 										<input type="checkbox" checked={!!st.autoStartAllowed} disabled={!canEdit} onChange={(e) => edit(i, { autoStartAllowed: e.target.checked })} />

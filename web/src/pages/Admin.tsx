@@ -197,11 +197,27 @@ function StartTab({ s, reload, canEdit }: { s: StatusResponse; reload: () => Pro
 		}
 	};
 	const toggle = (id: string) => void save(chosen.has(id) ? [...chosen].filter((x) => x !== id) : [...chosen, id]);
+	const langs = s.settings.templateLanguages ?? {};
+	const setLang = async (id: string, lang: string) => {
+		setBusy(true);
+		setErr(undefined);
+		try {
+			const next = { ...langs };
+			if (lang) next[id] = lang;
+			else delete next[id];
+			await api.put("settings", { templateLanguages: next });
+			await reload();
+		} catch (e) {
+			setErr(toApiError(e).message);
+		} finally {
+			setBusy(false);
+		}
+	};
 	return (
 		<section className="card">
 			<div className="card-head">
 				<div>
-					<h2 className="card-title">Start buttons</h2>
+					<h2 className="card-title">Start buttons & checklist language</h2>
 					<p className="text-xs text-fg-muted">{chosen.size ? `${chosen.size} checklist(s) can be started from the phone / tablet.` : "Nothing ticked: every checklist gets a start button."}</p>
 				</div>
 				{chosen.size > 0 && (
@@ -220,6 +236,14 @@ function StartTab({ s, reload, canEdit }: { s: StatusResponse; reload: () => Pro
 							<label className="flex cursor-pointer items-center gap-3 px-4 py-3 text-sm">
 								<input type="checkbox" className="h-5 w-5" checked={chosen.has(t.templateId)} disabled={!canEdit || busy} onChange={() => toggle(t.templateId)} />
 								<span className="min-w-0 flex-1 truncate">{t.templateName}</span>
+								<select className="input w-auto py-1 text-xs" value={langs[t.templateId] ?? ""} disabled={!canEdit || busy} onChange={(e) => void setLang(t.templateId, e.target.value)} title="Language the checklist is written in: spoken and recognised in it (English answers are always understood)">
+									<option value="">Station language</option>
+									<option value="en">English</option>
+									<option value="no">Norsk</option>
+									<option value="sv">Svenska</option>
+									<option value="de">Deutsch</option>
+									<option value="fr">Français</option>
+								</select>
 								<span className="text-xs text-fg-faint">{t.readiness === "full" ? "voice" : t.readiness === "partial" ? "partial voice" : "no voice"}</span>
 							</label>
 						</li>

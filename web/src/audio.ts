@@ -23,6 +23,8 @@ declare global {
 			/** Newest app builds: like startListeningIn plus bias words (comma-separated) the recogniser should favour. */
 			startListeningWith?(language: string, extraLanguages: string, bias: string, maxMs: number, promptId: string): void;
 			/** Grammar-restricted offline recogniser (Vosk): is a model for this language ready on the phone? */
+			/** Open the camera to scan a station poster: the app reloads joined to that station. */
+			scanStation?(): void;
 			hasGrammarStt?(language: string): boolean;
 			/** Load / download the model for this language in the background (call when the answer language changes). */
 			prepareGrammarStt?(language: string): void;
@@ -167,6 +169,8 @@ export class AudioEndpoint {
 	private bias: string[] = [];
 	/** Allowed vocabulary of the current window (hub grammar); with a Vosk model on the phone, nothing else is heard. */
 	private grammar: string[] | undefined;
+	/** Language of the current run, from the hub's listen window: the checklist decides what is recognised, not the phone. */
+	private runLanguage: string | undefined;
 
 	private startArmed(): void {
 		const a = this.armed;
@@ -343,6 +347,10 @@ export class AudioEndpoint {
 				if (this.role !== "endpoint") return;
 				this.bias = m.bias ?? [];
 				this.grammar = m.grammar;
+				if (m.language && m.language !== this.runLanguage) {
+					this.runLanguage = m.language;
+					window.FlowVoiceAndroid?.prepareGrammarStt?.(this.opts.answerLanguage || m.language);
+				}
 				this.openListen(m.promptId, m.maxMs);
 				return;
 			case "listen.close":
@@ -506,7 +514,7 @@ export class AudioEndpoint {
 	}
 
 	private startRecognition(maxMs: number): void {
-		const stt = this.opts.answerLanguage || this.opts.language;
+		const stt = this.opts.answerLanguage || this.runLanguage || this.opts.language;
 		if (hasAndroid()) {
 			const a = window.FlowVoiceAndroid!;
 			// English is always understood by the hub: let the recogniser switch to it when the checklist is in another language

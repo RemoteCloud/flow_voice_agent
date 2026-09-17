@@ -19,7 +19,7 @@ const OPEN_STATES = new Set<RunView["state"]>(["active", "paused", "pending"]);
  * for every checklist. Station chips only when the phone was not locked to a station by QR.
  */
 export function HomePage({ onOpenRun }: { onOpenRun: (runId: string) => void }) {
-	const { me, stations, setStation, boot } = useApp();
+	const { me, stations, boot } = useApp();
 	const v = useVoice();
 	const [picks, setPicks] = useState<ChecklistPick[] | undefined>();
 	const [runs, setRuns] = useState<RunView[]>([]);
@@ -67,15 +67,40 @@ export function HomePage({ onOpenRun }: { onOpenRun: (runId: string) => void }) 
 	const open = runs.find((r) => r.stationId === me.stationId && OPEN_STATES.has(r.state));
 	const tiles = [...(picks?.filter((p) => p.source === "instance") ?? []), ...(picks?.filter((p) => p.source === "template") ?? [])].filter((p) => p.startable !== false && (!open || p.activeRunId !== open.runId));
 	const locked = me.stationSource === "join";
+	const canScan = !!window.FlowVoiceAndroid?.scanStation;
+	const scan = () => window.FlowVoiceAndroid?.scanStation?.();
 	const station = stations.find((s) => s.stationId === me.stationId);
+
+	if (!locked || !me.stationId) {
+		return (
+			<div className="flex min-h-[70vh] flex-col items-center justify-center gap-5 text-center">
+				<Icon name="qr" size={72} strokeWidth={1.4} />
+				<h1 className="text-2xl font-semibold tracking-wide uppercase">Scan the station QR code</h1>
+				<p className="max-w-sm text-sm text-fg-muted">This device works on one station, set by the QR poster at that station. {canScan ? "" : "Open the camera and scan the poster."}</p>
+				{canScan && (
+					<button type="button" className="start-btn max-w-sm justify-center text-lg font-semibold tracking-wide uppercase" onClick={scan}>
+						Scan QR code
+					</button>
+				)}
+				<p className="text-[11px] text-fg-faint">{versionLine(boot.hubVersion)}</p>
+			</div>
+		);
+	}
 
 	return (
 		<div className="space-y-4">
 			<div className="flex items-center justify-between gap-2">
 				<VoiceBar compact />
-				<button type="button" className="btn btn-sm btn-ghost" onClick={() => void load()} aria-label="Refresh">
-					Refresh
-				</button>
+				<div className="flex items-center gap-1">
+					{canScan && (
+						<button type="button" className="btn btn-sm btn-ghost" onClick={scan}>
+							<Icon name="qr" size={14} /> Change station
+						</button>
+					)}
+					<button type="button" className="btn btn-sm btn-ghost" onClick={() => void load()} aria-label="Refresh">
+						Refresh
+					</button>
+				</div>
 			</div>
 			{(v.transcript || v.error) && (
 				<p className="text-sm text-fg-muted">
@@ -84,15 +109,6 @@ export function HomePage({ onOpenRun }: { onOpenRun: (runId: string) => void }) 
 				</p>
 			)}
 
-			{!locked && stations.length > 1 && (
-				<div className="flex flex-wrap gap-2">
-					{stations.map((s) => (
-						<button key={s.stationId} type="button" className={`btn btn-sm ${me.stationId === s.stationId ? "btn-primary" : ""}`} onClick={() => void setStation(s.stationId).then(load)}>
-							{s.location ? `${s.location} · ${s.name}` : s.name}
-						</button>
-					))}
-				</div>
-			)}
 			{(me.name || me.locationName) && (
 				<p className="text-xs text-fg-faint">
 					{me.name}
@@ -100,8 +116,6 @@ export function HomePage({ onOpenRun }: { onOpenRun: (runId: string) => void }) 
 					{me.positionName ? ` · ${me.positionName}` : ""}
 				</p>
 			)}
-			{!stations.length && <p className="text-sm text-warn">No station configured on this hub. Set one up in the browser.</p>}
-			{stations.length > 0 && !me.stationId && <p className="text-sm text-warn">Pick a station to start a checklist.</p>}
 
 			{open && (
 				<button type="button" className="btn btn-primary btn-hero" onClick={() => onOpenRun(open.runId)}>

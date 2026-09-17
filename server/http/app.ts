@@ -16,6 +16,7 @@ import { hashDeckToken, newDeckId, newDeckToken, newJoinToken, tokenHint, verify
 import type { Credentials } from "../store/credentials.js";
 import type { Device, HubSession, HubStore, PendingEnrollment, PromptRecord, Station, StationJoin, VoiceProfile, EventMapping } from "../store/HubStore.js";
 import { EngineError, type RunEngine } from "../voice/RunEngine.js";
+import { SpeechModels, VOSK_MODELS } from "../speech/models.js";
 import type { Outbox } from "../voice/Outbox.js";
 import type { Gateway } from "../ws/Gateway.js";
 import { OidcAuth } from "./auth.js";
@@ -405,7 +406,7 @@ export function createApp(deps: AppDeps): Hono {
 		const body = (await c.req.json().catch(() => undefined)) as Station[] | undefined;
 		if (!Array.isArray(body) || !body.every((s) => isObj(s) && str(s.stationId) && str(s.name))) return fail(c, 400, "BAD_REQUEST", "array of stations expected");
 		await store.update((d) => {
-			d.stations = body.map((s) => ({ stationId: s.stationId, name: s.name, location: str(s.location), defaultProfile: s.defaultProfile ?? null, language: s.language || "en", audioPolicy: s.audioPolicy === "open" ? "open" : "ptt", autoStartAllowed: !!s.autoStartAllowed, verbosity: s.verbosity ?? "full", voiceActions: s.voiceActions !== false }));
+			d.stations = body.map((s) => ({ stationId: s.stationId, name: s.name, location: str(s.location), defaultProfile: s.defaultProfile ?? null, language: s.language || "en", audioPolicy: s.audioPolicy === "open" ? "open" : "ptt", autoStartAllowed: !!s.autoStartAllowed, verbosity: s.verbosity ?? "full", voiceActions: s.voiceActions !== false, holdToAnswer: s.holdToAnswer === true }));
 			for (const id of Object.keys(d.stationJoins)) if (!d.stations.some((s) => s.stationId === id)) delete d.stationJoins[id];
 		});
 		return c.json(stationViews());
@@ -553,6 +554,16 @@ export function createApp(deps: AppDeps): Hono {
 		});
 		return c.json(store.get().mappings);
 	});
+	const models = new SpeechModels(env.dataDir, log);
+	// admin: fetch a model onto the hub ahead of time, so the first phone does not wait for it
+	api.post("/models/vosk/:lang", async (c) => {
+		const denied = requireAdmin(c);
+		if (denied) return denied;
+		const lang = c.req.param("lang");
+		if (!VOSK_MODELS[lang]) return fail(c, 404, "MODEL_UNKNOWN", "no such speech model");
+		void models.ensure(lang).catch((err) => log.warn(`speech model ${lang}: ${err instanceof Error ? err.message : String(err)}`));
+		return c.json(await models.list());
+	});
 	api.put("/settings", async (c) => {
 		const denied = requireAdmin(c);
 		if (denied) return denied;
@@ -561,6 +572,11 @@ export function createApp(deps: AppDeps): Hono {
 			if (typeof body.readNotices === "boolean") d.settings.readNotices = body.readNotices;
 			if (body.tzMode === "utc" || body.tzMode === "local") d.settings.tzMode = body.tzMode;
 			if (body.confirmation === "required" || body.confirmation === "optional") d.settings.confirmation = body.confirmation;
+			if (isObj(body.templateLanguages)) {
+				const next: Record<string, string> = {};
+				for (const [id, lang] of Object.entries(body.templateLanguages)) if (typeof lang === "string" && /^(en|sv|no|fr|de)$/.test(lang)) next[id] = lang;
+				d.settings.templateLanguages = next;
+			}
 			if (Array.isArray(body.startable)) d.settings.startable = [...new Set(body.startable.filter((x): x is string => typeof x === "string" && !!x.trim()))];
 		});
 		return c.json(store.get().settings);
@@ -822,6 +838,20 @@ export function createApp(deps: AppDeps): Hono {
 
 	// ============================================================ ops
 	app.get("/healthz", (c) => c.text("ok"));
+
+	// ----- speech models for the phones (public data, no sign-in: the Android agent downloads them outside the WebView)
+	app.get("/models/vosk", async (c) => c.json(await models.list()));
+	app.get("/models/vosk/:file", async (c) => {
+		const m = /^([a-z]{2})\.zip$/.exec(c.req.param("file"));
+		if (!m || !VOSK_MODELS[m[1]]) return fail(c, 404, "MODEL_UNKNOWN", "no such speech model");
+		try {
+			const { stream, bytes } = await models.open(m[1]);
+			return new Response(stream, { headers: { "content-type": "application/zip", "content-length": String(bytes), "cache-control": "public, max-age=86400" } });
+		} catch (err) {
+			log.warn(`speech model ${m[1]} unavailable: ${err instanceof Error ? err.message : String(err)}`);
+			return fail(c, 502, "MODEL_UNAVAILABLE", `the hub has no copy of this model and could not fetch it (${err instanceof Error ? err.message : String(err)})`);
+		}
+	});
 	app.get("/readyz", (c) => c.text(env.maranics ? "ready" : "degraded: Maranics not configured", env.maranics ? 200 : 503));
 	app.get("/metrics", (c) => {
 		const d = store.get();

@@ -11,6 +11,9 @@ import type { HubEvent } from "../../server/protocol.js";
 import { AudioEndpoint, type EndpointState } from "./audio.js";
 import { useApp } from "./context.js";
 import { navigate } from "./router.js";
+import { isMobileClient } from "./platform.js";
+
+const mobile = isMobileClient();
 
 export interface VoiceApi {
 	state: EndpointState;
@@ -111,7 +114,8 @@ export function VoiceProvider({ children }: { children: ReactNode }) {
 			const open = station?.audioPolicy === "open";
 			setError(undefined);
 			const endpoint = new AudioEndpoint(
-				{ stationId: sid, endpointId: endpointId(), language: langRef.current || station?.language || "en", answerLanguage: answerLangRef.current, holdToAnswer: holdRef.current, sttOnEndpoint: boot.speech.stt === "endpoint", pushToTalk: !open, handsFree: handsFree || open },
+				// phones / tablets have no settings of their own: language and hold-to-answer come from the station (and the run language from the template)
+				{ stationId: sid, endpointId: endpointId(), language: (mobile ? "" : langRef.current) || station?.language || "en", answerLanguage: mobile ? "" : answerLangRef.current, holdToAnswer: mobile ? !!station?.holdToAnswer : holdRef.current, sttOnEndpoint: boot.speech.stt === "endpoint", pushToTalk: !open, handsFree: handsFree || open },
 				{
 					onState: (s, t) => {
 						setState(s);
@@ -305,20 +309,20 @@ export function VoiceBar({ compact }: { compact?: boolean }) {
 							Take over
 						</button>
 					)}
-					<label className="flex items-center gap-1.5 text-xs text-fg-muted">
+					{!mobile && <label className="flex items-center gap-1.5 text-xs text-fg-muted">
 						<input type="checkbox" checked={v.handsFree} onChange={(e) => v.setHandsFree(e.target.checked)} disabled={!v.handsFreeSupported} />
 						Hands-free
-					</label>
-					<label className="flex items-center gap-1.5 text-xs text-fg-muted" title="Noisy bridge: the mic opens only while you hold the button">
+					</label>}
+					{!mobile && <label className="flex items-center gap-1.5 text-xs text-fg-muted" title="Noisy bridge: the mic opens only while you hold the button">
 						<input type="checkbox" checked={v.holdToAnswer} onChange={(e) => v.setHoldToAnswer(e.target.checked)} disabled={v.handsFree} />
 						Hold to answer
-					</label>
+					</label>}
 					<button type="button" className="btn btn-sm btn-ghost" onClick={v.stop}>
 						Voice off
 					</button>
 				</>
 			)}
-			<LanguageSelect compact />
+			{!mobile && <LanguageSelect compact />}
 		</div>
 	);
 }

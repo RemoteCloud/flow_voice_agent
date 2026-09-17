@@ -11,7 +11,8 @@ import { navigate, type Route } from "../router.js";
 export function Shell({ route, mobile = false, children }: { route: Route; mobile?: boolean; children: ReactNode }) {
 	const { me, boot, stations, signOut } = useApp();
 	const [theme, cycle] = useTheme();
-	const station = stations.find((s) => s.stationId === me.stationId);
+	// on a phone / tablet the station only counts once a QR poster set it
+	const station = mobile && me.stationSource !== "join" ? undefined : stations.find((s) => s.stationId === me.stationId);
 	const stationLabel = station ? (station.location ? `${station.location} · ${station.name}` : station.name) : "No station";
 	const themeIcon = theme === "dark" ? "moon" : theme === "light" ? "sun" : "auto";
 	const themeTitle = theme === "dark" ? "Dark" : theme === "light" ? "Light" : "Auto (follows the device)";

@@ -50,7 +50,30 @@ class MainActivity : AppCompatActivity() {
     private var recognizer: SpeechRecognizer? = null
     private var listening = false
     /** Grammar-restricted offline recogniser; used when the hub sends a vocabulary and a model for the language is loaded. */
-    private val vosk by lazy { VoskStt(this, voskCallbacks) }
+    private val vosk by lazy { VoskStt(this, voskCallbacks) { hubUrl } }
+    private val packsRequested = HashSet<String>()
+
+    /**
+     * Languages without a grammar model (Norwegian) use the system recogniser. On Android 13+ ask it to fetch the
+     * offline language pack when it is missing, so recognition keeps working without internet. Older versions have
+     * no API for this: the pack is installed in Settings → Google → Voice → Offline speech recognition.
+     */
+    private fun ensureSystemLanguagePack(language: String) {
+        if (Build.VERSION.SDK_INT < 33 || !packsRequested.add(language)) return
+        runCatching {
+            if (!SpeechRecognizer.isOnDeviceRecognitionAvailable(this)) return
+            val intent = Intent(RecognizerIntent.ACTION_RECOGNIZE_SPEECH).putExtra(RecognizerIntent.EXTRA_LANGUAGE, localeOf(language).toLanguageTag())
+            val r = SpeechRecognizer.createOnDeviceSpeechRecognizer(this)
+            r.checkRecognitionSupport(intent, ContextCompat.getMainExecutor(this), object : android.speech.RecognitionSupportCallback {
+                override fun onSupportResult(support: android.speech.RecognitionSupport) {
+                    val tag = localeOf(language).toLanguageTag()
+                    if (support.installedOnDeviceLanguages.none { it.equals(tag, true) }) runCatching { r.triggerModelDownload(intent) }
+                    r.destroy()
+                }
+                override fun onError(error: Int) { r.destroy() }
+            })
+        }
+    }
     private var voskListening = false
     private var pttDown = false
     private var micGranted = false
@@ -67,6 +90,14 @@ class MainActivity : AppCompatActivity() {
     private val scanQr = registerForActivityResult(ScanContract()) { result ->
         val text = result.contents?.trim()
         if (text.isNullOrEmpty()) return@registerForActivityResult
+        val station = stationLinkFromQr(text)
+        if (station != null) {
+            // station poster: {hub}/?mobile=1#/join/<token> → remember the hub, then let the PWA redeem the token.
+            // A changed query string forces a full load (a bare hash change would not re-run the join on boot).
+            prefs.edit().putString("hubUrl", station.first).apply()
+            web.loadUrl("${station.first}/?mobile=1&scan=${System.currentTimeMillis()}#/join/${station.second}")
+            return@registerForActivityResult
+        }
         val url = hubUrlFromQr(text)
         if (url == null) {
             Toast.makeText(this, getString(R.string.qr_not_hub, text.take(60)), Toast.LENGTH_LONG).show()
@@ -152,6 +183,15 @@ class MainActivity : AppCompatActivity() {
         val c = runCatching { Uri.parse(candidate) }.getOrNull() ?: return null
         if (c.scheme != "http" && c.scheme != "https" || c.host.isNullOrBlank()) return null
         return candidate.trimEnd('/')
+    }
+
+    /** A station poster link → (hub origin, join token); null for anything else. */
+    private fun stationLinkFromQr(text: String): Pair<String, String>? {
+        val u = runCatching { Uri.parse(text) }.getOrNull() ?: return null
+        if (u.scheme != "http" && u.scheme != "https" || u.host.isNullOrBlank()) return null
+        val token = Regex("^/?join/(fvj_[A-Za-z0-9_-]+)$").find(u.fragment ?: return null)?.groupValues?.get(1) ?: return null
+        val origin = "${u.scheme}://${u.host}${if (u.port > 0) ":${u.port}" else ""}"
+        return origin to token
     }
 
     private fun saveHubUrl(v: String) {
@@ -327,13 +367,20 @@ class MainActivity : AppCompatActivity() {
             if (listening) recognizer?.stopListening()
         }
 
+        /** Open the camera to scan a station poster (or a hub QR): the only way to change station on this device. */
+        @JavascriptInterface
+        fun scanStation() = runOnUiThread { startScan() }
+
         /** Is the grammar recogniser's model for this language loaded? (web/src/audio.ts decides per window.) */
         @JavascriptInterface
         fun hasGrammarStt(language: String): Boolean = vosk.hasModel(language)
 
         /** Load or download the model for this language in the background. */
         @JavascriptInterface
-        fun prepareGrammarStt(language: String) = runOnUiThread { vosk.prepare(language) }
+        fun prepareGrammarStt(language: String) = runOnUiThread {
+            vosk.prepare(language)
+            if (!vosk.supports(language)) ensureSystemLanguagePack(language)
+        }
 
         /** Listen for the phrases in `grammarJson` (a JSON array) only; anything else is reported as silence. */
         @JavascriptInterface

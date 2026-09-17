@@ -38,7 +38,7 @@ export const DISCARD_REASONS: DiscardOption[] = [
 export interface EngineIo {
 	/** Speak `text` on the station's endpoint. Resolves when the endpoint reports it spoke (or a fallback timer fires). */
 	speak(stationId: string, promptId: string, text: string, language: string): Promise<void>;
-	listen(stationId: string, promptId: string, opts: { maxMs: number; bias?: string[]; expect?: string; grammar?: string[] }): void;
+	listen(stationId: string, promptId: string, opts: { maxMs: number; bias?: string[]; expect?: string; grammar?: string[]; language?: string }): void;
 	stopListening(stationId: string): void;
 	status(stationId: string, state: ExchangeState, text?: string): void;
 	/** Is an audio endpoint attached to the station right now? */
@@ -248,6 +248,7 @@ export class RunEngine {
 				source: "instance",
 				activeRunId: running?.runId,
 				startable: startable(f.templateId),
+				language: this.templateLang(f.templateId),
 			});
 		}
 		const templates = await this.deps.flows.listTemplates(api);
@@ -263,7 +264,7 @@ export class RunEngine {
 					needsScreen = tasks.length - voice;
 					readiness = voice === 0 && tasks.length > 0 ? "none" : needsScreen === 0 ? "full" : "partial";
 				}
-				picks.push({ templateId: t.id, templateName: t.name, refId: t.refId, state: "not_started", readiness, needsScreen, source: "template", startable: startable(t.id) });
+				picks.push({ templateId: t.id, templateName: t.name, refId: t.refId, state: "not_started", readiness, needsScreen, source: "template", startable: startable(t.id), language: this.templateLang(t.id) });
 			}
 		}
 		return picks;
@@ -343,7 +344,7 @@ export class RunEngine {
 			startedAt: iso(now),
 			updatedAt: iso(now),
 			users: session ? [{ sub: session.sub, name: userName, sessionId: session.id }] : [],
-			language: this.deps.io.endpointLanguage(station.stationId) ?? profile?.language ?? station.language ?? this.deps.policy.defaultLanguage,
+			language: this.templateLang(flow.templateId) ?? this.deps.io.endpointLanguage(station.stationId) ?? profile?.language ?? station.language ?? this.deps.policy.defaultLanguage,
 			verbosity: station.verbosity ?? "full",
 			attempts: 0,
 			skipped: [],
@@ -391,13 +392,13 @@ export class RunEngine {
 			startedAt: iso(now),
 			updatedAt: iso(now),
 			users: [],
-			language: p.language ?? this.stationLang(station.stationId),
+			language: p.language ?? this.templateLang(p.templateId) ?? this.stationLang(station.stationId),
 			verbosity: station.verbosity ?? "full",
 			attempts: 0,
 			skipped: [],
 			trigger: p.trigger,
 			callbackUrl: p.callbackUrl,
-			pendingReason: tr(p.language ?? this.stationLang(station.stationId), "ready", { name: templateName }),
+			pendingReason: tr(p.language ?? this.templateLang(p.templateId) ?? this.stationLang(station.stationId), "ready", { name: templateName }),
 		};
 		await this.save(run);
 		this.emit("run.pending", run, { text: run.pendingReason });
@@ -588,6 +589,11 @@ export class RunEngine {
 		await this.deps.io.speak(stationId, newId("p"), rawText.charAt(0).toUpperCase() + rawText.slice(1), lang);
 	}
 
+	/** Admin → Start buttons: the language a template is written (and therefore spoken and answered) in. */
+	private templateLang(templateId: string | undefined): string | undefined {
+		return templateId ? this.deps.store.get().settings.templateLanguages?.[templateId] : undefined;
+	}
+
 	/** The endpoint's chosen language wins over the station's configured one. */
 	private stationLang(stationId: string): string {
 		return this.deps.io.endpointLanguage(stationId) ?? this.deps.store.get().stations.find((x) => x.stationId === stationId)?.language ?? this.deps.policy.defaultLanguage;
@@ -678,7 +684,7 @@ export class RunEngine {
 		r.exchange = r.pendingReadback ? "confirming" : "listening";
 		await this.save(r);
 		this.deps.io.status(r.stationId, r.exchange, item.name);
-		this.deps.io.listen(r.stationId, `${r.runId}:${item.taskId}`, { maxMs, bias: this.biasFor(r, item), expect: r.pendingReadback ? "Confirm" : item.type, grammar: grammarFor(r.language, item, this.phrasesFor(r, item), !!r.pendingReadback) });
+		this.deps.io.listen(r.stationId, `${r.runId}:${item.taskId}`, { maxMs, bias: this.biasFor(r, item), expect: r.pendingReadback ? "Confirm" : item.type, grammar: grammarFor(r.language, item, this.phrasesFor(r, item), !!r.pendingReadback), language: r.language });
 		this.clearTimer(r.runId, "listen");
 		this.clearTimer(r.runId, "confirm");
 		const t = setTimeout(() => void this.onListenTimeout(r.runId), maxMs + 1500);
@@ -1323,7 +1329,7 @@ export class RunEngine {
 		r.exchange = "confirming";
 		await this.save(r);
 		this.deps.io.status(r.stationId, "confirming", r.pendingAction?.kind);
-		this.deps.io.listen(r.stationId, `${r.runId}:action`, { maxMs: this.deps.policy.confirmMs, expect: "Confirm" });
+		this.deps.io.listen(r.stationId, `${r.runId}:action`, { maxMs: this.deps.policy.confirmMs, expect: "Confirm", language: r.language });
 		this.clearTimer(r.runId, "listen");
 		const t = setTimeout(() => void this.onListenTimeout(r.runId), this.deps.policy.confirmMs + 1500);
 		t.unref?.();
