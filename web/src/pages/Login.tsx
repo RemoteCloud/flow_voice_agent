@@ -79,7 +79,7 @@ export function LoginPage(p: { provider?: AuthProviderView; hubVersion?: string;
 				<div className="card">
 					<div className="card-body space-y-3">
 						{oidc ? (
-							<a className="btn btn-primary btn-lg w-full" href={AUTH_LOGIN_URL}>
+							<a className="btn btn-primary btn-lg w-full" href={`${AUTH_LOGIN_URL}?returnTo=${encodeURIComponent(location.pathname)}`}>
 								Sign in with Maranics
 							</a>
 						) : (

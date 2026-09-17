@@ -429,7 +429,7 @@ export function createApp(deps: AppDeps): Hono {
 			d.audit.push({ at: createdAt, kind: "station.join.rotated", stationId: id, sub });
 		});
 		log.info(`station ${id} QR join token rotated by ${sub} (…${join.tokenHint})`);
-		const path = `/?mobile=1#/join/${token}`;
+		const path = `/client#/join/${token}`;
 		const base = env.publicUrl ? env.publicUrl.replace(/\/$/, "") : new URL(c.req.url).origin;
 		return c.json<JoinTokenResponse>({ stationId: id, token, tokenHint: join.tokenHint, createdAt, path, url: base + path }, 201);
 	});

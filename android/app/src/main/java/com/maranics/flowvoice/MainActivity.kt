@@ -92,10 +92,10 @@ class MainActivity : AppCompatActivity() {
         if (text.isNullOrEmpty()) return@registerForActivityResult
         val station = stationLinkFromQr(text)
         if (station != null) {
-            // station poster: {hub}/?mobile=1#/join/<token> → remember the hub, then let the PWA redeem the token.
+            // station poster: {hub}/client#/join/<token> (older posters: /?mobile=1#/join/<token>) → remember the hub, then let the PWA redeem the token.
             // A changed query string forces a full load (a bare hash change would not re-run the join on boot).
             prefs.edit().putString("hubUrl", station.first).apply()
-            web.loadUrl("${station.first}/?mobile=1&scan=${System.currentTimeMillis()}#/join/${station.second}")
+            web.loadUrl("${station.first}/client?scan=${System.currentTimeMillis()}#/join/${station.second}")
             return@registerForActivityResult
         }
         val url = hubUrlFromQr(text)

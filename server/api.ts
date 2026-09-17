@@ -70,7 +70,7 @@ export interface JoinTokenResponse {
 	token: string;
 	tokenHint: string;
 	createdAt: string;
-	/** `/?mobile=1#/join/<token>` — the client may prepend a different base URL before printing. */
+	/** `/client#/join/<token>` — the client may prepend a different base URL before printing. */
 	path: string;
 	/** `path` on HUB_PUBLIC_URL, or on the request origin when unset. */
 	url: string;

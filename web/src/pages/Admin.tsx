@@ -64,6 +64,19 @@ function StatusTab({ s }: { s: StatusResponse }) {
 					<h2 className="card-title">Hub</h2>
 				</div>
 				<dl className="card-body kv">
+					<dt>Client link</dt>
+					<dd>
+						<a className="mono underline" href="/client">
+							{boot.hubUrl.replace(/\/$/, "")}/client
+						</a>{" "}
+						<span className="text-fg-faint">— checklists and voice only (PC, Mac, Raspberry Pi, tablet)</span>
+					</dd>
+					<dt>Admin link</dt>
+					<dd>
+						<a className="mono underline" href="/admin">
+							{boot.hubUrl.replace(/\/$/, "")}/admin
+						</a>
+					</dd>
 					<dt>Version</dt>
 					<dd>{versionLine(s.hubVersion)}</dd>
 					<dt>Uptime</dt>

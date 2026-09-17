@@ -7,6 +7,9 @@
  */
 export function isMobileClient(): boolean {
 	if (typeof window === "undefined") return false;
+	// direct links: /client is always the run-and-voice client, /admin always the desktop admin (neither is remembered)
+	if (/^\/client(\/|$)/.test(location.pathname)) return true;
+	if (/^\/admin(\/|$)/.test(location.pathname)) return false;
 	try {
 		const q = new URLSearchParams(location.search).get("mobile");
 		if (q === "1" || q === "0") localStorage.setItem("fv.mobile", q);

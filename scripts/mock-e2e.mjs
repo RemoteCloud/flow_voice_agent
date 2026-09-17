@@ -94,7 +94,7 @@ try {
 	const minted = await api("POST", "stations/bridge-01/join-token");
 	assert.equal(minted.status, 201, JSON.stringify(minted.body));
 	assert.match(minted.body.token, /^fvj_[A-Za-z0-9_-]{40,}$/);
-	assert.ok(minted.body.url.endsWith(`/?mobile=1#/join/${minted.body.token}`), minted.body.url);
+	assert.ok(minted.body.url.endsWith(`/client#/join/${minted.body.token}`), minted.body.url);
 	assert.equal(minted.body.tokenHint, minted.body.token.slice(-4));
 	const stationsAfterMint = await api("GET", "stations");
 	const bridgeView = stationsAfterMint.body.find((s) => s.stationId === "bridge-01");

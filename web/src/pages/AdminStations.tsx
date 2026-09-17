@@ -328,7 +328,7 @@ function JoinPanel({ station, minted, base, setBase, canEdit, onMint, onRevoke }
 					</button>
 				)}
 			</div>
-			<p className="help mt-3">Any number of phones can scan one poster: each is locked to this station and then signs in as its own user. Rotating or revoking does not sign out phones already joined. Opening the link on a desktop switches it to the phone layout until ?mobile=0.</p>
+			<p className="help mt-3">Any number of phones can scan one poster: each is locked to this station and then signs in as its own user. Rotating or revoking does not sign out phones already joined. The link opens the client (/client) on any device: phone, tablet, PC or Raspberry Pi.</p>
 		</div>
 	);
 }

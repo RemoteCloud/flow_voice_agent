@@ -77,7 +77,7 @@ export function HomePage({ onOpenRun, mobile = true }: { onOpenRun: (runId: stri
 			<div className="flex min-h-[70vh] flex-col items-center justify-center gap-5 text-center">
 				<Icon name="qr" size={72} strokeWidth={1.4} />
 				<h1 className="text-2xl font-semibold tracking-wide uppercase">Scan the station QR code</h1>
-				<p className="max-w-sm text-sm text-fg-muted">This device works on one station, set by the QR poster at that station. {canScan ? "" : "Open the camera and scan the poster."}</p>
+				<p className="max-w-sm text-sm text-fg-muted">This device works on one station, set by the QR poster at that station. {canScan ? "" : "Scan the poster with the camera, or open the station link (Admin → Stations → Copy link) on this computer."}</p>
 				{canScan && (
 					<button type="button" className="start-btn max-w-sm justify-center text-lg font-semibold tracking-wide uppercase" onClick={scan}>
 						Scan QR code
