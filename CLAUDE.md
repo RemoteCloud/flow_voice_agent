@@ -25,6 +25,15 @@ The architecture spec the code follows is `docs/SPEC.md` (Flow Voice v0.2). Sect
 - `http/app.ts` — `/api/*` (cookie session), `/v1/*` (service token or `X-Flow-Signature` HMAC, `Idempotency-Key` replay before validation), ops endpoints, static PWA with SPA fallback. `http/auth.ts` is the OIDC broker (ported from FlowDeck, per-session credentials, plus `DEV_USER` sign-in). `http/session.ts`, `rateLimit.ts`, `static.ts`, `oidc/*`, `store/crypto.ts`, `core/*` are copied from the FlowDeck hub.
 - `speech/stt.ts` — `EndpointStt` (device transcribes, default) / `HttpStt` (OpenAI-compatible `/v1/audio/transcriptions`, WAV upload, bias words as `prompt`).
 
+## Light multi-tenancy (`server/tenants.ts`, `main.ts`)
+
+For trying other Maranics tenants, not a full tenant model. `main.ts` `buildCore(env)` builds one isolated hub (store, credentials, auth, outbox, engine, gateway, app); the main hub is the env-configured core, and every entry of `HubData.tenants` (main hub only: name, Maranics tenant id, optional host, pasted access token sealed with the hub key) is a second core with `dataDir = <data>/tenants/<id>`, no OIDC, and the dev sign-in path (`devUser` + `devToken` = the pasted token, `env.tokenTenant` set). So stations, register, words, runs, sessions and audit are separate per tenant, and every Flow write is attributed to the token's owner.
+
+- The dispatcher in `main.ts` picks the core per request and per WebSocket upgrade from the signed `fv_tenant` cookie (`<id>.<admin|client>.<hmac>`); an invalid / unknown cookie means the main hub. `/api/tenants*` is always answered by the main hub's `Tenants.app()`.
+- Getting in: a main-hub admin (`POST /api/tenants/:id/enter` → role `admin`), or a station link of that tenant (`POST /api/auth/join` is looked up in every core → role `client`, never admin). The role reaches the core as `x-fv-tenant-role`, which the dispatcher always strips from inbound requests. `provider.auto` makes the login page sign in by itself.
+- A token core's session cookie is renamed `fd_session_<id>` on the way out and back, so entering a tenant never signs the admin out of the main hub.
+- Admin → Tenants: add (name, tenant id, token, optional host within `HUB_ALLOWED_HOSTS`), Open, New token, Remove (data folder stays). The token is never returned; `tokenExpiresAt` comes from an unverified peek at the JWT. `/v1/*` service calls always go to the main hub. `npm run mock` covers all of it (step "tenants").
+
 ## Conventions
 
 - **Never log tokens.** `core/log.ts` redacts registered secrets and `Bearer …`; register new secrets with `registerSecret()`.

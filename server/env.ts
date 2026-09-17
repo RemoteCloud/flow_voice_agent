@@ -69,6 +69,8 @@ export interface HubEnv {
 	maranics?: MaranicsEnv;
 	oidc?: OidcEnv;
 	oidcReason?: string;
+	/** Set on the core of a token tenant (`server/tenants.ts`); the main hub leaves it unset. */
+	tokenTenant?: { id: string; name: string };
 	speech: SpeechEnv;
 	policy: PolicyEnv;
 	/** Service bearer tokens accepted on POST /v1/prompts and /v1/runs/trigger (comma separated). */

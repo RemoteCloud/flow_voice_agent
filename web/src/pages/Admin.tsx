@@ -1,4 +1,5 @@
 import { ChecklistsTab } from "./AdminChecklists.js";
+import { TenantsTab } from "./AdminTenants.js";
 import { useCallback, useEffect, useState } from "react";
 import type { AuditEntry, ChecklistPick, LibraryView, Station, StatusResponse, VoiceProfile, EventMapping } from "../../../server/api.js";
 import { api, toApiError } from "../api.js";
@@ -8,7 +9,7 @@ import { StationsTab } from "./AdminStations.js";
 import { HubQr } from "./Login.js";
 import { versionLine } from "../build.js";
 
-type Tab = "status" | "checklists" | "stations" | "devices" | "profiles" | "outbox" | "audit";
+type Tab = "status" | "checklists" | "tenants" | "stations" | "devices" | "profiles" | "outbox" | "audit";
 
 export function AdminPage() {
 	const { me } = useApp();
@@ -38,6 +39,7 @@ export function AdminPage() {
 		["profiles", "Profiles & mappings"],
 		["outbox", `Outbox${status?.outbox.queued ? ` (${status.outbox.queued})` : ""}`],
 		["audit", "Audit"],
+		["tenants", "Tenants"],
 	];
 
 	return (
@@ -51,7 +53,7 @@ export function AdminPage() {
 				{!me.isAdmin && <span className="ml-auto text-xs text-fg-faint">read-only (not an admin)</span>}
 			</div>
 			{err && <p className="text-sm text-danger">{err}</p>}
-			{!status ? <p className="text-sm text-fg-muted">Loading…</p> : tab === "status" ? <StatusTab s={status} go={setTab} /> : tab === "checklists" ? <ChecklistsTab canEdit={me.isAdmin} /> : tab === "stations" ? <StationsTab s={status} reload={load} canEdit={me.isAdmin} /> : tab === "devices" ? <DevicesTab s={status} reload={load} canEdit={me.isAdmin} /> : tab === "profiles" ? <ProfilesTab canEdit={me.isAdmin} /> : tab === "outbox" ? <OutboxTab s={status} reload={load} /> : <AuditTab />}
+			{!status ? <p className="text-sm text-fg-muted">Loading…</p> : tab === "status" ? <StatusTab s={status} go={setTab} /> : tab === "checklists" ? <ChecklistsTab canEdit={me.isAdmin} /> : tab === "stations" ? <StationsTab s={status} reload={load} canEdit={me.isAdmin} /> : tab === "devices" ? <DevicesTab s={status} reload={load} canEdit={me.isAdmin} /> : tab === "profiles" ? <ProfilesTab canEdit={me.isAdmin} /> : tab === "tenants" ? <TenantsTab /> : tab === "outbox" ? <OutboxTab s={status} reload={load} /> : <AuditTab />}
 		</div>
 	);
 }

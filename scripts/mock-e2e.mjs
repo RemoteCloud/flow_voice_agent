@@ -541,6 +541,55 @@ try {
 	await api("PUT", "settings", { itemAnswers: {}, templateLanguages: {} });
 	assert.ok((await api("GET", "checklists")).body.every((p) => p.access === "start"), "empty register → everything again");
 
+	// light multi-tenancy: a main-hub admin pastes a token for another tenant; it runs as its own isolated hub
+	step = "tenants";
+	const adminJar = new Map();
+	assert.equal((await api("POST", "auth/dev", undefined, adminJar)).body.isAdmin, true);
+	const t0 = (await api("GET", "tenants", undefined, adminJar)).body;
+	assert.equal(t0.canManage, true);
+	assert.equal(t0.current, undefined);
+	const stranger = new Map();
+	assert.equal((await api("POST", "tenants", { name: "X", tenant: "demo", token: "t0k3n" }, stranger)).status, 403, "only main-hub admins add tenants");
+	const added = await api("POST", "tenants", { name: "Other Co", tenant: "demo", token: "Bearer t0k3n" }, adminJar);
+	assert.equal(added.status, 201, JSON.stringify(added.body));
+	assert.equal(added.body.id, "other-co");
+	assert.equal(added.body.tokenHint, "t0k3n".slice(-6));
+	assert.ok(!JSON.stringify((await api("GET", "tenants", undefined, adminJar)).body).includes("tokenEnc"), "the token never comes back");
+	assert.equal((await api("POST", "tenants/other-co/enter", undefined, stranger)).status, 403, "nobody walks into a tenant");
+	assert.equal((await api("POST", "tenants/other-co/enter", undefined, adminJar)).status, 200);
+	assert.equal((await api("GET", "auth/me", undefined, adminJar)).status, 401, "a tenant has its own sessions");
+	const tMe = (await api("POST", "auth/dev", undefined, adminJar)).body;
+	assert.equal(tMe.isAdmin, true, "entered as admin");
+	assert.equal((await api("GET", "tenants", undefined, adminJar)).body.current?.id, "other-co");
+	assert.equal((await api("GET", "tenants", undefined, adminJar)).body.canManage, true, "the main-hub session survives next to the tenant's");
+	// its data is its own
+	await api("PUT", "settings", { itemAnswers: {} }, adminJar);
+	assert.equal((await api("POST", "library", { templateId: "tpl-engine" }, adminJar)).body.templates.length, 1);
+	assert.equal((await api("GET", "library")).body.templates.length, 0, "the main hub's register is untouched");
+	assert.ok((await api("GET", "checklists", undefined, adminJar)).body.some((p) => p.templateId === "tpl-engine" && p.access === "start"), "the pasted token reads Maranics");
+	// a station link of the tenant carries a phone into it, as a non-admin
+	const tStations = (await api("GET", "stations", undefined, adminJar)).body;
+	const tToken = tStations[0].join.path.split("/join/")[1];
+	const tPhone = new Map();
+	const tJoin = await api("POST", "auth/join", { token: tToken }, tPhone);
+	assert.equal(tJoin.status, 200, JSON.stringify(tJoin.body));
+	assert.ok(tPhone.get("fv_tenant")?.startsWith("other-co.client."), "the link moved the phone into its tenant");
+	const tPhoneMe = (await api("POST", "auth/dev", undefined, tPhone)).body;
+	assert.equal(tPhoneMe.isAdmin, false, "a station link never makes an admin");
+	assert.equal(tPhoneMe.stationId, tStations[0].stationId);
+	assert.equal((await api("PUT", "settings", { readNotices: true }, tPhone)).status, 403);
+	// a forged cookie is ignored: the request lands in the main hub
+	const forged = new Map([["fv_tenant", "other-co.admin.AAAA"]]);
+	assert.equal((await api("GET", "tenants", undefined, forged)).body.current, undefined);
+	// a forged role header is stripped
+	const sneaky = await fetch(`${base}/api/auth/dev`, { method: "POST", headers: { cookie: `fv_tenant=${tPhone.get("fv_tenant")}`, "x-fv-tenant-role": "admin" } });
+	assert.equal((await sneaky.json()).isAdmin, false, "the role comes from the signed cookie only");
+	// back to the main hub without signing in again; removing the tenant closes it
+	assert.equal((await api("POST", "tenants/leave", undefined, adminJar)).status, 200);
+	assert.equal((await api("GET", "auth/me", undefined, adminJar)).status, 200);
+	assert.equal((await api("DELETE", "tenants/other-co", undefined, adminJar)).status, 200);
+	assert.equal((await api("GET", "auth/me", undefined, tPhone)).status, 401, "a removed tenant's cookie falls back to the main hub");
+
 	step = "speech models";
 	const modelList = await (await fetch(`${base}/models/vosk`)).json();
 	assert.deepEqual(modelList.map((m) => m.language).sort(), ["de", "en", "fr", "sv"]);

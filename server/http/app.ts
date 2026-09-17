@@ -22,7 +22,7 @@ import type { Outbox } from "../voice/Outbox.js";
 import type { Gateway } from "../ws/Gateway.js";
 import { OidcAuth } from "./auth.js";
 import { JOIN_LIMITS, LOGIN_LIMITS, RateLimiter } from "./rateLimit.js";
-import { clearJoinCookie, clearLoginCookie, clearSession, JOIN_MAX_AGE_SEC, LOGIN_COOKIE, newSession, readJoinCookie, readLoginCookie, readSession, requireSession, sidHash, validSession, writeJoinCookie, writeLoginCookie, writeSession, type SessionEnv } from "./session.js";
+import { ROLE_HEADER, clearJoinCookie, clearLoginCookie, clearSession, JOIN_MAX_AGE_SEC, LOGIN_COOKIE, newSession, readJoinCookie, readLoginCookie, readSession, requireSession, sidHash, validSession, writeJoinCookie, writeLoginCookie, writeSession, type SessionEnv } from "./session.js";
 import { resolveStatic } from "./static.js";
 
 export interface AppDeps {
@@ -239,7 +239,9 @@ export function createApp(deps: AppDeps): Hono {
 
 	api.post("/auth/dev", async (c) => {
 		if (!env.devUser) return fail(c, 404, "NOT_FOUND", "dev sign-in is not enabled");
-		const out = await auth.devLogin(clientIp(c, env.trustProxy));
+		// inside a token tenant the dispatcher says how the caller got in (main-hub admin, or a station link)
+		const role = env.tokenTenant ? (c.req.header(ROLE_HEADER) === "admin" ? "admin" : "client") : undefined;
+		const out = await auth.devLogin(clientIp(c, env.trustProxy), role);
 		if (!out.ok) return fail(c, 500, out.code, out.detail);
 		await writeSession(c, newSession({ sid: out.sid, sub: out.user.sub, tenant: env.maranics?.tenant ?? "", epoch: store.get().sessionEpoch, nowMs: deps.now() }), env.sessionSecret, secure);
 		await applyJoinCookie(c, out.session);

@@ -1,4 +1,4 @@
-import { useState } from "react";
+import { useEffect, useRef, useState } from "react";
 import type { AuthProviderView, MeResponse } from "../../../server/api.js";
 import { api, AUTH_LOGIN_URL, toApiError, type ApiClientError } from "../api.js";
 import { versionLine } from "../build.js";
@@ -22,6 +22,7 @@ export function LoginPage(p: { provider?: AuthProviderView; hubVersion?: string;
 	const [showQr, setShowQr] = useState(false);
 	const oidc = p.provider?.kind === "oidc" && p.provider.configured;
 	const dev = !!p.provider?.devUserName;
+	const auto = !!p.provider?.auto;
 
 	const devLogin = async () => {
 		setBusy(true);
@@ -34,6 +35,15 @@ export function LoginPage(p: { provider?: AuthProviderView; hubVersion?: string;
 			setBusy(false);
 		}
 	};
+
+	// a token tenant has nothing to type: sign in straight away (once)
+	const tried = useRef(false);
+	useEffect(() => {
+		if (!auto || tried.current) return;
+		tried.current = true;
+		void devLogin();
+		// eslint-disable-next-line react-hooks/exhaustive-deps
+	}, [auto]);
 
 	return (
 		<main className="flex min-h-screen items-center justify-center px-4 py-10">

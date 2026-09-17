@@ -23,6 +23,9 @@ export interface AuthProviderView {
 	issuerHost?: string;
 	reason?: string;
 	devUserName?: string;
+	/** Token tenant: the client signs in by itself, there is nothing to type. */
+	auto?: boolean;
+	tenantName?: string;
 }
 
 export const DEFAULT_ACCESS_TTL_SEC = 3600;
@@ -51,6 +54,7 @@ export interface OidcAuthDeps {
 	rand?: RandomBytes;
 	unconfiguredReason?: string;
 	devUser?: { sub: string; name: string; email: string };
+	tokenTenant?: { id: string; name: string };
 	/** Position ids allowed to sign in; empty = everyone in the tenant. */
 	allowedPositionIds?: string[];
 }
@@ -87,7 +91,7 @@ export class OidcAuth {
 	}
 
 	providerView(): AuthProviderView {
-		if (!this.configured && this.deps.devUser) return { kind: "dev", configured: true, tenant: this.deps.tenant, devUserName: this.deps.devUser.name };
+		if (!this.configured && this.deps.devUser) return { kind: "dev", configured: true, tenant: this.deps.tenant, devUserName: this.deps.devUser.name, auto: !!this.deps.tokenTenant, tenantName: this.deps.tokenTenant?.name };
 		const v: AuthProviderView = { kind: "oidc", configured: this.configured, tenant: this.deps.tenant };
 		if (this.deps.oidc) {
 			try {
@@ -190,10 +194,19 @@ export class OidcAuth {
 	}
 
 	/** Dev sign-in: no provider, no tokens (the Flows client uses DEV_MARANICS_TOKEN or the fake Maranics static token). */
-	async devLogin(ip: string): Promise<LoginOutcome> {
+	/** `role` (token tenants): "client" = came in through a station link → a separate, non-admin user. */
+	async devLogin(ip: string, role?: "admin" | "client"): Promise<LoginOutcome> {
 		const u = this.deps.devUser;
 		if (!u) return { ok: false, code: "not_configured", detail: "DEV_USER is not set" };
-		const out = await this.provision({ sub: u.sub, email: u.email, name: u.name }, undefined, ip);
+		const sub = role === "client" ? `${u.sub}:client` : u.sub;
+		const out = await this.provision({ sub, email: u.email, name: u.name }, undefined, ip);
+		if (role) {
+			await this.deps.store.update((d) => {
+				const row = d.users.find((x) => x.sub === sub);
+				if (row) row.isAdmin = role === "admin";
+			});
+			out.user.isAdmin = role === "admin";
+		}
 		this.deps.log.info(`dev login from ${ip}: ${u.name}`);
 		return out;
 	}

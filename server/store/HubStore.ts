@@ -70,6 +70,19 @@ export interface Station {
 	templates?: Record<string, StationTemplateRule>;
 }
 
+/** A token tenant: its own hub core under `<data>/tenants/<id>/`, acting with one pasted access token (sealed). */
+export interface TenantEntry {
+	id: string;
+	name: string;
+	/** Maranics tenant id sent as the `Tenant` header. */
+	tenant: string;
+	/** Gateway host when it differs from the main hub's. */
+	host?: string;
+	tokenEnc: string;
+	tokenHint: string;
+	createdAt: string;
+}
+
 export interface LibraryTemplate {
 	templateId: string;
 	name: string;
@@ -254,6 +267,8 @@ export interface HubData {
 	 * here (`settings.templateLanguages` / `settings.itemAnswers`) and stations pick from it.
 	 */
 	library?: Record<string, LibraryTemplate>;
+	/** Main hub only: other Maranics tenants to try with a pasted access token (`server/tenants.ts`). */
+	tenants?: TenantEntry[];
 	/** Portable file → modification time it had when it was last imported; a file is imported again only after it changed. */
 	portableSeen?: Record<string, number>;
 	settings: { readNotices: boolean; tzMode: "utc" | "local"; confirmation: "required" | "optional"; /** Template ids that get a start button on the phone/tablet home screen and in the voice menu; empty or absent → every template. */ startable?: string[]; /** Template id → language the checklist is written in (en/sv/no/fr/de); wins over the station language. */ templateLanguages?: Record<string, string>; /** Template id → item key (`answerKey`) → words that count as that item's answer ("up", "closed"). */ itemAnswers?: Record<string, Record<string, string[]>> };

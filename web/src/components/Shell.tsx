@@ -1,4 +1,6 @@
-import type { ReactNode } from "react";
+import { useEffect, useState, type ReactNode } from "react";
+import type { TenantsResponse } from "../../../server/tenants.js";
+import { api } from "../api.js";
 import { Icon } from "../icons.js";
 import { useDayNight, useTheme } from "../theme.js";
 import { useApp } from "../context.js";
@@ -12,6 +14,15 @@ export function Shell({ route, mobile = false, children }: { route: Route; mobil
 	const { me, boot, stations, signOut } = useApp();
 	const [theme, cycle] = useTheme();
 	const [night, toggleNight] = useDayNight();
+	// which tenant this browser is in (token tenants only; the main hub shows nothing extra)
+	const [tenantName, setTenantName] = useState<string | undefined>();
+	useEffect(() => {
+		api.get<TenantsResponse>("tenants").then((t) => setTenantName(t.current?.name), () => undefined);
+	}, []);
+	const leaveTenant = async () => {
+		await api.post("tenants/leave");
+		location.assign("/admin");
+	};
 	// on a phone / tablet the station only counts once a QR poster set it
 	const station = mobile && me.stationSource !== "join" ? undefined : stations.find((s) => s.stationId === me.stationId);
 	const stationLabel = station ? (station.location ? `${station.location} · ${station.name}` : station.name) : "No station";
@@ -32,6 +43,7 @@ export function Shell({ route, mobile = false, children }: { route: Route; mobil
 							<img src="/icon.svg" width={24} height={24} alt="" />
 						</button>
 						<span className="pill min-w-0 truncate border-line-strong text-fg-muted" title="Station">
+							{tenantName ? `${tenantName} · ` : ""}
 							{stationLabel}
 						</span>
 						<button type="button" className="btn ml-auto h-11 shrink-0 gap-2 px-4 text-sm font-semibold tracking-wide uppercase" onClick={toggleNight} aria-pressed={night} aria-label={night ? "Night mode on. Switch to day" : "Day mode on. Switch to night"}>
@@ -57,6 +69,11 @@ export function Shell({ route, mobile = false, children }: { route: Route; mobil
 						<span className="font-semibold tracking-tight">Flow Voice</span>
 					</button>
 					<span className="hidden text-xs text-fg-faint sm:inline">{boot.vesselId}</span>
+					{tenantName && (
+						<button type="button" className="pill shrink-0 border-warn/60 whitespace-nowrap text-warn" onClick={() => void leaveTenant()} title="Back to the main hub">
+							Tenant: {tenantName} · leave
+						</button>
+					)}
 					<nav className="ml-2 flex items-center gap-1">
 						{tab({ page: "picker" }, "Checklists", route.page === "picker" || route.page === "run")}
 						{tab({ page: "admin" }, "Admin", route.page === "admin")}

@@ -17,6 +17,8 @@ export const LOGIN_COOKIE = "fd_login";
 export const LOGIN_COOKIE_PATH = "/api/auth";
 /** Station QR join: set by `POST /api/auth/join` before sign-in, consumed by the callback / dev login. */
 export const JOIN_COOKIE = "fv_join";
+/** Set by the tenant dispatcher in main.ts (inbound copies are stripped): how the caller entered a token tenant. */
+export const ROLE_HEADER = "x-fv-tenant-role";
 export const JOIN_COOKIE_PATH = LOGIN_COOKIE_PATH;
 export const JOIN_MAX_AGE_SEC = 15 * 60;
 export const SLIDING_MS = 12 * 60 * 60 * 1000;
