@@ -88,7 +88,11 @@ export function createApp(deps: AppDeps): Hono {
 		try {
 			return await fn();
 		} catch (err) {
-			if (err instanceof EngineError) return fail(c, err.status as 400, err.code, err.message);
+			if (err instanceof EngineError) {
+				// refusals are part of normal use, but they must be findable when someone says "it would not start"
+				log.warn(`${c.req.method} ${c.req.path} refused: ${err.status} ${err.code}: ${err.message}`);
+				return fail(c, err.status as 400, err.code, err.message);
+			}
 			log.error(`${c.req.method} ${c.req.path}: ${err instanceof Error ? err.stack ?? err.message : String(err)}`);
 			return fail(c, 500, "INTERNAL", err instanceof Error ? err.message : String(err));
 		}

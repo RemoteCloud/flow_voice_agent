@@ -315,7 +315,7 @@ export class RunEngine {
 		}
 
 		const other = this.activeRun(p.stationId);
-		if (other && other.state !== "pending") throw new EngineError(409, "RUN_ACTIVE", `station ${p.stationId} already has an active run (${other.templateName})`);
+		if (other && other.state !== "pending") throw new EngineError(409, "RUN_ACTIVE", `"${other.templateName}" is still open on ${station.name}. Finish or discard it first: one checklist at a time per station.`);
 
 		let instanceId = p.instanceId;
 		if (!instanceId) {

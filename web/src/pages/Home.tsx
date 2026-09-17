@@ -138,13 +138,14 @@ export function HomePage({ onOpenRun, mobile = true }: { onOpenRun: (runId: stri
 			)}
 
 			{err && <p className="text-sm text-danger">{err}</p>}
+			{open && tiles.length > 0 && <p className="text-xs text-fg-muted">One checklist at a time on this station. Finish or discard “{open.templateName}” to start another.</p>}
 			{picks === undefined ? (
 				<p className="text-sm text-fg-muted">Loading checklists…</p>
 			) : (
 				<div className="grid grid-cols-1 gap-3 sm:grid-cols-2 lg:grid-cols-3">
 					{tiles.map((p) => {
 						const key = p.instanceId ?? p.templateId;
-						const disabled = busy === key || p.readiness === "none";
+						const disabled = busy === key || p.readiness === "none" || !!open;
 						return (
 							<button key={key} type="button" className="start-btn" disabled={disabled} onClick={() => void start(p)}>
 								<span className="min-w-0 flex-1 text-left">
