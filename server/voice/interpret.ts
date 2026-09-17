@@ -607,6 +607,16 @@ export function heardAnswer(normalized: string, answers: string[] | undefined, m
 	}) ?? nearAnswer(normalized, answers, match);
 }
 
+/**
+ * A recogniser's first guess is often a near miss on ship terms ("Vet TES" for VTS). When it holds none of the item's
+ * answer words but another guess of the same utterance does, that guess is what the crew said.
+ */
+export function bestTranscript(text: string, alternatives: string[] | undefined, answers: string[] | undefined, match?: number): string {
+	if (!alternatives?.length || !answers?.length) return text;
+	const hit = (t: string) => !!heardAnswer(normalizeTranscript(t), answers, match);
+	return hit(text) ? text : alternatives.find(hit) ?? text;
+}
+
 const skeleton = (s: string) => fold(s).replace(/[aeiouy ]/g, "");
 /** "vts", "vhf", "gps": letters only, no vowel. A recogniser writes the spoken letters as words ("vet tes", "ved TS"). */
 const isAcronym = (n: string) => /^[a-z]{2,5}$/.test(n) && !/[aeiouy]/.test(n);

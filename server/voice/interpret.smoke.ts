@@ -1,5 +1,5 @@
 import assert from "node:assert/strict";
-import { controlWord, itemNumber, interpret, parseClock, parseRelative, wordsToNumber, type InterpretContext } from "./interpret.js";
+import { bestTranscript, controlWord, itemNumber, interpret, parseClock, parseRelative, wordsToNumber, type InterpretContext } from "./interpret.js";
 
 const ctx: InterpretContext = { utteredAt: new Date("2026-09-09T07:47:03Z"), tzMode: "utc", maxPastHours: 12 };
 const ok = (r: ReturnType<typeof interpret>) => {
@@ -45,6 +45,12 @@ export async function run(): Promise<void> {
 	for (const heard of ["VTS.", "Vet TES kanal 19.", "Ved TS kanal 19.", "Vet s kanalen 19."]) assert.equal(ok(interpret("Checkbox", heard, vts)).valueText, "vts", heard);
 	assert.equal(interpret("Checkbox", "vi venter litt", vts).ok, false);
 	assert.equal(interpret("Checkbox", "Så har vi jo et gen.", vts).ok, false);
+
+	// the recogniser's other guesses
+	assert.equal(bestTranscript("Hive, charro.", ["Hive sharro", "Hive kjørebro"], ["kjørebro"]), "Hive kjørebro");
+	assert.equal(bestTranscript("kjørebro hivt", ["noe annet"], ["kjørebro"]), "kjørebro hivt", "a first guess that fits stays");
+	assert.equal(bestTranscript("hopp over", ["kjørebro"], undefined), "hopp over");
+	assert.equal(bestTranscript("bla bla", ["mer bla"], ["kjørebro"]), "bla bla");
 
 	// numbers
 	assert.equal(wordsToNumber("twenty point five"), 20.5);

@@ -19,7 +19,7 @@ import { CHECKBOX_CHECKED, CHECKBOX_NOT_DONE, checkboxCheckedValue, controlWord,
 import type { Outbox } from "./Outbox.js";
 import { normLang, t as tr } from "./i18n.js";
 import { grammarFor } from "./grammar.js";
-import { ANSWER_MATCH, normalizeTranscript, wordsToNumber } from "./interpret.js";
+import { ANSWER_MATCH, bestTranscript, normalizeTranscript, wordsToNumber } from "./interpret.js";
 
 /** What the screen and the voice menu offer: `code` is the Flow reason name (the status body sends it as `reason`). */
 export interface DiscardOption {
@@ -877,7 +877,7 @@ export class RunEngine {
 	}
 
 	/** A final transcript for the station's current exchange (from the endpoint or the STT adapter). */
-	async onTranscript(stationId: string, text: string, confidence: number | undefined, session?: HubSession): Promise<void> {
+	async onTranscript(stationId: string, text: string, confidence: number | undefined, session?: HubSession, alternatives?: string[]): Promise<void> {
 		const r = this.activeRun(stationId);
 		if (!r) {
 			await this.onMenuTranscript(stationId, text, session ?? this.sessionOnStation(stationId));
@@ -910,6 +910,14 @@ export class RunEngine {
 		}
 		const item = r.items.find((i) => i.taskId === r.currentTaskId);
 		if (!item) return;
+		// The recogniser's first guess is often a near miss on ship terms ("Vet TES" for VTS). When it holds none of the
+		// item's answer words but one of its other guesses does, that guess is what the crew said.
+		if (alternatives?.length && !controlWord(text)) {
+			const ctx = this.interpretCtx(r, item, new Date(this.deps.now()));
+			const better = bestTranscript(text, alternatives, ctx.answers, ctx.answerMatch);
+			if (better !== text) this.deps.log.debug(`transcript "${text}" → alternative "${better}"`);
+			text = better;
+		}
 		this.clearTimer(r.runId, "listen");
 		this.partial.delete(r.runId);
 		this.deps.io.stopListening(r.stationId);

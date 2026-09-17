@@ -601,7 +601,7 @@ export class AudioEndpoint {
 		else if (!this.lastFinal) this.send({ type: "audio.end", reason });
 	}
 
-	private deliverTranscript(text: string, confidence: number, final: boolean): void {
+	private deliverTranscript(text: string, confidence: number, final: boolean, alternatives?: string[]): void {
 		const idle = this.listenPromptId === IDLE;
 		if (final && this.isEcho(text)) {
 			if (idle) this.scheduleIdle(200);
@@ -614,7 +614,7 @@ export class AudioEndpoint {
 			if (this.listenTimer) window.clearTimeout(this.listenTimer);
 			this.cb.onState("thinking");
 		}
-		this.send({ type: "transcript", text, confidence, final });
+		this.send({ type: "transcript", text, confidence, final, ...(alternatives?.length ? { alternatives } : {}) });
 		if (final && idle) this.scheduleIdle(400);
 	}
 
@@ -662,13 +662,15 @@ export class AudioEndpoint {
 		rec.lang = stt.length === 2 ? { en: "en-GB", no: "nb-NO", nb: "nb-NO", sv: "sv-SE", de: "de-DE", fr: "fr-FR", da: "da-DK" }[stt] ?? stt : stt;
 		rec.interimResults = true;
 		rec.continuous = false;
-		rec.maxAlternatives = 1;
+		rec.maxAlternatives = 5; // the hub checks every guess against the item's answer words
 		rec.onresult = (ev: SpeechRecognitionEvent) => {
 			let interim = "";
 			for (let i = ev.resultIndex; i < ev.results.length; i++) {
 				const r = ev.results[i];
 				if (r.isFinal) {
-					this.deliverTranscript(r[0].transcript, r[0].confidence || 0.9, true);
+					const others: string[] = [];
+					for (let k = 1; k < r.length; k++) if (r[k]?.transcript) others.push(r[k].transcript);
+					this.deliverTranscript(r[0].transcript, r[0].confidence || 0.9, true, others);
 					return;
 				}
 				interim += r[0].transcript;

@@ -243,7 +243,7 @@ export class Gateway implements EngineIo {
 					ep.listening = undefined;
 					this.send(ep, { type: "listen.close" });
 				}
-				await this.engine.onTranscript(ep.stationId, m.text, m.confidence, ep.session);
+				await this.engine.onTranscript(ep.stationId, m.text, m.confidence, ep.session, m.alternatives);
 				return;
 			case "command":
 				if (ep.role !== "endpoint") return;

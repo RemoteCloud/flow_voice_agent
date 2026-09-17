@@ -132,7 +132,7 @@ export type EndpointMessage =
 	| { type: "hello"; endpointId: string; stationId: string; capabilities: EndpointCapabilities; language?: string; observer?: boolean }
 	| { type: "ptt"; state: "down" | "up" }
 	| { type: "audio.end"; reason: "silence" | "ptt" | "timeout" | "cancel" }
-	| { type: "transcript"; text: string; confidence?: number; final?: boolean }
+	| { type: "transcript"; text: string; confidence?: number; final?: boolean; /** Other guesses of the recogniser for the same words, best first (browsers give up to five). */ alternatives?: string[] }
 	| { type: "spoken"; promptId?: string }
 	| { type: "command"; name: string }
 	| { type: "takeover" }
@@ -222,7 +222,7 @@ export function parseEndpointMessage(raw: string): EndpointMessage | undefined {
 		case "audio.end":
 			return { type: "audio.end", reason: (["silence", "ptt", "timeout", "cancel"] as const).find((r) => r === v.reason) ?? "silence" };
 		case "transcript":
-			return typeof v.text === "string" ? { type: "transcript", text: v.text, confidence: typeof v.confidence === "number" ? v.confidence : undefined, final: v.final !== false } : undefined;
+			return typeof v.text === "string" ? { type: "transcript", text: v.text, confidence: typeof v.confidence === "number" ? v.confidence : undefined, final: v.final !== false, alternatives: Array.isArray(v.alternatives) ? v.alternatives.filter((a): a is string => typeof a === "string" && a.length <= 300).slice(0, 5) : undefined } : undefined;
 		case "spoken":
 			return { type: "spoken", promptId: typeof v.promptId === "string" ? v.promptId : undefined };
 		case "command":
