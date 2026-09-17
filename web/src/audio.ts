@@ -78,6 +78,8 @@ export interface EndpointCallbacks {
 	onNavigate?(page: "picker" | "run", opts: { runId?: string; stationId?: string }): void;
 	/** The endpoint changed how it recognises speech (browser recogniser unusable → the hub's): reconnect so the hub learns the new capabilities. */
 	onRestart?(): void;
+	/** Another tab or device took this station's voice over; this one must stop, not fight back. */
+	onReplaced?(): void;
 }
 
 export interface EndpointOptions {
@@ -351,7 +353,15 @@ export class AudioEndpoint {
 				this.cb.onState("disconnected");
 				return;
 			}
-			this.cb.onState("connecting", ev.code === 4409 ? "replaced by another device" : "reconnecting…");
+			if (ev.code === 4409) {
+				// another tab or device took this station over: fighting back would make both reconnect every second
+				this.closed = true;
+				this.cb.onError("Voice moved to another tab or device on this station. Press Start voice to take it back here.");
+				this.cb.onState("disconnected");
+				this.cb.onReplaced?.();
+				return;
+			}
+			this.cb.onState("connecting", "reconnecting…");
 			const delay = Math.min(30000, 1000 * 2 ** this.retry++);
 			window.setTimeout(() => this.connect(), delay);
 		};

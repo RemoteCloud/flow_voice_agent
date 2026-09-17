@@ -607,12 +607,28 @@ export function heardAnswer(normalized: string, answers: string[] | undefined, m
 	}) ?? nearAnswer(normalized, answers, match);
 }
 
+const skeleton = (s: string) => fold(s).replace(/[aeiouy ]/g, "");
+/** "vts", "vhf", "gps": letters only, no vowel. A recogniser writes the spoken letters as words ("vet tes", "ved TS"). */
+const isAcronym = (n: string) => /^[a-z]{2,5}$/.test(n) && !/[aeiouy]/.test(n);
+
 function nearAnswer(normalized: string, answers: string[], match: number): string | undefined {
 	if (match >= 1) return undefined;
 	const words = normalized.split(" ").filter(Boolean);
 	let best: { answer: string; score: number } | undefined;
 	for (const a of answers) {
 		const n = normalizeTranscript(a);
+		if (isAcronym(n)) {
+			// spelled-out letters keep their consonants: "vet tes" → vtts, "ved ts" → vdts, "vet s" → vts
+			for (let size = 1; size <= 3; size++) {
+				for (let i = 0; i + size <= words.length; i++) {
+					const win = words.slice(i, i + size).join("");
+					if (win[0] !== n[0] || win.length > n.length * 3) continue;
+					const score = similarity(skeleton(win), n);
+					if (score >= 0.74 && (!best || score > best.score)) best = { answer: a, score };
+				}
+			}
+			continue;
+		}
 		if (n.length < 4) continue; // "up", "on", "av": one wrong letter is another word
 		const target = fold(n.replace(/ /g, ""));
 		const span = n.split(" ").length;

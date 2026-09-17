@@ -130,6 +130,10 @@ export function VoiceProvider({ children }: { children: ReactNode }) {
 						stop();
 						window.setTimeout(() => void startRef.current?.(sid), 400);
 					},
+					onReplaced: () => {
+						stop();
+						setError("Voice moved to another tab or device on this station. Press Start voice to take it back here.");
+					},
 					onRole: setRole,
 					onNavigate: (page, opts) => {
 						if (page === "run" && opts.runId) navigate({ page: "run", id: opts.runId });

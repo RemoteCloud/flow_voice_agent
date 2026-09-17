@@ -40,6 +40,12 @@ export async function run(): Promise<void> {
 	assert.equal(interpret("Checkbox", "kjørbro hivt", { ...strict, answerMatch: 1 }).ok, false, "exact");
 	assert.equal(interpret("Checkbox", "us", { ...ctx, answers: ["up"], answersOnly: true, answerMatch: 0.6 }).ok, false, "short words stay exact");
 
+	// acronyms spoken as letters come back as words
+	const vts: InterpretContext = { ...ctx, answers: ["vts"], answersOnly: true };
+	for (const heard of ["VTS.", "Vet TES kanal 19.", "Ved TS kanal 19.", "Vet s kanalen 19."]) assert.equal(ok(interpret("Checkbox", heard, vts)).valueText, "vts", heard);
+	assert.equal(interpret("Checkbox", "vi venter litt", vts).ok, false);
+	assert.equal(interpret("Checkbox", "Så har vi jo et gen.", vts).ok, false);
+
 	// numbers
 	assert.equal(wordsToNumber("twenty point five"), 20.5);
 	assert.equal(wordsToNumber("one hundred and twelve"), 112);

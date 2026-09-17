@@ -167,6 +167,10 @@ export class RunEngine {
 	}
 
 	private interpretCtx(r: RunRecord, item: RunItem, utteredAt: Date): InterpretContext {
+		// words edited in Checklist setup while the run is open count at once, not only from the next run
+		const words = this.deps.store.get().settings.itemAnswers?.[r.templateId ?? ""];
+		const live = words?.[answerKey({ dataId: item.dataId, name: item.name })] ?? words?.[answerKey({ name: item.name })];
+		if (live?.length) item = { ...item, expected: live };
 		return { utteredAt, tzMode: this.deps.store.get().settings.tzMode, timeZone: this.deps.policy.timeZone, maxPastHours: this.deps.policy.maxPastHours, options: item.options, language: normLang(r.language), answers: item.expected, answersOnly: !!r.templateId && !!this.deps.store.get().settings.wordsOnly?.includes(r.templateId), answerMatch: ANSWER_MATCH[this.deps.store.get().settings.wordMatch?.[r.templateId ?? ""] ?? "normal"] };
 	}
 
