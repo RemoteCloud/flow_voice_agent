@@ -427,6 +427,16 @@ try {
 	assert.equal(fake.statusChanges.at(-1)?.flowId, dRun.instanceId);
 
 
+	// admin picks which templates get a start button; the flag rides on every pick, an empty list means all
+	step = "start buttons";
+	const setStart = await api("PUT", "settings", { startable: ["tpl-engine"] });
+	assert.deepEqual(setStart.body.startable, ["tpl-engine"]);
+	const flagged = (await api("GET", "checklists")).body;
+	assert.ok(flagged.filter((p) => p.templateId === "tpl-engine").every((p) => p.startable === true), "chosen template is startable");
+	assert.ok(flagged.filter((p) => p.templateId !== "tpl-engine").every((p) => p.startable === false), "others are not");
+	await api("PUT", "settings", { startable: [] });
+	assert.ok((await api("GET", "checklists")).body.every((p) => p.startable === true), "empty list → everything startable");
+
 	// audit is text only
 	const audit = await api("GET", "audit?limit=50");
 	assert.ok(audit.body.some((a) => a.kind === "item.committed" && a.transcript === "Pilot on board five minutes ago."));

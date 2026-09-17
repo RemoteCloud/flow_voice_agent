@@ -2,7 +2,7 @@ import { useCallback, useEffect, useState } from "react";
 import type { ChecklistPick, RunView } from "../../../server/api.js";
 import { api, credentialErrorText, toApiError } from "../api.js";
 import { useApp } from "../context.js";
-import { Icon, iconFor } from "../icons.js";
+import { Icon } from "../icons.js";
 import { useVoice, VoiceBar } from "../voice.js";
 import { versionLine } from "../build.js";
 
@@ -65,7 +65,7 @@ export function HomePage({ onOpenRun }: { onOpenRun: (runId: string) => void }) 
 	};
 
 	const open = runs.find((r) => r.stationId === me.stationId && OPEN_STATES.has(r.state));
-	const tiles = [...(picks?.filter((p) => p.source === "instance") ?? []), ...(picks?.filter((p) => p.source === "template") ?? [])].filter((p) => !open || p.activeRunId !== open.runId);
+	const tiles = [...(picks?.filter((p) => p.source === "instance") ?? []), ...(picks?.filter((p) => p.source === "template") ?? [])].filter((p) => p.startable !== false && (!open || p.activeRunId !== open.runId));
 	const locked = me.stationSource === "join";
 	const station = stations.find((s) => s.stationId === me.stationId);
 
@@ -126,26 +126,25 @@ export function HomePage({ onOpenRun }: { onOpenRun: (runId: string) => void }) 
 			{picks === undefined ? (
 				<p className="text-sm text-fg-muted">Loading checklists…</p>
 			) : (
-				<div className="grid grid-cols-2 gap-3">
+				<div className="grid grid-cols-1 gap-3 sm:grid-cols-2 lg:grid-cols-3">
 					{tiles.map((p) => {
 						const key = p.instanceId ?? p.templateId;
-						const r = READINESS[p.readiness];
 						const disabled = busy === key || p.readiness === "none";
 						return (
-							<button key={key} type="button" className="tile" disabled={disabled} onClick={() => void start(p)}>
-								<span className="flex h-16 w-16 items-center justify-center rounded-2xl bg-accent/10 text-accent">
-									<Icon name={iconFor(p.templateName)} size={36} strokeWidth={1.6} />
+							<button key={key} type="button" className="start-btn" disabled={disabled} onClick={() => void start(p)}>
+								<span className="min-w-0 flex-1 text-left">
+									<span className="line-clamp-2 block text-lg leading-tight font-semibold tracking-wide uppercase">{p.templateName}</span>
+									<span className="mt-1 block text-xs tracking-wide text-fg-muted uppercase">
+										{busy === key ? "Starting…" : p.source === "template" ? "Start" : STATE[p.state]}
+										{p.progress ? ` · ${p.progress.done}/${p.progress.total}` : ""}
+										{p.readiness !== "full" ? ` · ${READINESS[p.readiness].label}` : ""}
+									</span>
 								</span>
-								<span className="line-clamp-2 text-base leading-snug font-medium">{p.templateName}</span>
-								<span className="text-xs text-fg-muted">
-									{busy === key ? "Starting…" : p.source === "template" ? "New" : STATE[p.state]}
-									{p.progress ? ` · ${p.progress.done}/${p.progress.total}` : ""}
-								</span>
-								{p.readiness !== "full" && <span className={`pill ${r.cls}`}>{r.label}</span>}
+								<Icon name="chevron" size={24} className="shrink-0 opacity-60" />
 							</button>
 						);
 					})}
-					{!tiles.length && !open && <p className="col-span-2 text-sm text-fg-muted">Nothing to run{station ? ` on ${station.name}` : ""}.</p>}
+					{!tiles.length && !open && <p className="col-span-full text-sm text-fg-muted">Nothing to run{station ? ` on ${station.name}` : ""}.</p>}
 				</div>
 			)}
 			<p className="mt-6 text-center text-[11px] text-fg-faint">{versionLine(boot.hubVersion)}</p>

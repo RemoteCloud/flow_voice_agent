@@ -561,6 +561,7 @@ export function createApp(deps: AppDeps): Hono {
 			if (typeof body.readNotices === "boolean") d.settings.readNotices = body.readNotices;
 			if (body.tzMode === "utc" || body.tzMode === "local") d.settings.tzMode = body.tzMode;
 			if (body.confirmation === "required" || body.confirmation === "optional") d.settings.confirmation = body.confirmation;
+			if (Array.isArray(body.startable)) d.settings.startable = [...new Set(body.startable.filter((x): x is string => typeof x === "string" && !!x.trim()))];
 		});
 		return c.json(store.get().settings);
 	});

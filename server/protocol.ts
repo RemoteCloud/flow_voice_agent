@@ -104,6 +104,8 @@ export interface ChecklistPick {
 	lastActivity?: string;
 	source: "instance" | "template";
 	activeRunId?: string;
+	/** false when an admin left this template out of the home-screen start buttons (Admin → Start buttons). */
+	startable?: boolean;
 }
 
 // ---------------------------------------------------------------- AEP

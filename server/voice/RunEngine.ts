@@ -226,6 +226,8 @@ export class RunEngine {
 		}
 		const picks: ChecklistPick[] = [];
 		const settings = this.deps.store.get().settings;
+		const allow = settings.startable?.length ? new Set(settings.startable) : undefined;
+		const startable = (templateId: string | undefined) => !allow || (!!templateId && allow.has(templateId));
 		for (const f of flows.data.items) {
 			const detail = await this.deps.flows.getFlow(api, f.flowId);
 			if (!detail.ok) continue;
@@ -245,6 +247,7 @@ export class RunEngine {
 				lastActivity: f.createdAt,
 				source: "instance",
 				activeRunId: running?.runId,
+				startable: startable(f.templateId),
 			});
 		}
 		const templates = await this.deps.flows.listTemplates(api);
@@ -260,7 +263,7 @@ export class RunEngine {
 					needsScreen = tasks.length - voice;
 					readiness = voice === 0 && tasks.length > 0 ? "none" : needsScreen === 0 ? "full" : "partial";
 				}
-				picks.push({ templateId: t.id, templateName: t.name, refId: t.refId, state: "not_started", readiness, needsScreen, source: "template" });
+				picks.push({ templateId: t.id, templateName: t.name, refId: t.refId, state: "not_started", readiness, needsScreen, source: "template", startable: startable(t.id) });
 			}
 		}
 		return picks;
@@ -1226,7 +1229,7 @@ export class RunEngine {
 		}
 		let picks: ChecklistPick[];
 		try {
-			picks = (await this.listPicks(session)).filter((p) => p.readiness !== "none");
+			picks = (await this.listPicks(session)).filter((p) => p.readiness !== "none" && p.startable !== false);
 		} catch (err) {
 			this.deps.log.warn(`menu: ${err instanceof Error ? err.message : String(err)}`);
 			return;

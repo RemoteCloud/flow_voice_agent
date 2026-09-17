@@ -1,6 +1,6 @@
 /**
  * Client mode. The *mobile client* only runs checklists and drives voice: the Android agent
- * (WebView with `window.FlowVoiceAndroid`), and any phone browser / installed PWA. Everything
+ * (WebView with `window.FlowVoiceAndroid`), and any phone or tablet browser / installed PWA. Everything
  * else — Admin, theme, station authoring — belongs to the desktop browser.
  * `?mobile=1` forces the mobile layout on a desktop, `?mobile=0` forces the desktop layout on a
  * phone (both remembered in localStorage).
@@ -18,5 +18,7 @@ export function isMobileClient(): boolean {
 	}
 	if (window.FlowVoiceAndroid) return true;
 	const ua = navigator.userAgent;
-	return /FlowVoiceAndroid|Android|iPhone|iPod|Mobile/i.test(ua);
+	if (/FlowVoiceAndroid|Android|iPhone|iPod|iPad|Mobile/i.test(ua)) return true;
+	// iPadOS reports a desktop Safari user agent: a Mac with a touch screen is a tablet
+	return /Macintosh/i.test(ua) && navigator.maxTouchPoints > 1;
 }

@@ -224,7 +224,7 @@ export interface HubData {
 	outbox: OutboxEntry[];
 	audit: AuditEntry[];
 	idempotency: Record<string, { at: string; result: string }>;
-	settings: { readNotices: boolean; tzMode: "utc" | "local"; confirmation: "required" | "optional" };
+	settings: { readNotices: boolean; tzMode: "utc" | "local"; confirmation: "required" | "optional"; /** Template ids that get a start button on the phone/tablet home screen and in the voice menu; empty or absent → every template. */ startable?: string[] };
 }
 
 export function emptyData(): HubData {
