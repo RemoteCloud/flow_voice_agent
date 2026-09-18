@@ -123,18 +123,10 @@ export class Tenants {
 	}
 	/** Issuer of a tenant: its own, or the main hub's with the tenant segment swapped (same UserManagement). */
 	issuerFor(t: { tenant: string; issuer?: string; host?: string }): string | undefined {
-		if (t.issuer) return t.issuer;
+		if (t.issuer) return withTenant(t.issuer, t.tenant);
 		const base = this.deps.env;
 		// its own Maranics server: sign-in lives next to the API (api.<env> → usermanagement.<env>/<tenant>)
-		if (t.host && t.host !== base.maranics?.host) {
-			try {
-				const u = new URL(t.host);
-				if (u.hostname.startsWith("api.")) return `${u.protocol}//usermanagement.${u.hostname.slice(4)}${u.port ? `:${u.port}` : ""}/${encodeURIComponent(t.tenant)}`;
-			} catch {
-				/* fall through */
-			}
-			return undefined;
-		}
+		if (t.host && t.host !== base.maranics?.host) return issuerCandidates(t.host, t.tenant)[0];
 		const tail = `/${encodeURIComponent(base.maranics?.tenant ?? "")}`;
 		return base.oidc && base.maranics && base.oidc.issuer.endsWith(tail) ? `${base.oidc.issuer.slice(0, -tail.length)}/${encodeURIComponent(t.tenant)}` : undefined;
 	}
@@ -178,6 +170,28 @@ export class Tenants {
 			},
 		};
 	}
+	/**
+	 * Sign-in address of a new SSO entry: the typed one (tenant segment added when missing), else the first of the
+	 * usual places next to the API host that answers OIDC discovery. Nothing answering → the first guess, and the
+	 * sign-in page reports the failure.
+	 */
+	private async resolveIssuer(t: TenantEntry): Promise<string | undefined> {
+		if (!t.clientId) return t.issuer;
+		const typed = t.issuer ? withTenant(t.issuer, t.tenant) : undefined;
+		const own = t.host && t.host !== this.deps.env.maranics?.host;
+		const candidates = [...(typed ? [typed] : []), ...(own && t.host ? issuerCandidates(t.host, t.tenant) : [])];
+		if (candidates.length === 0) return typed;
+		for (const c of candidates) {
+			try {
+				const res = await fetch(`${c}/.well-known/openid-configuration`, { signal: AbortSignal.timeout(4000), redirect: "manual" });
+				if (res.ok) return c;
+			} catch {
+				/* next */
+			}
+		}
+		this.deps.log.warn(`tenant "${t.name}": no sign-in address answered (${candidates.join(", ")}); keeping ${candidates[0]}`);
+		return candidates[0];
+	}
 	private async boot(t: TenantEntry): Promise<void> {
 		const env = this.envFor(t);
 		this.cores.get(t.id)?.stop();
@@ -217,6 +231,7 @@ export class Tenants {
 		for (let n = 2; this.entries().some((t) => t.id === id); n++) id = `${slug}-${n}`;
 		const sign = p.clientId && p.clientSecret ? { clientId: p.clientId, clientSecretEnc: sealToken(p.clientSecret, this.deps.sealKey), issuer: p.issuer } : { tokenEnc: sealToken(p.token ?? "", this.deps.sealKey), tokenHint: (p.token ?? "").slice(-6) };
 		const entry: TenantEntry = { id, name: p.name, location: p.location, tenant: p.tenant, host: p.host, ...sign, createdAt: new Date(this.deps.now()).toISOString() };
+		entry.issuer = await this.resolveIssuer(entry);
 		await this.boot(entry); // fails before anything is stored
 		await this.deps.store.update((d) => {
 			(d.tenants ??= []).push(entry);
@@ -234,6 +249,7 @@ export class Tenants {
 		// a location may have its own client; without one it shares the tenant's
 		const own = p.clientId && p.clientSecret ? { clientId: p.clientId, clientSecretEnc: sealToken(p.clientSecret, this.deps.sealKey), tokenEnc: undefined, tokenHint: undefined } : {};
 		const entry: TenantEntry = { ...parent, ...own, id, name: parent.name, location: p.name, host: p.host, issuer: p.issuer, parent: root, createdAt: new Date(this.deps.now()).toISOString() };
+		entry.issuer = await this.resolveIssuer(entry);
 		await this.boot(entry);
 		await this.deps.store.update((d) => {
 			(d.tenants ??= []).push(entry);
@@ -442,5 +458,28 @@ export class Tenants {
 			return c.json({ ok: true });
 		});
 		return app;
+	}
+}
+
+/** A sign-in address typed without the tenant segment ("https://um.example") gets it appended. */
+function withTenant(issuer: string, tenant: string): string {
+	try {
+		const u = new URL(issuer);
+		if (u.pathname === "/" || u.pathname === "") return `${u.origin}/${encodeURIComponent(tenant)}`;
+	} catch {
+		/* keep as typed */
+	}
+	return issuer.replace(/\/+$/, "");
+}
+
+/** Where Maranics sign-in usually lives next to an API host: usermanagement.<env> (cloud) or administration.<env> (edge). */
+function issuerCandidates(host: string, tenant: string): string[] {
+	try {
+		const u = new URL(host);
+		const port = u.port ? `:${u.port}` : "";
+		const rest = u.hostname.startsWith("api.") ? u.hostname.slice(4) : u.hostname;
+		return ["usermanagement", "administration"].map((p) => `${u.protocol}//${p}.${rest}${port}/${encodeURIComponent(tenant)}`);
+	} catch {
+		return [];
 	}
 }
