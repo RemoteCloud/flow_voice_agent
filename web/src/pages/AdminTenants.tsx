@@ -129,12 +129,25 @@ export function TenantsTab() {
 										</button>
 									</div>
 									{t.loginPath && (
-										<div className="flex flex-wrap items-center gap-2 text-xs text-fg-muted">
-											<span>Sign-in link for this tenant:</span>
-											<span className="mono min-w-0 truncate">{location.origin + t.loginPath}</span>
-											<button type="button" className="btn btn-sm" onClick={() => copy(location.origin + t.loginPath)}>
-												{copied === location.origin + t.loginPath ? "Copied ✓" : "Copy"}
-											</button>
+										<div className="space-y-1 text-xs text-fg-muted">
+											<div className="flex flex-wrap items-center gap-2">
+												<span className="w-16 shrink-0">Admin</span>
+												<a className="mono min-w-0 truncate underline" href={t.loginPath} target="_blank" rel="noreferrer">
+													{location.origin + t.loginPath}
+												</a>
+												<button type="button" className="btn btn-sm" onClick={() => copy(location.origin + t.loginPath)}>
+													{copied === location.origin + t.loginPath ? "Copied ✓" : "Copy"}
+												</button>
+											</div>
+											<div className="flex flex-wrap items-center gap-2">
+												<span className="w-16 shrink-0">Crew</span>
+												<a className="mono min-w-0 truncate underline" href={`${t.loginPath}?to=client`} target="_blank" rel="noreferrer">
+													{`${location.origin}${t.loginPath}?to=client`}
+												</a>
+												<button type="button" className="btn btn-sm" onClick={() => copy(`${location.origin}${t.loginPath}?to=client`)}>
+													{copied === `${location.origin}${t.loginPath}?to=client` ? "Copied ✓" : "Copy"}
+												</button>
+											</div>
 										</div>
 									)}
 									{server?.id === t.id && (
