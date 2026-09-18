@@ -96,7 +96,22 @@ export function TenantsTab() {
 				<>
 					<section className="card">
 						<div className="card-head">
-							<h2 className="card-title">Tenants to try</h2>
+							<div>
+								<h2 className="card-title">Maranics client setup</h2>
+								<p className="text-xs text-fg-muted">Every client you create in Maranics for this hub needs this redirect (callback) address. It is the same for all tenants and locations.</p>
+							</div>
+						</div>
+						<div className="card-body flex flex-wrap items-center gap-2">
+							<code className="mono min-w-0 flex-1 basis-64 break-all rounded border border-line bg-panel-2 px-3 py-2 text-sm">{callback}</code>
+							<button type="button" className="btn btn-sm btn-primary" onClick={() => copy(callback)}>
+								{copied === callback ? "Copied ✓" : "Copy"}
+							</button>
+						</div>
+					</section>
+
+					<section className="card">
+						<div className="card-head">
+							<h2 className="card-title">Tenants</h2>
 						</div>
 						<ul className="divide-y divide-line">
 							{[...data.tenants].sort((a, b) => `${a.name}\u0000${a.location ?? ""}`.localeCompare(`${b.name}\u0000${b.location ?? ""}`)).map((t) => (
@@ -191,12 +206,7 @@ export function TenantsTab() {
 							<div>
 								<h2 className="card-title">Add a tenant</h2>
 								<p className="text-xs text-fg-muted">Each tenant signs in with Maranics through its own client. People sign in as themselves; the first one to sign in becomes that tenant's admin.</p>
-								<p className="mt-1 text-xs text-fg-muted">
-									Register this return address on the tenant's client: <span className="mono">{callback}</span>{" "}
-									<button type="button" className="underline" onClick={() => copy(callback)}>
-										{copied === callback ? "copied ✓" : "copy"}
-									</button>
-								</p>
+								<p className="mt-1 text-xs text-fg-muted">Register the callback address at the top of this page on the client first.</p>
 							</div>
 						</div>
 						<form
