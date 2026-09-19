@@ -13,7 +13,7 @@ import type { PolicyEnv } from "../env.js";
 import type { DiscardReason, FlowDetail, FlowsClient, TemplateDetail } from "../maranics/FlowsClient.js";
 import type { ChecklistPick, ExchangeState, HubEvent, HubEventType, RunItem, RunView } from "../protocol.js";
 import type { Credentials } from "../store/credentials.js";
-import type { HubSession, HubStore, PromptRecord, RunRecord, Station, VoiceProfile } from "../store/HubStore.js";
+import type { HubSession, HubStore, PromptRecord, RunRecord, Station, StepMode, VoiceProfile } from "../store/HubStore.js";
 import { answerKey, buildItems, itemAnnouncement, nextItem, previousItem, progressOf, readinessOf, spokenNumber, startAnnouncement } from "./checklist.js";
 import { CHECKBOX_CHECKED, CHECKBOX_NOT_DONE, checkboxCheckedValue, controlWord, interpret, itemNumber, readbackText, THRESHOLDS, type ControlWord, type Interpretation, type InterpretContext } from "./interpret.js";
 import type { Outbox } from "./Outbox.js";
@@ -82,6 +82,7 @@ interface Timers {
 	listen?: NodeJS.Timeout;
 	confirm?: NodeJS.Timeout;
 	exchange?: NodeJS.Timeout;
+	step?: NodeJS.Timeout;
 }
 
 const iso = (ms: number) => new Date(ms).toISOString();
@@ -143,6 +144,7 @@ export class RunEngine {
 			state: r.state,
 			exchange: r.exchange,
 			currentTaskId: r.currentTaskId,
+			waiting: r.waiting,
 			items: r.items,
 			answered: p.answered,
 			total: p.total,
@@ -709,6 +711,7 @@ export class RunEngine {
 	}
 
 	private async speakItem(r: RunRecord, item: RunItem): Promise<void> {
+		r.waiting = undefined;
 		const current = this.record(r.runId);
 		if (current.state !== "active") return;
 		for (const i of r.items) if (i.state === "current") i.state = "unanswered";
@@ -773,7 +776,7 @@ export class RunEngine {
 	}
 
 	private clearTimers(runId: string): void {
-		for (const k of ["listen", "confirm", "exchange"] as const) this.clearTimer(runId, k);
+		for (const k of ["listen", "confirm", "exchange", "step"] as const) this.clearTimer(runId, k);
 		this.timers.delete(runId);
 	}
 
@@ -907,6 +910,20 @@ export class RunEngine {
 			return;
 		}
 		if (await this.tryItemJump(r, text)) return;
+		if (r.exchange === "waiting") {
+			const w = controlWord(text);
+			if (w === "next" || w === "resume" || w === "start" || w === "confirm") {
+				await this.proceed(r.runId, "voice");
+				return;
+			}
+			if (w === "repeat") {
+				await this.say(r, r.waiting?.mode === "ask" ? tr(r.language, "step_ask") : tr(r.language, "step_external"));
+				return;
+			}
+			if (w) await this.handleCommand(r, w, session);
+			else await this.unpromptedAnswer(r, text, confidence, session);
+			return;
+		}
 		if (r.exchange === "idle" || r.exchange === "speaking" || r.exchange === "committing") {
 			// spoken run commands are valid while idle; a phrase-bound answer can arrive unprompted
 			const w = controlWord(text);
@@ -1100,7 +1117,8 @@ export class RunEngine {
 				if (item) await this.skip(r.runId, item.taskId, "skipped by voice");
 				return;
 			case "next":
-				if (item && (item.state === "current" || item.state === "unanswered")) await this.skip(r.runId, item.taskId, "next item by voice");
+				if (r.exchange === "waiting") await this.proceed(r.runId, "voice");
+				else if (item && (item.state === "current" || item.state === "unanswered")) await this.skip(r.runId, item.taskId, "next item by voice");
 				else if (item) await this.advance(r, item);
 				return;
 			case "back": {
@@ -1264,10 +1282,68 @@ export class RunEngine {
 		if (from.state === "current") from.state = "unanswered";
 		const next = nextItem(r.items, from.index);
 		if (next) {
-			await this.speakItem(r, next);
+			const step = this.stepMode(r);
+			if (step.mode === "auto") await this.speakItem(r, next);
+			else await this.hold(r, next, step);
 			return;
 		}
 		await this.offerSweepOrComplete(r);
+	}
+
+	/** How this run moves to its next item (Checklist setup); prompt runs and unknown templates go at once. */
+	private stepMode(r: RunRecord): StepMode {
+		if (!r.templateId || r.runId.startsWith("prun_")) return { mode: "auto" };
+		return this.deps.store.get().settings.stepMode?.[r.templateId] ?? { mode: "auto" };
+	}
+
+	/** Hold the next item back: until the crew says "next", a timer runs out, or an external trigger arrives. */
+	private async hold(r: RunRecord, next: RunItem, step: StepMode): Promise<void> {
+		if (step.mode === "auto") return this.speakItem(r, next);
+		this.clearTimers(r.runId);
+		this.deps.io.stopListening(r.stationId);
+		r.exchange = "waiting";
+		r.currentTaskId = undefined;
+		r.pendingReadback = undefined;
+		const until = step.mode === "timer" ? new Date(this.deps.now() + Math.max(1, step.delaySec) * 1000).toISOString() : undefined;
+		r.waiting = { taskId: next.taskId, mode: step.mode, until };
+		await this.save(r);
+		this.emit("run.waiting", r, { taskId: next.taskId, text: step.mode, data: { mode: step.mode, until } });
+		if (step.mode === "ask") await this.say(r, tr(r.language, "step_ask"));
+		else if (step.mode === "timer") await this.say(r, step.delaySec >= 90 ? tr(r.language, "step_timer_min", { n: spokenNumber(Math.round(step.delaySec / 60), r.language) }) : tr(r.language, "step_timer_sec", { n: spokenNumber(step.delaySec, r.language) }));
+		else await this.say(r, tr(r.language, "step_external"));
+		this.deps.io.status(r.stationId, "idle", `waiting for the next item (${step.mode})`);
+		if (until) this.armStep(r);
+	}
+
+	private armStep(r: RunRecord): void {
+		if (!r.waiting?.until) return;
+		this.clearTimer(r.runId, "step");
+		const ms = Math.max(0, Date.parse(r.waiting.until) - this.deps.now());
+		const t = setTimeout(() => void this.proceed(r.runId, "timer"), ms);
+		t.unref?.();
+		this.timerSet(r.runId).step = t;
+	}
+
+	/** Release a held item: the crew asked, the timer ran out, the screen button, or `POST /v1/runs/:id/next`. */
+	async proceed(runId: string, by: "voice" | "timer" | "screen" | "external"): Promise<RunView> {
+		const r = this.record(runId);
+		if (r.state !== "active" || r.exchange !== "waiting" || !r.waiting) return this.view(runId);
+		this.clearTimer(r.runId, "step");
+		const item = r.items.find((i) => i.taskId === r.waiting?.taskId) ?? nextItem(r.items);
+		r.waiting = undefined;
+		r.exchange = "idle";
+		await this.save(r);
+		this.emit("run.proceeded", r, { taskId: item?.taskId, text: by, data: { by } });
+		if (item && item.state !== "answered") await this.speakItem(r, item);
+		else await this.offerSweepOrComplete(r);
+		return this.view(runId);
+	}
+
+	/** External trigger by station: release the held item of that station's run, if any. */
+	async proceedStation(stationId: string): Promise<RunView | undefined> {
+		const r = this.activeRun(stationId);
+		if (!r || r.exchange !== "waiting") return r ? this.view(r.runId) : undefined;
+		return this.proceed(r.runId, "external");
 	}
 
 	private async offerSweepOrComplete(r: RunRecord): Promise<void> {
@@ -1666,6 +1742,7 @@ export class RunEngine {
 		this.deps.io.stopListening(r.stationId);
 		r.state = "paused";
 		r.exchange = "idle";
+		r.waiting = undefined;
 		r.pendingReadback = undefined;
 		for (const i of r.items) if (i.state === "current") i.state = "unanswered";
 		await this.save(r);
@@ -1767,6 +1844,11 @@ export class RunEngine {
 	/** After a restart: no timers exist; put every active run back to a clean waiting state. */
 	async recover(): Promise<void> {
 		for (const r of this.deps.store.get().runs) {
+			if (r.state === "active" && r.exchange === "waiting" && r.waiting) {
+				// a held item stays held over a restart; a timer picks up where it was (or fires at once when overdue)
+				if (r.waiting.until) this.armStep(r);
+				continue;
+			}
 			if (r.state === "active" && r.exchange !== "idle") {
 				r.exchange = "idle";
 				r.pendingReadback = undefined;
@@ -1797,6 +1879,11 @@ export class RunEngine {
 			await this.say(r, r.pendingReason ?? tr(r.language, "ready", { name: r.templateName }));
 			return;
 		}
+		if (r.state === "active" && r.exchange === "waiting" && r.waiting) {
+			if (r.waiting.until && Date.parse(r.waiting.until) <= this.deps.now()) await this.proceed(r.runId, "timer");
+			else if (r.waiting.until) this.armStep(r);
+			return;
+		}
 		if (r.state === "active" && r.exchange === "idle" && !this.speaking.has(r.runId)) {
 			const next = nextItem(r.items);
 			if (next) await this.speakItem(r, next);
@@ -1806,6 +1893,10 @@ export class RunEngine {
 	async onEndpointLost(stationId: string): Promise<void> {
 		const r = this.activeRun(stationId);
 		if (!r || r.state !== "active") return;
+		if (r.exchange === "waiting") {
+			this.clearTimer(r.runId, "step");
+			return;
+		}
 		this.clearTimers(r.runId);
 		if (r.exchange !== "idle") {
 			r.exchange = "idle";

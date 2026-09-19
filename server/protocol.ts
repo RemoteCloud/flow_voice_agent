@@ -33,7 +33,7 @@ export function isInfoType(t: string | undefined): boolean {
 
 export type RunState = "pending" | "active" | "paused" | "completed" | "abandoned";
 export type ItemState = "unanswered" | "current" | "answered" | "skipped" | "needs_screen" | "info" | "unsynced";
-export type ExchangeState = "idle" | "speaking" | "listening" | "interpreting" | "confirming" | "committing" | "clarifying" | "escalated";
+export type ExchangeState = "idle" | "speaking" | "listening" | "interpreting" | "confirming" | "committing" | "clarifying" | "escalated" | "waiting";
 
 export interface RunItem {
 	/** Maranics task id. */
@@ -72,6 +72,8 @@ export interface RunView {
 	state: RunState;
 	exchange: ExchangeState;
 	currentTaskId?: string;
+	/** Set while the next item is held back (exchange "waiting"): what releases it. */
+	waiting?: { taskId: string; mode: "ask" | "timer" | "external"; until?: string };
 	items: RunItem[];
 	answered: number;
 	total: number;
@@ -167,6 +169,8 @@ export type HubEventType =
 	| "run.item.queued_offline"
 	| "run.item.skipped"
 	| "run.item.escalated"
+	| "run.waiting"
+	| "run.proceeded"
 	| "run.paused"
 	| "run.resumed"
 	| "run.completed"

@@ -561,6 +561,53 @@ try {
 	assert.deepEqual(regRun.items[0].expected, ["normal"]);
 	assert.equal(regRun.language, "sv");
 	await api("POST", `runs/${regRun.runId}/abandon`);
+	// when to read the next item: ask ("next"), a timer, or an external trigger (POST /v1/runs/:id/proceed)
+	let mark = 0;
+	step = "step mode";
+	assert.deepEqual(entry.step, { mode: "auto" });
+	assert.equal((await api("PUT", "library/entry", { templateId: "tpl-engine", step: { mode: "ask" } })).body.templates[0].step.mode, "ask");
+	await api("PUT", "settings", { templateLanguages: { "tpl-engine": "en" } });
+	mark = spoken.length;
+	listenOpen = undefined;
+	const askRun = (await api("POST", "runs", { templateId: "tpl-engine", stationId: "bridge-01" })).body;
+	await waitFor(() => spoken.slice(mark).some((s) => s.includes("Check lube oil pressure")), "first item read at once");
+	await say("Checked.");
+	await waitFor(() => spoken.slice(mark).some((s) => s === "Say next when you are ready."), "hub waits after the answer");
+	let held = (await api("GET", `runs/${askRun.runId}`)).body;
+	assert.equal(held.exchange, "waiting");
+	assert.equal(held.waiting.mode, "ask");
+	assert.ok(!spoken.slice(mark).some((s) => s.includes("Check cooling water temp")), "second item not read yet");
+	send({ type: "transcript", text: "next", confidence: 0.9, final: true });
+	await waitFor(() => spoken.slice(mark).some((s) => s.includes("Check cooling water temp")), "second item read on \"next\"");
+	await api("POST", `runs/${askRun.runId}/abandon`);
+	// timer: a short delay, then the item comes by itself
+	assert.deepEqual((await api("PUT", "library/entry", { templateId: "tpl-engine", step: { mode: "timer", delaySec: 2 } })).body.templates[0].step, { mode: "timer", delaySec: 2 });
+	mark = spoken.length;
+	listenOpen = undefined;
+	const timRun = (await api("POST", "runs", { templateId: "tpl-engine", stationId: "bridge-01" })).body;
+	await waitFor(() => spoken.slice(mark).some((s) => s.includes("Check lube oil pressure")), "timer run first item");
+	await say("Checked.");
+	await waitFor(() => spoken.slice(mark).some((s) => s === "Next item in two seconds."), "timer announced");
+	held = (await api("GET", `runs/${timRun.runId}`)).body;
+	assert.equal(held.waiting.mode, "timer");
+	assert.ok(held.waiting.until);
+	await waitFor(() => spoken.slice(mark).some((s) => s.includes("Check cooling water temp")), "second item after the timer", 6000);
+	await api("POST", `runs/${timRun.runId}/abandon`);
+	// external: an integration releases the item; the screen button (POST /api/runs/:id/proceed) does the same
+	assert.equal((await api("PUT", "library/entry", { templateId: "tpl-engine", step: { mode: "external" } })).body.templates[0].step.mode, "external");
+	mark = spoken.length;
+	listenOpen = undefined;
+	const extRun = (await api("POST", "runs", { templateId: "tpl-engine", stationId: "bridge-01" })).body;
+	await waitFor(() => spoken.slice(mark).some((s) => s.includes("Check lube oil pressure")), "external run first item");
+	await say("Checked.");
+	await waitFor(() => spoken.slice(mark).some((s) => s === "Waiting for the next step."), "external wait announced");
+	const rel = await svc("POST", `stations/bridge-01/proceed`);
+	assert.equal(rel.status, 200, await rel.text());
+	await waitFor(() => spoken.slice(mark).some((s) => s.includes("Check cooling water temp")), "second item after the trigger");
+	assert.equal((await svc("POST", `stations/ecr-01/proceed`)).status, 404, "no run on that station");
+	await api("POST", `runs/${extRun.runId}/abandon`);
+	assert.equal((await api("PUT", "library/entry", { templateId: "tpl-engine", step: { mode: "auto" } })).body.templates[0].step.mode, "auto");
+
 	assert.equal((await api("DELETE", `library?templateId=${encodeURIComponent("tpl-engine")}`)).body.templates.length, 0);
 	await api("PUT", "settings", { itemAnswers: {}, templateLanguages: {} });
 	assert.ok((await api("GET", "checklists")).body.every((p) => p.access === "start"), "empty register → everything again");

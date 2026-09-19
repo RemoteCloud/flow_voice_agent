@@ -71,6 +71,15 @@ export interface Station {
 }
 
 /** A token tenant: its own hub core under `<data>/tenants/<id>/`, acting with one pasted access token (sealed). */
+/** How a run moves on after an item: at once, when the crew says "next", after a delay, or when an external system says so. */
+export type StepMode = { mode: "auto" } | { mode: "ask" } | { mode: "timer"; delaySec: number } | { mode: "external" };
+export interface RunWaiting {
+	taskId: string;
+	mode: "ask" | "timer" | "external";
+	/** timer: when the next item is read (ISO). */
+	until?: string;
+}
+
 export interface TenantEntry {
 	id: string;
 	name: string;
@@ -221,6 +230,8 @@ export interface RunRecord {
 	/** A spoken complete / discard waiting for its confirmation. */
 	pendingAction?: { kind: "complete" | "discard"; reasonCode?: string; reasonTitle?: string; step: "reason" | "confirm"; reasons?: { code: string; title: string; requireComment: boolean }[] };
 	sweepOffered?: boolean;
+	/** Between items: the next item is held until asked ("next"), a timer, or an external trigger. */
+	waiting?: RunWaiting;
 }
 
 export interface PromptRecord {
@@ -282,7 +293,7 @@ export interface HubData {
 	tenants?: TenantEntry[];
 	/** Portable file → modification time it had when it was last imported; a file is imported again only after it changed. */
 	portableSeen?: Record<string, number>;
-	settings: { readNotices: boolean; tzMode: "utc" | "local"; confirmation: "required" | "optional"; /** Template ids that get a start button on the phone/tablet home screen and in the voice menu; empty or absent → every template. */ startable?: string[]; /** Template id → language the checklist is written in (en/sv/no/fr/de); wins over the station language. */ templateLanguages?: Record<string, string>; /** Template id → item key (`answerKey`) → words that count as that item's answer ("up", "closed"). */ itemAnswers?: Record<string, Record<string, string[]>>; /** Template ids where only the marked answer words count: items with words refuse a plain yes / confirm / no. */ wordsOnly?: string[]; /** Template id → how close a heard word must be to a marked answer word; absent = normal. */ wordMatch?: Record<string, "exact" | "normal" | "loose"> };
+	settings: { readNotices: boolean; tzMode: "utc" | "local"; confirmation: "required" | "optional"; /** Template ids that get a start button on the phone/tablet home screen and in the voice menu; empty or absent → every template. */ startable?: string[]; /** Template id → language the checklist is written in (en/sv/no/fr/de); wins over the station language. */ templateLanguages?: Record<string, string>; /** Template id → item key (`answerKey`) → words that count as that item's answer ("up", "closed"). */ itemAnswers?: Record<string, Record<string, string[]>>; /** Template ids where only the marked answer words count: items with words refuse a plain yes / confirm / no. */ wordsOnly?: string[]; /** Template id → how close a heard word must be to a marked answer word; absent = normal. */ wordMatch?: Record<string, "exact" | "normal" | "loose">; /** Template id → how the run moves to the next item; absent = at once. */ stepMode?: Record<string, StepMode> };
 }
 
 export function emptyData(): HubData {

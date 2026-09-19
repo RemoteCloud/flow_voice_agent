@@ -130,6 +130,17 @@ export function RunPage({ runId, mobile = false }: { runId: string; mobile?: boo
 									{current.options ? `: ${current.options.map((o) => o.title).join(" · ")}` : ""}
 								</p>
 							</div>
+						) : run.waiting ? (
+							<div className="mt-4">
+								<p className="text-xs tracking-wide text-fg-faint uppercase">Up next</p>
+								<p className="mt-1 text-lg text-fg-muted">{run.items.find((i) => i.taskId === run.waiting?.taskId)?.name}</p>
+								<p className="mt-2 text-sm text-fg-muted">
+									{run.waiting.mode === "ask" ? "Say \"next\" or press Next item." : run.waiting.mode === "timer" ? <Countdown until={run.waiting.until} /> : "Waiting for another system to go on. \"Next\" or the button also works."}
+								</p>
+								<button type="button" className="btn btn-primary mt-3" onClick={() => void act("proceed")}>
+									Next item
+								</button>
+							</div>
 						) : (
 							<p className="mt-4 text-lg text-fg-muted">{done ? `Run ${run.state}.` : run.state === "paused" ? "Paused." : run.answered >= run.total ? "All items answered — complete the checklist below." : "Waiting for the next item…"}</p>
 						)}
@@ -510,4 +521,16 @@ function DiscardDialog({ templateId, onClose, onSubmit }: { templateId?: string;
 			</div>
 		</div>
 	);
+}
+
+/** Seconds left until a held item is read. */
+function Countdown({ until }: { until?: string }) {
+	const [now, setNow] = useState(Date.now());
+	useEffect(() => {
+		const t = setInterval(() => setNow(Date.now()), 1000);
+		return () => clearInterval(t);
+	}, []);
+	if (!until) return null;
+	const left = Math.max(0, Math.round((Date.parse(until) - now) / 1000));
+	return <>Next item in {left >= 90 ? `${Math.ceil(left / 60)} min` : `${left} s`}. "Next" or the button goes on earlier.</>;
 }

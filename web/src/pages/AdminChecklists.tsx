@@ -49,7 +49,7 @@ export function ChecklistsTab({ canEdit }: { canEdit: boolean }) {
 	};
 	const add = (id: string) => act(id, () => api.post<LibraryView>("library", { templateId: id })).then(() => setOpen(id));
 	const remove = (id: string) => act(id, () => api.del<LibraryView>(`library?templateId=${encodeURIComponent(id)}`));
-	const saveEntry = (id: string, patch: { language?: string; words?: Record<string, string[]>; wordsOnly?: boolean; wordMatch?: "exact" | "normal" | "loose" }) => act(`save:${id}`, () => api.put<LibraryView>("library/entry", { templateId: id, ...patch }));
+	const saveEntry = (id: string, patch: { language?: string; words?: Record<string, string[]>; wordsOnly?: boolean; wordMatch?: "exact" | "normal" | "loose"; step?: { mode: "auto" | "ask" | "external" } | { mode: "timer"; delaySec: number } }) => act(`save:${id}`, () => api.put<LibraryView>("library/entry", { templateId: id, ...patch }));
 
 	const notAdded = avail?.filter((a) => !a.registered) ?? [];
 	return (
@@ -136,6 +136,24 @@ export function ChecklistsTab({ canEdit }: { canEdit: boolean }) {
 											<option value="loose">Loose: sounds roughly like it</option>
 										</select>
 									</label>
+									<div className="flex flex-wrap items-center gap-2 border-t border-line px-4 py-3 text-sm">
+										<span className="min-w-0 flex-1 basis-64">
+											<span className="font-medium">When to read the next item</span>
+											<span className="block text-xs text-fg-muted">{t.step.mode === "auto" ? "Right after the answer." : t.step.mode === "ask" ? "The hub waits until someone says \"next\" or presses Next item." : t.step.mode === "timer" ? "The hub waits this long after each answer. \"Next\" or the button goes on earlier." : "Another system tells the hub to go on: POST /v1/runs/{id}/proceed or /v1/stations/{station}/proceed. \"Next\" or the button also works."}</span>
+										</span>
+										<select className="input w-auto py-1 text-xs" value={t.step.mode} disabled={!canEdit || !!busy} onChange={(e) => void saveEntry(t.templateId, { step: e.target.value === "timer" ? { mode: "timer", delaySec: t.step.mode === "timer" ? t.step.delaySec : 60 } : { mode: e.target.value as "auto" | "ask" | "external" } })}>
+											<option value="auto">At once</option>
+											<option value="ask">When asked (say next)</option>
+											<option value="timer">After a time</option>
+											<option value="external">When another system says so</option>
+										</select>
+										{t.step.mode === "timer" && (
+											<label className="flex items-center gap-1 text-xs">
+												<input className="input w-20 py-1 text-xs" type="number" min={1} max={86400} defaultValue={t.step.delaySec} disabled={!canEdit || !!busy} onBlur={(e) => { const n = Math.max(1, Math.round(Number(e.target.value) || 60)); if (t.step.mode === "timer" && n !== t.step.delaySec) void saveEntry(t.templateId, { step: { mode: "timer", delaySec: n } }); }} />
+												seconds
+											</label>
+										)}
+									</div>
 									<ItemWords entry={t} canEdit={canEdit} onChange={(words) => void saveEntry(t.templateId, { words })} />
 									<div className="flex flex-wrap items-center gap-2 border-t border-line px-4 py-2 text-xs text-fg-faint">
 										<span className="flex-1">Downloaded {new Date(t.importedAt).toLocaleString()}</span>

@@ -379,6 +379,7 @@ export function createApp(deps: AppDeps): Hono {
 		}),
 	);
 	api.post("/runs/:id/repeat", (c) => handle(c, async () => c.json(await engine.repeat(c.req.param("id")))));
+	api.post("/runs/:id/proceed", (c) => handle(c, async () => c.json(await engine.proceed(c.req.param("id"), "screen"))));
 	api.post("/runs/:id/pause", (c) => handle(c, async () => c.json(await engine.pause(c.req.param("id")))));
 	api.post("/runs/:id/resume", (c) => handle(c, async () => c.json(await engine.resume(c.req.param("id"), c.get("sessionRow")))));
 	api.post("/runs/:id/complete", (c) => handle(c, async () => c.json(await engine.complete(c.req.param("id"), c.get("sessionRow")))));
@@ -673,7 +674,7 @@ export function createApp(deps: AppDeps): Hono {
 	// ----- central checklist register (Admin → Checklist setup); template ids may contain "/" so they travel in the body / query
 	const libraryView = (): LibraryView => {
 		const d = store.get();
-		return { templates: Object.values(d.library ?? {}).sort((a, b) => a.name.localeCompare(b.name)).map((t) => ({ ...t, language: d.settings.templateLanguages?.[t.templateId], words: d.settings.itemAnswers?.[t.templateId] ?? {}, wordsOnly: !!d.settings.wordsOnly?.includes(t.templateId), wordMatch: d.settings.wordMatch?.[t.templateId] ?? "normal" })) };
+		return { templates: Object.values(d.library ?? {}).sort((a, b) => a.name.localeCompare(b.name)).map((t) => ({ ...t, language: d.settings.templateLanguages?.[t.templateId], words: d.settings.itemAnswers?.[t.templateId] ?? {}, wordsOnly: !!d.settings.wordsOnly?.includes(t.templateId), wordMatch: d.settings.wordMatch?.[t.templateId] ?? "normal", step: d.settings.stepMode?.[t.templateId] ?? { mode: "auto" } })) };
 	};
 	api.get("/library", (c) => c.json(libraryView()));
 	api.get("/library/available", (c) => handle(c, async () => c.json({ templates: await engine.availableTemplates(c.get("sessionRow")) })));
@@ -705,10 +706,17 @@ export function createApp(deps: AppDeps): Hono {
 	api.put("/library/entry", async (c) => {
 		const denied = requireAdmin(c);
 		if (denied) return denied;
-		const body = (await c.req.json().catch(() => ({}))) as { templateId?: unknown; language?: unknown; words?: unknown; wordsOnly?: unknown; wordMatch?: unknown };
+		const body = (await c.req.json().catch(() => ({}))) as { templateId?: unknown; language?: unknown; words?: unknown; wordsOnly?: unknown; wordMatch?: unknown; step?: unknown };
 		const id = str(body.templateId);
 		if (!id || !store.get().library?.[id]) return fail(c, 404, "NOT_FOUND", "checklist is not in the register");
 		await store.update((d) => {
+			if (body.step && typeof body.step === "object") {
+				const st = body.step as { mode?: unknown; delaySec?: unknown };
+				const modes = (d.settings.stepMode ??= {});
+				if (st.mode === "auto") delete modes[id];
+				else if (st.mode === "ask" || st.mode === "external") modes[id] = { mode: st.mode };
+				else if (st.mode === "timer") modes[id] = { mode: "timer", delaySec: Math.min(24 * 3600, Math.max(1, Math.round(Number(st.delaySec) || 30))) };
+			}
 			if (body.wordMatch === "exact" || body.wordMatch === "normal" || body.wordMatch === "loose") {
 				const m = (d.settings.wordMatch ??= {});
 				if (body.wordMatch === "normal") delete m[id];
@@ -993,6 +1001,16 @@ export function createApp(deps: AppDeps): Hono {
 		}),
 	);
 	v1.post("/runs/:id/next", (c) => withRun(c, async (runId) => c.json(await engine.next(runId).then(() => runItemView(runId)))));
+	// External trigger: release the item held back by the checklist's "next item" setting (mode external, or any mode).
+	v1.post("/runs/:id/proceed", (c) => withRun(c, async (runId) => c.json(await engine.proceed(runId, "external").then(() => runItemView(runId)))));
+	v1.post("/stations/:id/proceed", (c) =>
+		handle(c, async () => {
+			const a = await integrationAuth(c);
+			if (!a.ok) return a.res;
+			const v = await engine.proceedStation(c.req.param("id"));
+			return v ? c.json(runItemView(v.runId)) : fail(c, 404, "NO_RUN", "no open run on that station");
+		}),
+	);
 	v1.post("/runs/:id/skip", (c) => withRun(c, async (runId, body) => c.json(await engine.skip(runId, str(body.taskId) ?? str(body.dataId), str(body.reason) ?? "skipped by API").then(() => runItemView(runId)))));
 	v1.post("/runs/:id/repeat", (c) => withRun(c, async (runId) => c.json(await engine.repeat(runId).then(() => runItemView(runId)))));
 	v1.post("/runs/:id/pause", (c) => withRun(c, async (runId) => c.json(await engine.pause(runId).then(() => runItemView(runId)))));
