@@ -1340,9 +1340,16 @@ export class RunEngine {
 	}
 
 	/** External trigger by station: release the held item of that station's run, if any. */
-	async proceedStation(stationId: string): Promise<RunView | undefined> {
+	async proceedStation(stationId: string, itemRef?: string): Promise<RunView | undefined> {
 		const r = this.activeRun(stationId);
-		if (!r || r.exchange !== "waiting") return r ? this.view(r.runId) : undefined;
+		if (!r) return undefined;
+		if (itemRef) {
+			// a named item: read that one now, wherever the run stands (also when it is not held)
+			const item = this.resolveItem(r.runId, itemRef);
+			if (!item) throw new EngineError(404, "ITEM_NOT_FOUND", "no such item (task id or DataId)");
+			return this.jumpTo(r.runId, item.taskId);
+		}
+		if (r.exchange !== "waiting") return this.view(r.runId);
 		return this.proceed(r.runId, "external");
 	}
 
@@ -1725,6 +1732,10 @@ export class RunEngine {
 		this.clearTimers(r.runId);
 		this.deps.io.stopListening(r.stationId);
 		if (item.state === "answered" || item.state === "unsynced") item.state = "unanswered";
+		if (r.waiting) {
+			r.waiting = undefined;
+			this.emit("run.proceeded", r, { taskId: item.taskId, text: "external", data: { by: "external", jump: true } });
+		}
 		await this.speakItem(r, item);
 		return this.view(runId);
 	}

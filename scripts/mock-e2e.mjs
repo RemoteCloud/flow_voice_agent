@@ -605,6 +605,11 @@ try {
 	assert.equal(rel.status, 200, await rel.text());
 	await waitFor(() => spoken.slice(mark).some((s) => s.includes("Check cooling water temp")), "second item after the trigger");
 	assert.equal((await svc("POST", `stations/ecr-01/proceed`)).status, 404, "no run on that station");
+	// a named item (DataId) is read at once, held or not
+	const jumpRes = await svc("POST", `stations/bridge-01/proceed`, { item: "ER/Main/LubeOil" });
+	assert.equal(jumpRes.status, 200, await jumpRes.text());
+	await waitFor(() => spoken.slice(mark).filter((s) => s.includes("Check lube oil pressure")).length >= 2, "named item read again");
+	assert.equal((await svc("POST", `stations/bridge-01/proceed`, { item: "no/such" })).status, 404);
 	await api("POST", `runs/${extRun.runId}/abandon`);
 	assert.equal((await api("PUT", "library/entry", { templateId: "tpl-engine", step: { mode: "auto" } })).body.templates[0].step.mode, "auto");
 

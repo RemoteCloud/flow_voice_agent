@@ -1002,12 +1002,31 @@ export function createApp(deps: AppDeps): Hono {
 	);
 	v1.post("/runs/:id/next", (c) => withRun(c, async (runId) => c.json(await engine.next(runId).then(() => runItemView(runId)))));
 	// External trigger: release the item held back by the checklist's "next item" setting (mode external, or any mode).
-	v1.post("/runs/:id/proceed", (c) => withRun(c, async (runId) => c.json(await engine.proceed(runId, "external").then(() => runItemView(runId)))));
+	// Body {item} (task id or DataId) reads that item instead of the held one.
+	v1.post("/runs/:id/proceed", (c) =>
+		withRun(c, async (runId, body) => {
+			const ref = str(body.item) ?? str(body.dataId) ?? str(body.taskId);
+			if (ref) {
+				const it = engine.resolveItem(runId, ref);
+				if (!it) return fail(c, 404, "ITEM_NOT_FOUND", "no such item (task id or DataId)");
+				await engine.jumpTo(runId, it.taskId);
+			} else await engine.proceed(runId, "external");
+			return c.json(runItemView(runId));
+		}),
+	);
 	v1.post("/stations/:id/proceed", (c) =>
 		handle(c, async () => {
 			const a = await integrationAuth(c);
 			if (!a.ok) return a.res;
-			const v = await engine.proceedStation(c.req.param("id"));
+			let body: Record<string, unknown> = {};
+			if (a.raw.trim()) {
+				try {
+					body = JSON.parse(a.raw) as Record<string, unknown>;
+				} catch {
+					return fail(c, 400, "BAD_REQUEST", "body must be JSON");
+				}
+			}
+			const v = await engine.proceedStation(c.req.param("id"), str(body.item) ?? str(body.dataId) ?? str(body.taskId));
 			return v ? c.json(runItemView(v.runId)) : fail(c, 404, "NO_RUN", "no open run on that station");
 		}),
 	);
