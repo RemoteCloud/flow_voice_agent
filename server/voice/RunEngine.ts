@@ -1353,6 +1353,59 @@ export class RunEngine {
 		return this.proceed(r.runId, "external");
 	}
 
+	/**
+	 * External event: the moment for an item has passed (the vessel is past the reporting point, the sensor never
+	 * saw it). The crew hears it; with `value` ("No", an option title or value) that answer is written as the
+	 * signed-in user, without one the item stays open as skipped. Either way the run goes on, so it never sits
+	 * on an item nobody will answer. No item named = the one being asked (or held) now.
+	 */
+	async missed(runId: string, taskId?: string, value?: string): Promise<RunView> {
+		const r = this.record(runId);
+		if (r.state === "completed" || r.state === "abandoned") throw new EngineError(409, "RUN_ENDED", "run has ended");
+		const id = taskId ?? r.currentTaskId ?? r.waiting?.taskId;
+		const item = r.items.find((i) => i.taskId === id);
+		if (!item) throw new EngineError(404, "ITEM_NOT_FOUND", "no current item");
+		if (item.state === "answered" || item.state === "unsynced") return this.view(runId); // answered in time: nothing was missed
+		const held = r.waiting?.taskId === item.taskId;
+		const here = r.state === "active" && (r.currentTaskId === item.taskId || held);
+		let write = value;
+		if (write !== undefined) {
+			const opt = item.options?.find((o) => o.value === write) ?? item.options?.find((o) => o.title.toLowerCase() === write?.toLowerCase());
+			if (opt) write = opt.value;
+			// "no" on a plain checkbox is not a value Flow can store: the item stays open, like a spoken "no"
+			if (item.type === "Checkbox" && (write === "false" || write.toLowerCase() === "no" || write === CHECKBOX_NOT_DONE)) write = undefined;
+		}
+		const session = write !== undefined ? this.actingSession(runId) : undefined;
+		if (write !== undefined && !session) throw new EngineError(409, "NO_USER", "no signed-in user to attribute the value to");
+		this.emit("run.item.missed", r, { taskId: item.taskId, text: value });
+		await this.audit(r, "item.missed", { taskId: item.taskId, dataId: item.dataId, value, text: "external" });
+		if (r.state === "active") {
+			if (here) {
+				this.clearTimers(r.runId);
+				this.deps.io.stopListening(r.stationId);
+			}
+			await this.say(r, tr(r.language, "item_missed", { name: item.name }));
+		}
+		if (write !== undefined && session) await this.answerManual(runId, item.taskId, write, session);
+		else await this.skip(runId, item.taskId, "missed");
+		if (held && r.state === "active" && r.waiting?.taskId === item.taskId) await this.advance(r, item); // hold the one after it instead
+		else if (!here && r.state === "active") {
+			// the line was spoken over another item's window: open that one again
+			const cur = r.items.find((i) => i.taskId === r.currentTaskId);
+			if (cur && (r.exchange === "listening" || r.exchange === "confirming")) await this.openListen(r, cur);
+		}
+		return this.view(runId);
+	}
+
+	/** The same by station: the open run there, if any. */
+	async missedStation(stationId: string, itemRef?: string, value?: string): Promise<RunView | undefined> {
+		const r = this.activeRun(stationId);
+		if (!r) return undefined;
+		const item = itemRef ? this.resolveItem(r.runId, itemRef) : undefined;
+		if (itemRef && !item) throw new EngineError(404, "ITEM_NOT_FOUND", "no such item (task id or DataId)");
+		return this.missed(r.runId, item?.taskId, value);
+	}
+
 	private async offerSweepOrComplete(r: RunRecord): Promise<void> {
 		const skipped = r.items.filter((i) => i.state === "skipped" && i.voice);
 		if (skipped.length && !r.sweepOffered) {

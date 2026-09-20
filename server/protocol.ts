@@ -169,6 +169,7 @@ export type HubEventType =
 	| "run.item.queued_offline"
 	| "run.item.skipped"
 	| "run.item.escalated"
+	| "run.item.missed"
 	| "run.waiting"
 	| "run.proceeded"
 	| "run.paused"

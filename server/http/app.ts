@@ -1030,7 +1030,34 @@ export function createApp(deps: AppDeps): Hono {
 			return v ? c.json(runItemView(v.runId)) : fail(c, 404, "NO_RUN", "no open run on that station");
 		}),
 	);
-	v1.post("/runs/:id/skip", (c) => withRun(c, async (runId, body) => c.json(await engine.skip(runId, str(body.taskId) ?? str(body.dataId), str(body.reason) ?? "skipped by API").then(() => runItemView(runId)))));
+	// External event: the moment for an item has passed. Body {item?, value?}: no item = the one asked now; value
+	// ("No", an option) is written as the signed-in user, without it the item stays open (skipped). The run goes on.
+	v1.post("/runs/:id/missed", (c) =>
+		withRun(c, async (runId, body) => {
+			const ref = str(body.item) ?? str(body.dataId) ?? str(body.taskId);
+			const it = ref ? engine.resolveItem(runId, ref) : undefined;
+			if (ref && !it) return fail(c, 404, "ITEM_NOT_FOUND", "no such item (task id or DataId)");
+			await engine.missed(runId, it?.taskId, body.value === undefined ? undefined : String(body.value));
+			return c.json(runItemView(runId));
+		}),
+	);
+	v1.post("/stations/:id/missed", (c) =>
+		handle(c, async () => {
+			const a = await integrationAuth(c);
+			if (!a.ok) return a.res;
+			let body: Record<string, unknown> = {};
+			if (a.raw.trim()) {
+				try {
+					body = JSON.parse(a.raw) as Record<string, unknown>;
+				} catch {
+					return fail(c, 400, "BAD_REQUEST", "body must be JSON");
+				}
+			}
+			const v = await engine.missedStation(c.req.param("id"), str(body.item) ?? str(body.dataId) ?? str(body.taskId), body.value === undefined ? undefined : String(body.value));
+			return v ? c.json(runItemView(v.runId)) : fail(c, 404, "NO_RUN", "no open run on that station");
+		}),
+	);
+	v1.post("/runs/:id/skip",(c) => withRun(c, async (runId, body) => c.json(await engine.skip(runId, str(body.taskId) ?? str(body.dataId), str(body.reason) ?? "skipped by API").then(() => runItemView(runId)))));
 	v1.post("/runs/:id/repeat", (c) => withRun(c, async (runId) => c.json(await engine.repeat(runId).then(() => runItemView(runId)))));
 	v1.post("/runs/:id/pause", (c) => withRun(c, async (runId) => c.json(await engine.pause(runId).then(() => runItemView(runId)))));
 	v1.post("/runs/:id/resume", (c) => withRun(c, async (runId) => c.json(await engine.resume(runId, engine.actingSession(runId)).then(() => runItemView(runId)))));

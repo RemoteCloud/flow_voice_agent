@@ -610,6 +610,28 @@ try {
 	assert.equal(jumpRes.status, 200, await jumpRes.text());
 	await waitFor(() => spoken.slice(mark).filter((s) => s.includes("Check lube oil pressure")).length >= 2, "named item read again");
 	assert.equal((await svc("POST", `stations/bridge-01/proceed`, { item: "no/such" })).status, 404);
+	// "missed": the moment for an item has passed. The crew hears it, the run never sits on that item
+	const miss = await svc("POST", `stations/bridge-01/missed`);
+	assert.equal(miss.status, 200, await miss.text());
+	await waitFor(() => spoken.slice(mark).some((s) => s === "Check lube oil pressure missed."), "missed item spoken");
+	await waitFor(() => spoken.slice(mark).filter((s) => s === "Waiting for the next step.").length >= 2, "run moved on past the missed item");
+	let missRun = (await api("GET", `runs/${extRun.runId}`)).body;
+	assert.equal(missRun.items.find((i) => i.dataId === "ER/Main/LubeOil").state, "skipped");
+	assert.equal(missRun.waiting.taskId, missRun.items.find((i) => i.dataId === "ER/Main/CoolingTemp").taskId);
+	// with a value the answer is written as the signed-in user (option by title, any case), also for an item further down
+	const missNo = await svc("POST", `runs/${extRun.runId}/missed`, { item: "ER/Aux/Bilge", value: "high" });
+	assert.equal(missNo.status, 200, await missNo.text());
+	missRun = (await api("GET", `runs/${extRun.runId}`)).body;
+	assert.equal(missRun.items.find((i) => i.dataId === "ER/Aux/Bilge").value, "High");
+	assert.equal(missRun.items.find((i) => i.dataId === "ER/Aux/Bilge").state, "answered");
+	assert.equal(missRun.exchange, "waiting", "the run still waits where it was");
+	// a held item that is missed: the one after it is held instead
+	assert.equal((await svc("POST", `runs/${extRun.runId}/missed`)).status, 200);
+	missRun = (await api("GET", `runs/${extRun.runId}`)).body;
+	assert.equal(missRun.items.find((i) => i.dataId === "ER/Main/CoolingTemp").state, "skipped");
+	assert.equal(missRun.waiting.taskId, missRun.items.find((i) => i.dataId === "ER/Main/RunningHours").taskId);
+	assert.equal((await svc("POST", `stations/bridge-01/missed`, { item: "no/such" })).status, 404);
+	assert.equal((await svc("POST", `stations/ecr-01/missed`)).status, 404, "no run on that station");
 	await api("POST", `runs/${extRun.runId}/abandon`);
 	assert.equal((await api("PUT", "library/entry", { templateId: "tpl-engine", step: { mode: "auto" } })).body.templates[0].step.mode, "auto");
 
