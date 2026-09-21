@@ -1,12 +1,15 @@
+import { ChecklistsTab } from "./AdminChecklists.js";
+import { TenantsTab } from "./AdminTenants.js";
 import { useCallback, useEffect, useState } from "react";
-import type { AuditEntry, Station, StatusResponse, VoiceProfile, EventMapping } from "../../../server/api.js";
+import type { AuditEntry, ChecklistPick, LibraryView, Station, StatusResponse, VoiceProfile, EventMapping } from "../../../server/api.js";
 import { api, toApiError } from "../api.js";
 import { useApp } from "../context.js";
 import { navigate } from "../router.js";
 import { StationsTab } from "./AdminStations.js";
 import { HubQr } from "./Login.js";
+import { versionLine } from "../build.js";
 
-type Tab = "status" | "stations" | "devices" | "profiles" | "outbox" | "audit";
+type Tab = "status" | "checklists" | "tenants" | "stations" | "devices" | "profiles" | "outbox" | "audit";
 
 export function AdminPage() {
 	const { me } = useApp();
@@ -30,11 +33,13 @@ export function AdminPage() {
 
 	const tabs: [Tab, string][] = [
 		["status", "Status"],
+		["checklists", "Checklist setup"],
 		["stations", "Stations"],
 		["devices", "Devices & sessions"],
 		["profiles", "Profiles & mappings"],
 		["outbox", `Outbox${status?.outbox.queued ? ` (${status.outbox.queued})` : ""}`],
 		["audit", "Audit"],
+		["tenants", "Tenants"],
 	];
 
 	return (
@@ -48,22 +53,72 @@ export function AdminPage() {
 				{!me.isAdmin && <span className="ml-auto text-xs text-fg-faint">read-only (not an admin)</span>}
 			</div>
 			{err && <p className="text-sm text-danger">{err}</p>}
-			{!status ? <p className="text-sm text-fg-muted">Loading…</p> : tab === "status" ? <StatusTab s={status} /> : tab === "stations" ? <StationsTab s={status} reload={load} canEdit={me.isAdmin} /> : tab === "devices" ? <DevicesTab s={status} reload={load} canEdit={me.isAdmin} /> : tab === "profiles" ? <ProfilesTab canEdit={me.isAdmin} /> : tab === "outbox" ? <OutboxTab s={status} reload={load} /> : <AuditTab />}
+			{!status ? <p className="text-sm text-fg-muted">Loading…</p> : tab === "status" ? <StatusTab s={status} go={setTab} /> : tab === "checklists" ? <ChecklistsTab canEdit={me.isAdmin} /> : tab === "stations" ? <StationsTab s={status} reload={load} canEdit={me.isAdmin} /> : tab === "devices" ? <DevicesTab s={status} reload={load} canEdit={me.isAdmin} /> : tab === "profiles" ? <ProfilesTab canEdit={me.isAdmin} /> : tab === "tenants" ? <TenantsTab /> : tab === "outbox" ? <OutboxTab s={status} reload={load} /> : <AuditTab />}
 		</div>
 	);
 }
 
-function StatusTab({ s }: { s: StatusResponse }) {
+/** Three steps from an empty hub to a working station; each shows whether it is done and jumps to the right tab. */
+function SetupGuide({ s, go }: { s: StatusResponse; go: (t: Tab) => void }) {
+	const [downloaded, setDownloaded] = useState<number | undefined>();
+	useEffect(() => {
+		api.get<LibraryView>("library").then((l) => setDownloaded(l.templates.length), () => setDownloaded(undefined));
+	}, []);
+	const words = Object.values(s.settings.itemAnswers ?? {}).reduce((n, per) => n + Object.keys(per).length, 0);
+	const inUse = s.stations.filter((st) => st.endpoint).length;
+	const steps: { done: boolean; title: string; text: string; button: string; tab: Tab }[] = [
+		{ done: !!downloaded, title: "Download checklists", text: downloaded ? `${downloaded} downloaded from Maranics.` : "Pick the checklists to use from the Maranics Templates app.", button: "Checklist setup", tab: "checklists" },
+		{ done: words > 0, title: "Set language and answer words", text: words ? `${words} item(s) have answer words.` : "Optional: tap the words that count as the answer, like UP for Ramp.", button: "Checklist setup", tab: "checklists" },
+		{ done: inUse > 0, title: "Open a station", text: inUse ? `${inUse} station(s) in use now.` : "Each station has its own link and QR code. Scan it with the tablet.", button: "Stations", tab: "stations" },
+	];
+	return (
+		<section className="card md:col-span-2">
+			<div className="card-head">
+				<h2 className="card-title">Set up in three steps</h2>
+			</div>
+			<ol className="grid gap-px bg-line md:grid-cols-3">
+				{steps.map((st, i) => (
+					<li key={st.title} className="flex flex-col gap-2 bg-panel p-4">
+						<p className="flex items-center gap-2 text-sm font-semibold">
+							<span className={`flex h-7 w-7 shrink-0 items-center justify-center rounded-full border text-xs ${st.done ? "border-ok text-ok" : "border-line-strong text-fg-muted"}`}>{st.done ? "✓" : i + 1}</span>
+							{st.title}
+						</p>
+						<p className="flex-1 text-xs text-fg-muted">{st.text}</p>
+						<button type="button" className={`btn btn-sm self-start ${st.done ? "" : "btn-primary"}`} onClick={() => go(st.tab)}>
+							{st.button}
+						</button>
+					</li>
+				))}
+			</ol>
+		</section>
+	);
+}
+
+function StatusTab({ s, go }: { s: StatusResponse; go: (t: Tab) => void }) {
 	const { boot } = useApp();
 	return (
 		<div className="grid gap-4 md:grid-cols-2">
+			<SetupGuide s={s} go={go} />
 			<section className="card">
 				<div className="card-head">
 					<h2 className="card-title">Hub</h2>
 				</div>
 				<dl className="card-body kv">
+					<dt>Client link</dt>
+					<dd>
+						<a className="mono underline" href="/client">
+							{boot.hubUrl.replace(/\/$/, "")}/client
+						</a>{" "}
+						<span className="text-fg-faint">— checklists and voice only (PC, Mac, Raspberry Pi, tablet)</span>
+					</dd>
+					<dt>Admin link</dt>
+					<dd>
+						<a className="mono underline" href="/admin">
+							{boot.hubUrl.replace(/\/$/, "")}/admin
+						</a>
+					</dd>
 					<dt>Version</dt>
-					<dd>{s.hubVersion}</dd>
+					<dd>{versionLine(s.hubVersion)}</dd>
 					<dt>Uptime</dt>
 					<dd>{Math.round(s.uptimeSec / 60)} min</dd>
 					<dt>Speech</dt>

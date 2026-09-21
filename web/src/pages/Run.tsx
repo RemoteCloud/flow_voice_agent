@@ -53,7 +53,6 @@ export function RunPage({ runId, mobile = false }: { runId: string; mobile?: boo
 	};
 
 	const current = useMemo(() => run?.items.find((i) => i.taskId === run.currentTaskId), [run]);
-	const upNext = useMemo(() => (current && run ? run.items.filter((i) => i.index > current.index && i.voice && i.state === "unanswered").slice(0, 2) : []), [run, current]);
 	const sections = useMemo(() => {
 		const out: { name: string | undefined; items: RunItem[] }[] = [];
 		for (const i of run?.items ?? []) {
@@ -69,7 +68,7 @@ export function RunPage({ runId, mobile = false }: { runId: string; mobile?: boo
 	const listening = voice === "listening";
 
 	return (
-		<div className="grid grid-cols-[minmax(0,1fr)] gap-4 lg:grid-cols-[minmax(0,1.3fr)_minmax(0,1fr)]">
+		<div className="grid grid-cols-[minmax(0,1fr)] gap-4 md:grid-cols-[minmax(0,1fr)_minmax(0,1.1fr)]">
 			<div className="space-y-4">
 				{/* current item */}
 				<section className="card">
@@ -130,19 +129,17 @@ export function RunPage({ runId, mobile = false }: { runId: string; mobile?: boo
 									{current.type}
 									{current.options ? `: ${current.options.map((o) => o.title).join(" · ")}` : ""}
 								</p>
-								{mobile && upNext.length > 0 && (
-									<div className="mt-4 border-t border-line pt-3">
-										<p className="text-xs tracking-wide text-fg-faint uppercase">Up next</p>
-										<ul className="mt-1 space-y-0.5 text-sm text-fg-muted">
-											{upNext.map((i) => (
-												<li key={i.taskId} className="truncate">
-													<span className="text-fg-faint">{i.index}. </span>
-													{i.name}
-												</li>
-											))}
-										</ul>
-									</div>
-								)}
+							</div>
+						) : run.waiting ? (
+							<div className="mt-4">
+								<p className="text-xs tracking-wide text-fg-faint uppercase">Up next</p>
+								<p className="mt-1 text-lg text-fg-muted">{run.items.find((i) => i.taskId === run.waiting?.taskId)?.name}</p>
+								<p className="mt-2 text-sm text-fg-muted">
+									{run.waiting.mode === "ask" ? "Say \"next\" or press Next item." : run.waiting.mode === "timer" ? <Countdown until={run.waiting.until} /> : "Waiting for another system to go on. \"Next\" or the button also works."}
+								</p>
+								<button type="button" className="btn btn-primary mt-3" onClick={() => void act("proceed")}>
+									Next item
+								</button>
 							</div>
 						) : (
 							<p className="mt-4 text-lg text-fg-muted">{done ? `Run ${run.state}.` : run.state === "paused" ? "Paused." : run.answered >= run.total ? "All items answered — complete the checklist below." : "Waiting for the next item…"}</p>
@@ -227,7 +224,7 @@ export function RunPage({ runId, mobile = false }: { runId: string; mobile?: boo
 									<button type="button" className="btn btn-ghost" onClick={() => v.stop()}>
 										Voice off
 									</button>
-									<LanguageSelect />
+									{!mobile && <LanguageSelect />}
 								</div>
 								{!mobile && (
 									<label className="flex items-center gap-2 text-sm">
@@ -285,8 +282,8 @@ export function RunPage({ runId, mobile = false }: { runId: string; mobile?: boo
 				</section>
 			</div>
 
-			{/* item list: done / now / next */}
-			<section className="card">
+			{/* item list, ECAM style; first on a phone, right-hand column on a tablet */}
+			<section className="card order-first overflow-hidden md:order-none">
 				<div className="card-head">
 					<h2 className="card-title">
 						Items <span className="ml-1 font-normal text-fg-muted">{run.answered}/{run.total}</span>
@@ -321,7 +318,7 @@ export function RunPage({ runId, mobile = false }: { runId: string; mobile?: boo
 					}
 				/>
 			)}
-			{discardOpen && <DiscardDialog onClose={() => setDiscardOpen(false)} onSubmit={(reasonCode, comment) => act("discard", { reasonCode, comment }).then(() => setDiscardOpen(false))} />}
+			{discardOpen && <DiscardDialog templateId={run.templateId} onClose={() => setDiscardOpen(false)} onSubmit={(reasonCode, comment) => act("discard", { reasonCode, comment }).then(() => setDiscardOpen(false))} />}
 		</div>
 	);
 }
@@ -329,45 +326,37 @@ export function RunPage({ runId, mobile = false }: { runId: string; mobile?: boo
 /** Sectioned list: answered rows carry a check, the current row is highlighted, upcoming rows stay muted. On phones it scrolls with the page and follows the current item. */
 function ItemList({ run, sections, mobile, done, onManual, onJump }: { run: RunView; sections: { name: string | undefined; items: RunItem[] }[]; mobile: boolean; done: boolean; onManual: (item: RunItem) => void; onJump: (taskId: string) => void }) {
 	useEffect(() => {
-		if (!mobile || !run.currentTaskId) return;
+		if (!run.currentTaskId) return;
 		document.getElementById(`item-${run.currentTaskId}`)?.scrollIntoView({ block: "nearest", behavior: "smooth" });
-	}, [mobile, run.currentTaskId]);
+	}, [run.currentTaskId]);
 	const counts = (items: RunItem[]) => {
 		const total = items.filter((i) => i.state !== "info").length;
 		const answered = items.filter((i) => i.state === "answered" || i.state === "unsynced").length;
 		return total ? `${answered}/${total}` : "";
 	};
 	return (
-		<div className={mobile ? "" : "max-h-[70vh] overflow-y-auto"}>
+		<div className="ecam max-h-[46vh] overflow-x-hidden overflow-y-auto pb-3 md:max-h-[78vh]">
 			{sections.map((s, si) => (
 				<div key={si}>
 					{s.name && (
-						<p className="section-sticky flex items-center justify-between px-4 py-1.5 text-xs font-medium tracking-wide text-fg-muted uppercase">
-							<span className="truncate">{s.name}</span>
-							<span className="ml-2 shrink-0 font-normal normal-case">{counts(s.items)}</span>
+						<p className="ecam-title">
+							<span className="min-w-0 truncate">{s.name}</span>
+							<span className="shrink-0 font-normal text-fg-muted">{counts(s.items)}</span>
 						</p>
 					)}
-					<ul className="divide-y divide-line">
+					<ul>
 						{s.items.map((i) => {
-							const isDone = i.state === "answered" || i.state === "unsynced" || i.state === "skipped";
-							const isNow = i.state === "current";
+							const isNow = i.state === "current" || (i.state === "unanswered" && i.taskId === run.currentTaskId && !done);
+							const tone = isNow ? "ecam-now" : i.state === "answered" ? "ecam-done" : i.state === "unsynced" || i.state === "skipped" || i.state === "needs_screen" ? "ecam-attn" : i.state === "info" ? "ecam-info" : "ecam-todo";
 							return (
-								<li key={i.taskId} id={`item-${i.taskId}`} className={`flex items-center gap-3 px-4 py-2.5 ${isNow ? "row-current" : ""} ${isDone ? "text-fg-muted" : ""}`}>
-									<StateMark item={i} />
-									<button type="button" className="min-w-0 flex-1 text-left" onClick={() => onManual(i)} disabled={done || i.state === "info"}>
-										<p className={`truncate text-sm ${isNow ? "font-semibold text-fg" : ""}`}>
-											<span className="text-fg-faint">{i.index}. </span>
-											{i.name}
-										</p>
-										<p className="truncate text-xs text-fg-muted">
-											{isNow ? "Now" : i.state === "answered" || i.state === "unsynced" ? (i.valueText ?? "Answered") : i.state === "skipped" ? `Skipped${i.skipReason ? ` · ${i.skipReason}` : ""}` : i.state === "needs_screen" ? "Needs the screen" : i.state === "info" ? "Information" : mobile ? "Next" : i.type}
-											{isNow && i.valueText ? ` · ${i.valueText}` : ""}
-											{i.state === "unsynced" ? " · waiting to sync" : ""}
-											{!mobile && !isNow && i.state !== "info" ? ` · ${i.type}` : ""}
-										</p>
+								<li key={i.taskId} id={`item-${i.taskId}`} className="flex items-stretch">
+									<button type="button" className={`ecam-row ${tone}`} onClick={() => onManual(i)} disabled={done || i.state === "info"}>
+										<span className="ecam-name">{i.name}</span>
+										{i.state !== "info" && <span className="ecam-dots" aria-hidden="true" />}
+										{i.state !== "info" && <span className="ecam-value">{ecamValue(i)}</span>}
 									</button>
 									{i.voice && !done && !isNow && run.state === "active" && (
-										<button type="button" className="btn btn-sm btn-ghost" title="Speak this item next" aria-label="Speak this item next" onClick={() => onJump(i.taskId)}>
+										<button type="button" className="px-2 text-fg-faint" title="Speak this item next" aria-label="Speak this item next" onClick={() => onJump(i.taskId)}>
 											<Icon name="play" size={14} />
 										</button>
 									)}
@@ -381,26 +370,31 @@ function ItemList({ run, sections, mobile, done, onManual, onJump }: { run: RunV
 	);
 }
 
-function StateMark({ item }: { item: RunItem }) {
-	if (item.state === "answered" || item.state === "unsynced") {
-		return (
-			<span className={`flex h-6 w-6 shrink-0 items-center justify-center rounded-full ${item.state === "unsynced" ? "bg-warn/15 text-warn" : "bg-ok/15 text-ok"}`} title={item.state}>
-				<Icon name="check" size={14} strokeWidth={2.5} />
-			</span>
-		);
+/** Right-hand side of an ECAM line: the recorded value once there is one, otherwise the action the item asks for. */
+function ecamValue(i: RunItem): string {
+	if (i.state === "answered") return i.valueText ?? "Done";
+	if (i.state === "unsynced") return `${i.valueText ?? "Done"} · sync`;
+	if (i.state === "skipped") return "Skipped";
+	if (i.state === "needs_screen") return "On screen";
+	if (i.state === "current" && i.valueText) return i.valueText;
+	if (i.expected?.length) return i.expected[0]!.replace(/\s*\+\s*/g, " "); // a combination ("hivt + körbro") reads as its words
+	switch (i.type) {
+		case "Checkbox":
+			return i.options && i.options.length > 1 ? "Select" : "Check";
+		case "DateAndTime":
+		case "Time":
+			return "Time";
+		case "Date":
+			return "Date";
+		case "Number":
+			return "Value";
+		case "QuickSelect":
+		case "Dropdown":
+		case "RadioButtons":
+			return "Select";
+		default:
+			return "Enter";
 	}
-	const cls = {
-		current: "bg-accent",
-		skipped: "bg-danger/70",
-		needs_screen: "border-2 border-warn",
-		unanswered: "border-2 border-line-strong",
-		info: "border border-line",
-	}[item.state];
-	return (
-		<span className="flex h-6 w-6 shrink-0 items-center justify-center" title={item.state}>
-			<span className={`h-3 w-3 rounded-full ${cls}`} />
-		</span>
-	);
 }
 
 function ManualDialog({ item, onClose, onSubmit }: { item: RunItem; onClose: () => void; onSubmit: (value: string, valueText?: string) => Promise<void> }) {
@@ -452,7 +446,7 @@ function ManualDialog({ item, onClose, onSubmit }: { item: RunItem; onClose: () 
 							onSubmit={(e) => {
 								e.preventDefault();
 								const d = new Date(value);
-								if (!Number.isNaN(d.getTime())) void submit(d.toISOString(), `${d.toISOString().slice(11, 16)} UTC`);
+								if (!Number.isNaN(d.getTime())) void submit(d.toISOString().slice(0, 16), `${d.toISOString().slice(11, 16)} UTC`); // Flow stores "yyyy-MM-ddTHH:mm" UTC
 							}}
 						>
 							<input type="datetime-local" className="input" value={value.slice(0, 16)} onChange={(e) => setValue(e.target.value)} />
@@ -488,13 +482,16 @@ function ManualDialog({ item, onClose, onSubmit }: { item: RunItem; onClose: () 
 	);
 }
 
-function DiscardDialog({ onClose, onSubmit }: { onClose: () => void; onSubmit: (reasonCode: string, comment?: string) => Promise<void> }) {
-	const [reasons, setReasons] = useState<{ code: string; title: string }[]>([]);
+type DiscardOption = { code: string; title: string; requireComment: boolean };
+
+function DiscardDialog({ templateId, onClose, onSubmit }: { templateId?: string; onClose: () => void; onSubmit: (reasonCode: string, comment?: string) => Promise<void> }) {
+	const [reasons, setReasons] = useState<DiscardOption[]>([]);
 	const [reason, setReason] = useState("");
 	const [comment, setComment] = useState("");
 	useEffect(() => {
-		void api.get<{ reasons: { code: string; title: string }[] }>("templates/any/discard-reasons").then((r) => setReasons(r.reasons));
-	}, []);
+		void api.get<{ reasons: DiscardOption[] }>(`templates/${encodeURIComponent(templateId ?? "any")}/discard-reasons`).then((r) => setReasons(r.reasons));
+	}, [templateId]);
+	const needComment = reasons.find((r) => r.code === reason)?.requireComment ?? false;
 	return (
 		<div className="fixed inset-0 z-20 flex items-center justify-center bg-black/60 p-4" onClick={onClose}>
 			<div className="card w-full max-w-md" onClick={(e) => e.stopPropagation()}>
@@ -511,12 +508,12 @@ function DiscardDialog({ onClose, onSubmit }: { onClose: () => void; onSubmit: (
 							</option>
 						))}
 					</select>
-					<input className="input" placeholder="Comment (optional)" value={comment} onChange={(e) => setComment(e.target.value)} />
+					<input className="input" placeholder={needComment ? "Comment (required for this reason)" : "Comment (optional)"} value={comment} onChange={(e) => setComment(e.target.value)} />
 					<div className="flex justify-end gap-2">
 						<button type="button" className="btn" onClick={onClose}>
 							Cancel
 						</button>
-						<button type="button" className="btn btn-danger" disabled={!reason} onClick={() => void onSubmit(reason, comment || undefined)}>
+						<button type="button" className="btn btn-danger" disabled={!reason || (needComment && !comment.trim())} onClick={() => void onSubmit(reason, comment.trim() || undefined)}>
 							Discard
 						</button>
 					</div>
@@ -524,4 +521,16 @@ function DiscardDialog({ onClose, onSubmit }: { onClose: () => void; onSubmit: (
 			</div>
 		</div>
 	);
+}
+
+/** Seconds left until a held item is read. */
+function Countdown({ until }: { until?: string }) {
+	const [now, setNow] = useState(Date.now());
+	useEffect(() => {
+		const t = setInterval(() => setNow(Date.now()), 1000);
+		return () => clearInterval(t);
+	}, []);
+	if (!until) return null;
+	const left = Math.max(0, Math.round((Date.parse(until) - now) / 1000));
+	return <>Next item in {left >= 90 ? `${Math.ceil(left / 60)} min` : `${left} s`}. "Next" or the button goes on earlier.</>;
 }

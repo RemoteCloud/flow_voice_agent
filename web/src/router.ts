@@ -4,6 +4,8 @@ import { useEffect, useState } from "react";
 export type Route = { page: "picker" } | { page: "run"; id: string } | { page: "admin" } | { page: "enroll" } | { page: "join"; token: string };
 
 export function parseRoute(hash: string): Route {
+	// the direct admin link: /admin with no hash at all (an explicit "#/" is the checklist page)
+	if (!hash && typeof location !== "undefined" && /^\/admin(\/|$)/.test(location.pathname)) return { page: "admin" };
 	const h = hash.replace(/^#\/?/, "");
 	const [page, id] = h.split("/");
 	if (page === "run" && id) return { page: "run", id: decodeURIComponent(id) };

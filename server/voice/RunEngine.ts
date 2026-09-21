@@ -10,27 +10,35 @@
  */
 import type { Logger } from "../core/log.js";
 import type { PolicyEnv } from "../env.js";
-import type { FlowDetail, FlowsClient } from "../maranics/FlowsClient.js";
+import type { DiscardReason, FlowDetail, FlowsClient, TemplateDetail } from "../maranics/FlowsClient.js";
 import type { ChecklistPick, ExchangeState, HubEvent, HubEventType, RunItem, RunView } from "../protocol.js";
 import type { Credentials } from "../store/credentials.js";
-import type { HubSession, HubStore, PromptRecord, RunRecord, Station, VoiceProfile } from "../store/HubStore.js";
-import { buildItems, itemAnnouncement, nextItem, previousItem, progressOf, readinessOf, spokenNumber, startAnnouncement } from "./checklist.js";
-import { controlWord, interpret, itemNumber, readbackText, THRESHOLDS, type ControlWord, type Interpretation } from "./interpret.js";
+import type { HubSession, HubStore, PromptRecord, RunRecord, Station, StepMode, VoiceProfile } from "../store/HubStore.js";
+import { answerKey, buildItems, itemAnnouncement, nextItem, previousItem, progressOf, readinessOf, spokenNumber, startAnnouncement } from "./checklist.js";
+import { CHECKBOX_CHECKED, CHECKBOX_NOT_DONE, checkboxCheckedValue, controlWord, interpret, itemNumber, readbackText, THRESHOLDS, type ControlWord, type Interpretation, type InterpretContext } from "./interpret.js";
 import type { Outbox } from "./Outbox.js";
 import { normLang, t as tr } from "./i18n.js";
-import { normalizeTranscript, wordsToNumber } from "./interpret.js";
+import { grammarFor } from "./grammar.js";
+import { ANSWER_MATCH, answerLabel, answerParts, bestTranscript, containsAllWords, heardAnswer, normalizeTranscript, wordsToNumber } from "./interpret.js";
 
-export const DISCARD_REASONS = [
-	{ code: "duplicate", title: "Created by mistake or duplicate" },
-	{ code: "not_needed", title: "No longer needed" },
-	{ code: "wrong_template", title: "Wrong checklist" },
-	{ code: "other", title: "Other" },
+/** What the screen and the voice menu offer: `code` is the Flow reason name (the status body sends it as `reason`). */
+export interface DiscardOption {
+	code: string;
+	title: string;
+	requireComment: boolean;
+}
+
+/** Last resort when neither the template nor the tenant list can be read (Flow will still validate the name). */
+export const DISCARD_REASONS: DiscardOption[] = [
+	{ code: "Not applicable", title: "Not applicable", requireComment: false },
+	{ code: "Unnecessary", title: "Unnecessary", requireComment: false },
+	{ code: "Other", title: "Other", requireComment: true },
 ];
 
 export interface EngineIo {
 	/** Speak `text` on the station's endpoint. Resolves when the endpoint reports it spoke (or a fallback timer fires). */
 	speak(stationId: string, promptId: string, text: string, language: string): Promise<void>;
-	listen(stationId: string, promptId: string, opts: { maxMs: number; bias?: string[]; expect?: string }): void;
+	listen(stationId: string, promptId: string, opts: { maxMs: number; bias?: string[]; expect?: string; grammar?: string[]; language?: string }): void;
 	stopListening(stationId: string): void;
 	status(stationId: string, state: ExchangeState, text?: string): void;
 	/** Is an audio endpoint attached to the station right now? */
@@ -74,15 +82,38 @@ interface Timers {
 	listen?: NodeJS.Timeout;
 	confirm?: NodeJS.Timeout;
 	exchange?: NodeJS.Timeout;
+	step?: NodeJS.Timeout;
 }
 
 const iso = (ms: number) => new Date(ms).toISOString();
 const newId = (prefix: string) => `${prefix}_${Date.now().toString(36)}${Math.random().toString(36).slice(2, 8)}`;
 
+/**
+ * Background talk caught by an open mic: a longer utterance that matches nothing on an item with a narrow answer
+ * set (yes/no, option, number, time). Free-text items accept anything, so they are never gated.
+ */
+/** Spoken control words per language, handed to the recogniser as bias (on top of the English defaults). */
+const BIAS_WORDS: Record<string, string[]> = {
+	sv: ["bekräfta", "okej", "utfört", "klart", "hoppa över", "säg igen", "nästa", "rättelse"],
+	no: ["bekreft", "greit", "utført", "ferdig", "hopp over", "gjenta", "neste", "rettelse"],
+	de: ["bestätigen", "erledigt", "fertig", "überspringen", "wiederholen", "weiter", "korrektur"],
+	fr: ["confirmer", "fait", "terminé", "passer", "répéter", "suivant", "corriger"],
+};
+
+export function isSideTalk(item: RunItem, text: string, result: Interpretation): boolean {
+	if (result.ok) return false;
+	if (item.type === "Text" || item.type === "LongText") return false;
+	if (result.reason !== "no_match") return false;
+	const words = text.trim().split(/\s+/).filter(Boolean);
+	return words.length >= 4;
+}
+
 export class RunEngine {
 	private readonly timers = new Map<string, Timers>();
 	/** Live transcript per run while a capture window is open. */
 	private readonly partial = new Map<string, string>();
+	/** Consecutive room-talk utterances ignored on the current item, per run: every third one gets a short reminder. */
+	private readonly ignored = new Map<string, number>();
 	/** Item index → section name already announced, per run. */
 	private readonly lastSection = new Map<string, string | undefined>();
 	private readonly speaking = new Set<string>();
@@ -113,6 +144,7 @@ export class RunEngine {
 			state: r.state,
 			exchange: r.exchange,
 			currentTaskId: r.currentTaskId,
+			waiting: r.waiting,
 			items: r.items,
 			answered: p.answered,
 			total: p.total,
@@ -134,6 +166,22 @@ export class RunEngine {
 
 	activeRun(stationId: string): RunRecord | undefined {
 		return this.deps.store.get().runs.find((r) => r.stationId === stationId && (r.state === "active" || r.state === "paused" || r.state === "pending"));
+	}
+
+	/** The item's answer words as they stand now: words edited in Checklist setup count in an open run, not only in the next. */
+	private answersOf(r: RunRecord, item: RunItem): string[] | undefined {
+		const words = this.deps.store.get().settings.itemAnswers?.[r.templateId ?? ""];
+		const live = words?.[answerKey({ dataId: item.dataId, name: item.name })] ?? words?.[answerKey({ name: item.name })];
+		return live?.length ? live : item.expected;
+	}
+
+	/** How close a heard word must be to a marked one (Checklist setup → word tolerance). */
+	private matchLevel(r: RunRecord): number {
+		return ANSWER_MATCH[this.deps.store.get().settings.wordMatch?.[r.templateId ?? ""] ?? "normal"];
+	}
+
+	private interpretCtx(r: RunRecord, item: RunItem, utteredAt: Date): InterpretContext {
+		return { utteredAt, tzMode: this.deps.store.get().settings.tzMode, timeZone: this.deps.policy.timeZone, maxPastHours: this.deps.policy.maxPastHours, options: item.options, language: normLang(r.language), answers: this.answersOf(r, item), answersOnly: !!r.templateId && !!this.deps.store.get().settings.wordsOnly?.includes(r.templateId), answerMatch: this.matchLevel(r) };
 	}
 
 	runsForUser(sub: string): RunRecord[] {
@@ -177,7 +225,7 @@ export class RunEngine {
 
 	// ------------------------------------------------------------ picker
 
-	async listPicks(session: HubSession): Promise<ChecklistPick[]> {
+	async listPicks(session: HubSession, stationId: string | undefined = session.stationId): Promise<ChecklistPick[]> {
 		const api = await this.deps.credentials.apiSettings(session);
 		if (!api) throw noCredential();
 		const flows = await this.deps.flows.listFlows(api, "Active", 1, 200);
@@ -192,6 +240,8 @@ export class RunEngine {
 		}
 		const picks: ChecklistPick[] = [];
 		const settings = this.deps.store.get().settings;
+		const station = this.deps.store.get().stations.find((s) => s.stationId === stationId);
+		const access = (templateId: string | undefined) => this.templateAccess(templateId, station);
 		for (const f of flows.data.items) {
 			const detail = await this.deps.flows.getFlow(api, f.flowId);
 			if (!detail.ok) continue;
@@ -211,12 +261,20 @@ export class RunEngine {
 				lastActivity: f.createdAt,
 				source: "instance",
 				activeRunId: running?.runId,
+				startable: access(f.templateId) !== "off",
+				access: access(f.templateId),
+				language: this.templateLang(f.templateId, station),
 			});
 		}
 		const templates = await this.deps.flows.listTemplates(api);
+		if (!templates.ok) this.deps.log.warn(`Maranics templates: ${templates.message}`);
 		if (templates.ok) {
 			for (const t of templates.data.items) {
 				if (t.status && !/active/i.test(t.status)) continue;
+				if (access(t.id) === "off") {
+					picks.push({ templateId: t.id, templateName: t.name, refId: t.refId, state: "not_started", readiness: "partial", needsScreen: 0, source: "template", startable: false, access: "off", language: this.templateLang(t.id, station) });
+					continue;
+				}
 				const detail = await this.deps.flows.getTemplate(api, t.id);
 				let readiness: ChecklistPick["readiness"] = "partial";
 				let needsScreen = 0;
@@ -226,7 +284,7 @@ export class RunEngine {
 					needsScreen = tasks.length - voice;
 					readiness = voice === 0 && tasks.length > 0 ? "none" : needsScreen === 0 ? "full" : "partial";
 				}
-				picks.push({ templateId: t.id, templateName: t.name, refId: t.refId, state: "not_started", readiness, needsScreen, source: "template" });
+				picks.push({ templateId: t.id, templateName: t.name, refId: t.refId, state: "not_started", readiness, needsScreen, source: "template", startable: access(t.id) === "start", access: access(t.id), language: this.templateLang(t.id, station) });
 			}
 		}
 		return picks;
@@ -259,6 +317,7 @@ export class RunEngine {
 				existing.instanceId = created.data.flowId;
 			}
 			const wasPending = existing.state === "pending";
+			existing.language = this.templateLang(existing.templateId, station) ?? existing.language; // language set in Admin after the run began
 			await this.refreshItems(existing, api, station);
 			existing.state = "active";
 			existing.pendingReason = undefined;
@@ -270,18 +329,20 @@ export class RunEngine {
 		}
 
 		const other = this.activeRun(p.stationId);
-		if (other && other.state !== "pending") throw new EngineError(409, "RUN_ACTIVE", `station ${p.stationId} already has an active run (${other.templateName})`);
+		if (other && other.state !== "pending") throw new EngineError(409, "RUN_ACTIVE", `"${other.templateName}" is still open on ${station.name}. Finish or discard it first: one checklist at a time per station.`);
 
 		let instanceId = p.instanceId;
 		if (!instanceId) {
 			if (!p.templateId) throw new EngineError(400, "BAD_REQUEST", "instanceId or templateId is required");
+			if (this.templateAccess(p.templateId, station) !== "start") throw new EngineError(403, "NOT_STARTABLE_HERE", `this checklist cannot be started on ${station.name}`);
 			const created = await this.deps.flows.createFlow(api, p.templateId);
 			if (!created.ok) throw new EngineError(502, "MARANICS", `create checklist: ${created.message}`);
 			instanceId = created.data.flowId;
 		}
 		const detail = await this.deps.flows.getFlow(api, instanceId);
 		if (!detail.ok) throw new EngineError(502, "MARANICS", `read checklist: ${detail.message}`);
-		const run = this.newRun(detail.data, station, session, user?.name);
+		if (p.instanceId && this.templateAccess(detail.data.templateId, station) === "off") throw new EngineError(403, "NOT_USED_HERE", `this checklist is not used on ${station.name}`);
+		const run = this.newRun(detail.data, station, session, user?.name, await this.templateDetail(api, detail.data.templateId));
 		await this.save(run);
 		this.emit("run.started", run, { text: run.templateName });
 		await this.audit(run, "run.started", { sub: session.sub, text: run.templateName });
@@ -289,10 +350,10 @@ export class RunEngine {
 		return this.toView(run);
 	}
 
-	private newRun(flow: FlowDetail, station: Station, session: HubSession | undefined, userName: string | undefined): RunRecord {
+	private newRun(flow: FlowDetail, station: Station, session: HubSession | undefined, userName: string | undefined, template?: TemplateDetail): RunRecord {
 		const settings = this.deps.store.get().settings;
 		const profile = this.profileFor(flow.templateId, station);
-		const items = buildItems(flow, { profile, readNotices: settings.readNotices });
+		const items = buildItems(flow, { profile, template, readNotices: settings.readNotices, answers: settings.itemAnswers?.[flow.templateId ?? ""] });
 		const now = this.deps.now();
 		return {
 			runId: newId("run"),
@@ -306,7 +367,7 @@ export class RunEngine {
 			startedAt: iso(now),
 			updatedAt: iso(now),
 			users: session ? [{ sub: session.sub, name: userName, sessionId: session.id }] : [],
-			language: this.deps.io.endpointLanguage(station.stationId) ?? profile?.language ?? station.language ?? this.deps.policy.defaultLanguage,
+			language: this.templateLang(flow.templateId, station) ?? this.deps.io.endpointLanguage(station.stationId) ?? profile?.language ?? station.language ?? this.deps.policy.defaultLanguage,
 			verbosity: station.verbosity ?? "full",
 			attempts: 0,
 			skipped: [],
@@ -319,7 +380,7 @@ export class RunEngine {
 		const detail = await this.deps.flows.getFlow(api, r.instanceId);
 		if (!detail.ok) return;
 		const profile = this.profileFor(detail.data.templateId, station);
-		const fresh = buildItems(detail.data, { profile, readNotices: this.deps.store.get().settings.readNotices });
+		const fresh = buildItems(detail.data, { profile, template: await this.templateDetail(api, detail.data.templateId), readNotices: this.deps.store.get().settings.readNotices, answers: this.deps.store.get().settings.itemAnswers?.[detail.data.templateId ?? ""] });
 		const local = new Map(r.items.map((i) => [i.taskId, i]));
 		for (const f of fresh) {
 			const l = local.get(f.taskId);
@@ -354,13 +415,13 @@ export class RunEngine {
 			startedAt: iso(now),
 			updatedAt: iso(now),
 			users: [],
-			language: p.language ?? this.stationLang(station.stationId),
+			language: p.language ?? this.templateLang(p.templateId, station) ?? this.stationLang(station.stationId),
 			verbosity: station.verbosity ?? "full",
 			attempts: 0,
 			skipped: [],
 			trigger: p.trigger,
 			callbackUrl: p.callbackUrl,
-			pendingReason: tr(p.language ?? this.stationLang(station.stationId), "ready", { name: templateName }),
+			pendingReason: tr(p.language ?? this.templateLang(p.templateId, station) ?? this.stationLang(station.stationId), "ready", { name: templateName }),
 		};
 		await this.save(run);
 		this.emit("run.pending", run, { text: run.pendingReason });
@@ -379,6 +440,80 @@ export class RunEngine {
 	private sessionOnStation(stationId: string): HubSession | undefined {
 		const sessions = this.deps.store.get().sessions.filter((s) => s.stationId === stationId && (s.credential || s.sub.startsWith("dev:")));
 		return sessions.sort((a, b) => Date.parse(b.lastSeenAt) - Date.parse(a.lastSeenAt))[0];
+	}
+
+	private readonly templates = new Map<string, { at: number; detail: TemplateDetail }>();
+	private tenantReasons?: { at: number; reasons: DiscardReason[] };
+
+	/**
+	 * Discard reasons Flow will accept for `templateId`: the template's own list when it has one, else the tenant-wide
+	 * list, else the static fallback. Both are cached for five minutes; a failed read falls back rather than blocking.
+	 */
+	async discardReasons(session: HubSession, templateId: string | undefined): Promise<DiscardOption[]> {
+		const api = await this.deps.credentials.apiSettings(session);
+		if (!api) return DISCARD_REASONS;
+		const tpl = await this.templateDetail(api, templateId);
+		let reasons = tpl?.discardReasons ?? [];
+		if (!reasons.length) {
+			const now = Number(this.deps.now());
+			if (!this.tenantReasons || now - this.tenantReasons.at >= 5 * 60_000) {
+				const res = await this.deps.flows.getDiscardReasons(api);
+				if (res.ok) this.tenantReasons = { at: now, reasons: res.data };
+				else this.deps.log.warn(`discard reasons unavailable (${res.message}); using the built-in list`);
+			}
+			reasons = this.tenantReasons?.reasons ?? [];
+		}
+		return reasons.length ? reasons.map((x) => ({ code: x.name, title: x.name, requireComment: x.requireComment })) : DISCARD_REASONS;
+	}
+
+	/**
+	 * The template behind a flow, cached briefly. The v3 flow read does not carry a checkbox's option list
+	 * ("Utført::completed"), so without the template the hub would write "OK" where Flow expects "completed".
+	 */
+	/** Admin → Checklist setup: what the Templates app offers right now. */
+	async availableTemplates(session: HubSession): Promise<{ templateId: string; name: string; refId?: string; categoryName?: string; registered: boolean }[]> {
+		const api = await this.deps.credentials.apiSettings(session);
+		if (!api) throw noCredential();
+		const list = await this.deps.flows.listTemplates(api);
+		if (!list.ok) throw new EngineError(502, "MARANICS", `Maranics templates: ${list.message}`);
+		const library = this.deps.store.get().library ?? {};
+		return list.data.items.map((t) => ({ templateId: t.id, name: t.name, refId: t.refId, categoryName: t.categoryName, registered: !!library[t.id] })).sort((a, b) => a.name.localeCompare(b.name));
+	}
+
+	/** Download (or refresh) a template into the central register: name + a snapshot of its items. */
+	async registerTemplate(session: HubSession, templateId: string): Promise<void> {
+		const api = await this.deps.credentials.apiSettings(session);
+		if (!api) throw noCredential();
+		this.templates.delete(templateId);
+		const t = await this.deps.flows.getTemplate(api, templateId);
+		if (!t.ok) throw new EngineError(502, "MARANICS", `template: ${t.message}`);
+		const items = await this.templateItems(session, templateId);
+		await this.deps.store.update((d) => {
+			(d.library ??= {})[templateId] = { templateId, name: t.data.name, refId: t.data.refId, categoryName: t.data.categoryName, importedAt: iso(this.deps.now()), items };
+		});
+	}
+
+	/** Admin → Answers: the items of a template, with the key their answer words are stored under. */
+	async templateItems(session: HubSession, templateId: string): Promise<{ key: string; name: string; section?: string; type?: string }[]> {
+		const api = await this.deps.credentials.apiSettings(session);
+		if (!api) throw noCredential();
+		const t = await this.templateDetail(api, templateId);
+		if (!t) throw new EngineError(502, "MARANICS", "template unavailable");
+		return [...t.sections].sort((a, b) => a.order - b.order).flatMap((s) => [...s.tasks].sort((a, b) => a.order - b.order).map((x) => ({ key: answerKey({ dataId: x.dataId, name: x.name }), name: x.name, section: s.name, type: x.type })));
+	}
+
+	private async templateDetail(api: NonNullable<Awaited<ReturnType<Credentials["apiSettings"]>>>, templateId: string | undefined): Promise<TemplateDetail | undefined> {
+		if (!templateId) return undefined;
+		const hit = this.templates.get(templateId);
+		const now = Number(this.deps.now());
+		if (hit && now - hit.at < 5 * 60_000) return hit.detail;
+		const t = await this.deps.flows.getTemplate(api, templateId);
+		if (!t.ok) {
+			this.deps.log.warn(`template ${templateId} unavailable (${t.message}); checkbox options unknown`);
+			return hit?.detail;
+		}
+		this.templates.set(templateId, { at: now, detail: t.data });
+		return t.data;
 	}
 
 	private async templateName(templateId: string): Promise<string> {
@@ -509,7 +644,31 @@ export class RunEngine {
 		await this.deps.io.speak(stationId, newId("p"), rawText.charAt(0).toUpperCase() + rawText.slice(1), lang);
 	}
 
+	/** Admin → Start buttons: the language a template is written (and therefore spoken and answered) in. */
+	private templateLang(templateId: string | undefined, station?: Station): string | undefined {
+		if (!templateId) return undefined;
+		return station?.templates?.[templateId]?.language ?? this.deps.store.get().settings.templateLanguages?.[templateId];
+	}
+
+	/** Station list first (Admin → Stations → Checklists on this station: only what was added), else the hub-wide Start buttons list (empty → everything). */
+	templateAccess(templateId: string | undefined, station?: Station): "start" | "use" | "off" {
+		const d = this.deps.store.get();
+		// the central register (Admin → Checklist setup), once it holds anything, is the whole offer
+		const hasLibrary = !!d.library && Object.keys(d.library).length > 0;
+		if (hasLibrary && !(templateId && d.library![templateId])) return "off";
+		// a station with its own list offers only what was added to it
+		if (station?.templates && Object.keys(station.templates).length) return (templateId && station.templates[templateId]?.access) || (templateId && station.templates[templateId] ? "start" : "off");
+		if (hasLibrary) return "start";
+		return !d.settings.startable?.length || (!!templateId && d.settings.startable.includes(templateId)) ? "start" : "off";
+	}
+
 	/** The endpoint's chosen language wins over the station's configured one. */
+	/** How much the voice says: read live from the station so a change in Admin applies to an open run. Prompt runs stay as created. */
+	private level(r: RunRecord): "full" | "short" | "silent" {
+		if (r.runId.startsWith("prun_")) return r.verbosity;
+		return this.deps.store.get().stations.find((x) => x.stationId === r.stationId)?.verbosity ?? r.verbosity;
+	}
+
 	private stationLang(stationId: string): string {
 		return this.deps.io.endpointLanguage(stationId) ?? this.deps.store.get().stations.find((x) => x.stationId === stationId)?.language ?? this.deps.policy.defaultLanguage;
 	}
@@ -548,7 +707,7 @@ export class RunEngine {
 	}
 
 	private async announceAndSpeak(r: RunRecord, resume: boolean): Promise<void> {
-		const text = startAnnouncement(r.templateName, r.items, r.verbosity, resume, r.language);
+		const text = startAnnouncement(r.templateName, r.items, this.level(r), resume, r.language);
 		this.lastSection.set(r.runId, undefined);
 		if (text) await this.say(r, text);
 		const next = nextItem(r.items);
@@ -560,6 +719,7 @@ export class RunEngine {
 	}
 
 	private async speakItem(r: RunRecord, item: RunItem): Promise<void> {
+		r.waiting = undefined;
 		const current = this.record(r.runId);
 		if (current.state !== "active") return;
 		for (const i of r.items) if (i.state === "current") i.state = "unanswered";
@@ -572,7 +732,7 @@ export class RunEngine {
 		await this.save(r);
 		const prev = this.lastSection.get(r.runId);
 		const first = prev === undefined && !r.items.some((i) => i.state === "answered" || i.state === "unsynced");
-		const text = itemAnnouncement(item, prev, first, r.verbosity, r.language);
+		const text = itemAnnouncement(item, prev, first, this.level(r), r.language);
 		this.lastSection.set(r.runId, item.sectionName);
 		this.emit("run.item.spoken", r, { taskId: item.taskId, text });
 		this.armExchangeTimer(r);
@@ -581,13 +741,17 @@ export class RunEngine {
 	}
 
 	private biasFor(r: RunRecord, item: RunItem): string[] {
+		const lang = normLang(r.language);
 		const out = ["confirm", "yes", "no", "correction", "say again", "skip", "not applicable", item.name];
+		if (lang !== "en") out.push(tr(lang, "yes"), tr(lang, "no"), ...(BIAS_WORDS[lang] ?? []));
 		if (item.type === "DateAndTime" || item.type === "Time") out.push("minutes ago", "now", "just now", "zero", "hundred");
 		if (item.options) out.push(...item.options.map((o) => o.title));
 		const station = this.deps.store.get().stations.find((s) => s.stationId === r.stationId);
 		const profile = this.profileFor(r.templateId, station ?? ({} as Station));
 		const b = profile?.bindings.find((x) => x.dataId === item.dataId);
 		if (b?.phrases) out.push(...b.phrases);
+		// a combination ("hivt + körbro") biases the recogniser towards each part and towards the whole phrase
+		for (const a of item.expected ?? []) out.push(answerLabel(a), ...answerParts(a));
 		return out;
 	}
 
@@ -597,7 +761,7 @@ export class RunEngine {
 		r.exchange = r.pendingReadback ? "confirming" : "listening";
 		await this.save(r);
 		this.deps.io.status(r.stationId, r.exchange, item.name);
-		this.deps.io.listen(r.stationId, `${r.runId}:${item.taskId}`, { maxMs, bias: this.biasFor(r, item), expect: r.pendingReadback ? "Confirm" : item.type });
+		this.deps.io.listen(r.stationId, `${r.runId}:${item.taskId}`, { maxMs, bias: this.biasFor(r, item), expect: r.pendingReadback ? "Confirm" : item.type, grammar: grammarFor(r.language, item, this.grammarWords(r, item), !!r.pendingReadback), language: r.language });
 		this.clearTimer(r.runId, "listen");
 		this.clearTimer(r.runId, "confirm");
 		const t = setTimeout(() => void this.onListenTimeout(r.runId), maxMs + 1500);
@@ -621,7 +785,7 @@ export class RunEngine {
 	}
 
 	private clearTimers(runId: string): void {
-		for (const k of ["listen", "confirm", "exchange"] as const) this.clearTimer(runId, k);
+		for (const k of ["listen", "confirm", "exchange", "step"] as const) this.clearTimer(runId, k);
 		this.timers.delete(runId);
 	}
 
@@ -731,7 +895,7 @@ export class RunEngine {
 	}
 
 	/** A final transcript for the station's current exchange (from the endpoint or the STT adapter). */
-	async onTranscript(stationId: string, text: string, confidence: number | undefined, session?: HubSession): Promise<void> {
+	async onTranscript(stationId: string, text: string, confidence: number | undefined, session?: HubSession, alternatives?: string[]): Promise<void> {
 		const r = this.activeRun(stationId);
 		if (!r) {
 			await this.onMenuTranscript(stationId, text, session ?? this.sessionOnStation(stationId));
@@ -755,6 +919,20 @@ export class RunEngine {
 			return;
 		}
 		if (await this.tryItemJump(r, text)) return;
+		if (r.exchange === "waiting") {
+			const w = controlWord(text);
+			if (w === "next" || w === "resume" || w === "start" || w === "confirm") {
+				await this.proceed(r.runId, "voice");
+				return;
+			}
+			if (w === "repeat") {
+				await this.say(r, r.waiting?.mode === "ask" ? tr(r.language, "step_ask") : tr(r.language, "step_external"));
+				return;
+			}
+			if (w) await this.handleCommand(r, w, session);
+			else await this.unpromptedAnswer(r, text, confidence, session);
+			return;
+		}
 		if (r.exchange === "idle" || r.exchange === "speaking" || r.exchange === "committing") {
 			// spoken run commands are valid while idle; a phrase-bound answer can arrive unprompted
 			const w = controlWord(text);
@@ -764,6 +942,14 @@ export class RunEngine {
 		}
 		const item = r.items.find((i) => i.taskId === r.currentTaskId);
 		if (!item) return;
+		// The recogniser's first guess is often a near miss on ship terms ("Vet TES" for VTS). When it holds none of the
+		// item's answer words but one of its other guesses does, that guess is what the crew said.
+		if (alternatives?.length && !controlWord(text)) {
+			const ctx = this.interpretCtx(r, item, new Date(this.deps.now()));
+			const better = bestTranscript(text, alternatives, ctx.answers, ctx.answerMatch);
+			if (better !== text) this.deps.log.debug(`transcript "${text}" → alternative "${better}"`);
+			text = better;
+		}
 		this.clearTimer(r.runId, "listen");
 		this.partial.delete(r.runId);
 		this.deps.io.stopListening(r.stationId);
@@ -797,7 +983,19 @@ export class RunEngine {
 				await this.handleCommand(r, word, session);
 				return;
 			}
-			// a new value instead of yes/no: treat as a correction
+			// Repeating the value the hub just read back ("42" → "…, 42. Confirm?" → "42") is a confirmation, not a
+			// correction: otherwise the read-back would echo forever. Any other value is a correction.
+			const again = interpret(item.type, text, this.interpretCtx(r, item, utteredAt), this.phrasesFor(r, item));
+			if (again.ok && (again.value === r.pendingReadback.value || again.valueText === r.pendingReadback.valueText)) {
+				await this.commit(r, item, r.pendingReadback, "voice");
+				return;
+			}
+			if (isSideTalk(item, text, again)) {
+				// people talking in the room while a read-back waits: not an answer, keep waiting for one
+				await this.audit(r, "item.ignored", { taskId: item.taskId, dataId: item.dataId, transcript: text, confidence, sub: session?.sub, text: "side talk during read-back" });
+				await this.openListen(r, item, this.deps.policy.confirmMs);
+				return;
+			}
 			r.pendingReadback = undefined;
 		}
 
@@ -809,10 +1007,27 @@ export class RunEngine {
 
 		r.exchange = "interpreting";
 		await this.save(r);
-		const result = interpret(item.type, text, { utteredAt, tzMode: this.deps.store.get().settings.tzMode, timeZone: this.deps.policy.timeZone, maxPastHours: this.deps.policy.maxPastHours, options: item.options, language: normLang(r.language) }, this.phrasesFor(r, item));
+		const result = interpret(item.type, text, this.interpretCtx(r, item, utteredAt), this.phrasesFor(r, item));
 		await this.audit(r, "item.captured", { taskId: item.taskId, dataId: item.dataId, transcript: text, confidence, sub: session?.sub });
 		const threshold = THRESHOLDS[item.type] ?? 0.6;
-		const sttFactor = confidence === undefined ? 1 : Math.max(0.5, confidence);
+		// The phone's confidence score is a weak signal (Android reports 0.6 for a clean "ja"). An exact lexicon or
+		// option hit is trusted on its own; for parsed values (times, numbers, text) only a really poor score counts.
+		const exact = result.ok && (result.kind === "bool" || result.kind === "option" || result.kind === "now");
+		const sttFactor = confidence === undefined || exact ? 1 : Math.max(0.8, confidence);
+		if (isSideTalk(item, text, result)) {
+			// a sentence that fits nothing on a yes/no, number or time item is the room, not the crew: no retry counted,
+			// no "say yes or no", the mic simply re-arms. Every third one in a row earns a short reminder so a crew
+			// member who is being drowned out knows the item is still open.
+			const n = (this.ignored.get(r.runId) ?? 0) + 1;
+			this.ignored.set(r.runId, n);
+			await this.audit(r, "item.ignored", { taskId: item.taskId, dataId: item.dataId, transcript: text, confidence, sub: session?.sub, text: "side talk" });
+			r.exchange = "listening";
+			await this.save(r);
+			if (n % 3 === 0) await this.say(r, `${result.ok ? "" : `${result.message}. `}${item.spokenPrompt}`);
+			await this.openListen(r, item);
+			return;
+		}
+		this.ignored.delete(r.runId);
 		if (!result.ok || result.confidence * sttFactor < threshold) {
 			r.attempts += 1;
 			if (r.attempts > this.deps.policy.retries) {
@@ -822,15 +1037,20 @@ export class RunEngine {
 			r.exchange = "clarifying";
 			await this.save(r);
 			this.emit("answer.clarifying", r, { taskId: item.taskId, text: result.ok ? "low confidence" : result.message });
-			await this.say(r, result.ok ? tr(r.language, "not_sure", { value: result.valueText, prompt: item.spokenPrompt }) : `${result.message}. ${item.spokenPrompt}`);
+			// short: the question was just read, saying it again after every miss wears the crew out. The last try repeats it.
+			const last = r.attempts >= this.deps.policy.retries;
+			await this.say(r, result.ok ? tr(r.language, "not_sure", { value: result.valueText, prompt: item.spokenPrompt }) : last ? `${result.message}. ${item.spokenPrompt}` : `${result.message}.`);
 			await this.openListen(r, item);
 			return;
 		}
 		item.transcript = text;
 		item.confidence = Math.min(result.confidence, confidence ?? 1);
 		item.utteredAt = utteredAt.toISOString();
-		const policy = this.confirmationFor(r, item);
+		const policy = this.confirmationFor(r, item, result);
 		if (policy === "none") {
+			// the answer is the confirmation: repeat item and value so the crew hears what goes in, then write it
+			const level = this.level(r);
+			if (level !== "silent" && !(item.type === "Checkbox" && result.value === CHECKBOX_NOT_DONE)) await this.say(r, level === "short" || result.byWord || item.name.length > 30 ? tr(r.language, "echo_short", { value: result.valueText }) : tr(r.language, "echo", { name: item.name, value: result.valueText }));
 			await this.commit(r, item, { taskId: item.taskId, value: result.value, valueText: result.valueText, transcript: text, confidence: item.confidence }, "voice");
 			return;
 		}
@@ -850,25 +1070,46 @@ export class RunEngine {
 		return phrases;
 	}
 
-	private confirmationFor(r: RunRecord, item: RunItem): "required" | "none" {
+	/** Bound phrases plus the item's answer words: what the on-device grammar recogniser must be able to hear. */
+	private grammarWords(r: RunRecord, item: RunItem): string[] {
+		const answers = (item.expected ?? []).flatMap((a) => [answerLabel(a), ...answerParts(a)]);
+		return [...(this.phrasesFor(r, item) ?? []), ...answers];
+	}
+
+	/**
+	 * Whether a value needs a spoken "confirm" before it is written. A binding decides for its item; otherwise the
+	 * hub setting: "optional" never asks (the hub repeats item and value and moves on), "required" asks only when
+	 * the answer was not a plain yes/no — "yes" to "Charging plug verified?" is its own confirmation.
+	 */
+	private confirmationFor(r: RunRecord, item: RunItem, result: Extract<Interpretation, { ok: true }>): "required" | "none" {
 		const station = this.deps.store.get().stations.find((s) => s.stationId === r.stationId);
 		const profile = station ? this.profileFor(r.templateId, station) : undefined;
 		const b = profile?.bindings.find((x) => x.dataId === item.dataId);
 		if (b?.confirmation === "none") return "none";
-		return "required";
+		if (b?.confirmation === "required") return "required";
+		if (result.byWord) return "none"; // the crew said the item's own word: asking "correct?" on top would stall a strict checklist
+		if (this.deps.store.get().settings.confirmation === "optional") return "none";
+		return result.kind === "bool" ? "none" : "required";
 	}
 
 	/** "Pilot on board five minutes ago" said while nothing was asked: bind by phrase to an unanswered item. */
 	private async unpromptedAnswer(r: RunRecord, text: string, confidence: number | undefined, session?: HubSession): Promise<void> {
-		const t = text.toLowerCase();
+		const t = normalizeTranscript(text);
 		const station = this.deps.store.get().stations.find((s) => s.stationId === r.stationId);
 		const profile = station ? this.profileFor(r.templateId, station) : undefined;
+		const match = this.matchLevel(r);
 		const candidates = r.items.filter((i) => i.voice && (i.state === "unanswered" || i.state === "skipped"));
-		const hit = candidates.find((i) => {
-			const b = profile?.bindings.find((x) => x.dataId === i.dataId);
-			const phrases = [...(b?.phrases ?? []), i.name].map((p) => p.toLowerCase());
-			return phrases.some((p) => p.length > 3 && t.startsWith(p));
-		});
+		const phrasesOf = (i: RunItem) => [...(profile?.bindings.find((x) => x.dataId === i.dataId)?.phrases ?? []), i.name].map((p) => normalizeTranscript(p)).filter((p) => p.length > 3);
+		// the name or a bound phrase as spoken ("pilot on board five minutes ago") wins over the looser matches below
+		const hit =
+			candidates.find((i) => phrasesOf(i).some((p) => t.startsWith(p))) ??
+			// the same words in the crew's own order and wording: "körbro er hivt" answers "Hivt körbro"
+			candidates.find((i) => phrasesOf(i).some((p) => p.includes(" ") && containsAllWords(t, p, match))) ??
+			// a combination answer word ("hivt + körbro") names its item on its own; one plain word ("up") never does
+			candidates.find((i) => {
+				const combos = (this.answersOf(r, i) ?? []).filter((a) => answerParts(a).length > 1);
+				return !!combos.length && !!heardAnswer(t, combos, match);
+			});
 		if (!hit) return;
 		for (const i of r.items) if (i.state === "current") i.state = "unanswered";
 		hit.state = "current";
@@ -893,7 +1134,8 @@ export class RunEngine {
 				if (item) await this.skip(r.runId, item.taskId, "skipped by voice");
 				return;
 			case "next":
-				if (item && (item.state === "current" || item.state === "unanswered")) await this.skip(r.runId, item.taskId, "next item by voice");
+				if (r.exchange === "waiting") await this.proceed(r.runId, "voice");
+				else if (item && (item.state === "current" || item.state === "unanswered")) await this.skip(r.runId, item.taskId, "next item by voice");
 				else if (item) await this.advance(r, item);
 				return;
 			case "back": {
@@ -932,7 +1174,7 @@ export class RunEngine {
 				await this.beginComplete(r);
 				return;
 			case "discard":
-				await this.beginDiscard(r);
+				await this.beginDiscard(r, session);
 				return;
 			case "list":
 			case "help":
@@ -967,6 +1209,20 @@ export class RunEngine {
 		const user = r.users[r.users.length - 1];
 		if (!user) {
 			await this.escalate(r, item, "no signed-in user to attribute the value to");
+			return;
+		}
+		if (item.type === "Checkbox" && rb.value === CHECKBOX_NOT_DONE) {
+			// Flow knows a plain checkbox only as checked or empty, so "no" is not a value: the item stays open,
+			// comes back in the skip sweep, and finally counts as "needs the screen".
+			item.transcript = rb.transcript;
+			item.confidence = rb.confidence;
+			await this.audit(r, "item.not_done", { taskId: item.taskId, dataId: item.dataId, transcript: rb.transcript, confidence: rb.confidence, sub: user.sub, text: source });
+			if (r.runId.startsWith("prun_")) {
+				await this.finishPrompt(r, item, "failed", "not done");
+				return;
+			}
+			await this.say(r, tr(r.language, "not_done", { name: item.name }));
+			await this.skip(r.runId, item.taskId, "not done");
 			return;
 		}
 		const now = this.deps.now();
@@ -1043,10 +1299,128 @@ export class RunEngine {
 		if (from.state === "current") from.state = "unanswered";
 		const next = nextItem(r.items, from.index);
 		if (next) {
-			await this.speakItem(r, next);
+			const step = this.stepMode(r);
+			if (step.mode === "auto") await this.speakItem(r, next);
+			else await this.hold(r, next, step);
 			return;
 		}
 		await this.offerSweepOrComplete(r);
+	}
+
+	/** How this run moves to its next item (Checklist setup); prompt runs and unknown templates go at once. */
+	private stepMode(r: RunRecord): StepMode {
+		if (!r.templateId || r.runId.startsWith("prun_")) return { mode: "auto" };
+		return this.deps.store.get().settings.stepMode?.[r.templateId] ?? { mode: "auto" };
+	}
+
+	/** Hold the next item back: until the crew says "next", a timer runs out, or an external trigger arrives. */
+	private async hold(r: RunRecord, next: RunItem, step: StepMode): Promise<void> {
+		if (step.mode === "auto") return this.speakItem(r, next);
+		this.clearTimers(r.runId);
+		this.deps.io.stopListening(r.stationId);
+		r.exchange = "waiting";
+		r.currentTaskId = undefined;
+		r.pendingReadback = undefined;
+		const until = step.mode === "timer" ? new Date(this.deps.now() + Math.max(1, step.delaySec) * 1000).toISOString() : undefined;
+		r.waiting = { taskId: next.taskId, mode: step.mode, until };
+		await this.save(r);
+		this.emit("run.waiting", r, { taskId: next.taskId, text: step.mode, data: { mode: step.mode, until } });
+		if (step.mode === "ask") await this.say(r, tr(r.language, "step_ask"));
+		else if (step.mode === "timer") await this.say(r, step.delaySec >= 90 ? tr(r.language, "step_timer_min", { n: spokenNumber(Math.round(step.delaySec / 60), r.language) }) : tr(r.language, "step_timer_sec", { n: spokenNumber(step.delaySec, r.language) }));
+		else await this.say(r, tr(r.language, "step_external"));
+		this.deps.io.status(r.stationId, "idle", `waiting for the next item (${step.mode})`);
+		if (until) this.armStep(r);
+	}
+
+	private armStep(r: RunRecord): void {
+		if (!r.waiting?.until) return;
+		this.clearTimer(r.runId, "step");
+		const ms = Math.max(0, Date.parse(r.waiting.until) - this.deps.now());
+		const t = setTimeout(() => void this.proceed(r.runId, "timer"), ms);
+		t.unref?.();
+		this.timerSet(r.runId).step = t;
+	}
+
+	/** Release a held item: the crew asked, the timer ran out, the screen button, or `POST /v1/runs/:id/next`. */
+	async proceed(runId: string, by: "voice" | "timer" | "screen" | "external"): Promise<RunView> {
+		const r = this.record(runId);
+		if (r.state !== "active" || r.exchange !== "waiting" || !r.waiting) return this.view(runId);
+		this.clearTimer(r.runId, "step");
+		const item = r.items.find((i) => i.taskId === r.waiting?.taskId) ?? nextItem(r.items);
+		r.waiting = undefined;
+		r.exchange = "idle";
+		await this.save(r);
+		this.emit("run.proceeded", r, { taskId: item?.taskId, text: by, data: { by } });
+		if (item && item.state !== "answered") await this.speakItem(r, item);
+		else await this.offerSweepOrComplete(r);
+		return this.view(runId);
+	}
+
+	/** External trigger by station: release the held item of that station's run, if any. */
+	async proceedStation(stationId: string, itemRef?: string): Promise<RunView | undefined> {
+		const r = this.activeRun(stationId);
+		if (!r) return undefined;
+		if (itemRef) {
+			// a named item: read that one now, wherever the run stands (also when it is not held)
+			const item = this.resolveItem(r.runId, itemRef);
+			if (!item) throw new EngineError(404, "ITEM_NOT_FOUND", "no such item (task id or DataId)");
+			return this.jumpTo(r.runId, item.taskId);
+		}
+		if (r.exchange !== "waiting") return this.view(r.runId);
+		return this.proceed(r.runId, "external");
+	}
+
+	/**
+	 * External event: the moment for an item has passed (the vessel is past the reporting point, the sensor never
+	 * saw it). The crew hears it; with `value` ("No", an option title or value) that answer is written as the
+	 * signed-in user, without one the item stays open as skipped. Either way the run goes on, so it never sits
+	 * on an item nobody will answer. No item named = the one being asked (or held) now.
+	 */
+	async missed(runId: string, taskId?: string, value?: string): Promise<RunView> {
+		const r = this.record(runId);
+		if (r.state === "completed" || r.state === "abandoned") throw new EngineError(409, "RUN_ENDED", "run has ended");
+		const id = taskId ?? r.currentTaskId ?? r.waiting?.taskId;
+		const item = r.items.find((i) => i.taskId === id);
+		if (!item) throw new EngineError(404, "ITEM_NOT_FOUND", "no current item");
+		if (item.state === "answered" || item.state === "unsynced") return this.view(runId); // answered in time: nothing was missed
+		const held = r.waiting?.taskId === item.taskId;
+		const here = r.state === "active" && (r.currentTaskId === item.taskId || held);
+		let write = value;
+		if (write !== undefined) {
+			const opt = item.options?.find((o) => o.value === write) ?? item.options?.find((o) => o.title.toLowerCase() === write?.toLowerCase());
+			if (opt) write = opt.value;
+			// "no" on a plain checkbox is not a value Flow can store: the item stays open, like a spoken "no"
+			if (item.type === "Checkbox" && (write === "false" || write.toLowerCase() === "no" || write === CHECKBOX_NOT_DONE)) write = undefined;
+		}
+		const session = write !== undefined ? this.actingSession(runId) : undefined;
+		if (write !== undefined && !session) throw new EngineError(409, "NO_USER", "no signed-in user to attribute the value to");
+		this.emit("run.item.missed", r, { taskId: item.taskId, text: value });
+		await this.audit(r, "item.missed", { taskId: item.taskId, dataId: item.dataId, value, text: "external" });
+		if (r.state === "active") {
+			if (here) {
+				this.clearTimers(r.runId);
+				this.deps.io.stopListening(r.stationId);
+			}
+			await this.say(r, tr(r.language, "item_missed", { name: item.name }));
+		}
+		if (write !== undefined && session) await this.answerManual(runId, item.taskId, write, session);
+		else await this.skip(runId, item.taskId, "missed");
+		if (held && r.state === "active" && r.waiting?.taskId === item.taskId) await this.advance(r, item); // hold the one after it instead
+		else if (!here && r.state === "active") {
+			// the line was spoken over another item's window: open that one again
+			const cur = r.items.find((i) => i.taskId === r.currentTaskId);
+			if (cur && (r.exchange === "listening" || r.exchange === "confirming")) await this.openListen(r, cur);
+		}
+		return this.view(runId);
+	}
+
+	/** The same by station: the open run there, if any. */
+	async missedStation(stationId: string, itemRef?: string, value?: string): Promise<RunView | undefined> {
+		const r = this.activeRun(stationId);
+		if (!r) return undefined;
+		const item = itemRef ? this.resolveItem(r.runId, itemRef) : undefined;
+		if (itemRef && !item) throw new EngineError(404, "ITEM_NOT_FOUND", "no such item (task id or DataId)");
+		return this.missed(r.runId, item?.taskId, value);
 	}
 
 	private async offerSweepOrComplete(r: RunRecord): Promise<void> {
@@ -1096,7 +1470,7 @@ export class RunEngine {
 		}
 		let picks: ChecklistPick[];
 		try {
-			picks = (await this.listPicks(session)).filter((p) => p.readiness !== "none");
+			picks = (await this.listPicks(session, stationId)).filter((p) => p.readiness !== "none" && p.startable !== false);
 		} catch (err) {
 			this.deps.log.warn(`menu: ${err instanceof Error ? err.message : String(err)}`);
 			return;
@@ -1123,13 +1497,8 @@ export class RunEngine {
 		}
 		const st = t.match(/^(?:station|stasjon|estación|poste)\s+(.+)$/);
 		if (st) {
-			const target = this.matchStation(st[1]);
-			if (!target) {
-				await this.sayOn(stationId, lang, tr(lang, "station_unknown", { name: st[1] }));
-				return;
-			}
-			await this.sayOn(stationId, lang, tr(lang, "station_switch", { name: target.name }));
-			this.deps.io.navigate(stationId, "picker", { stationId: target.stationId });
+			// the station comes from the station link / QR only: nothing in the client, spoken or tapped, changes it
+			await this.sayOn(stationId, lang, tr(lang, "station_fixed"));
 			return;
 		}
 		if (!session) {
@@ -1190,7 +1559,7 @@ export class RunEngine {
 		r.exchange = "confirming";
 		await this.save(r);
 		this.deps.io.status(r.stationId, "confirming", r.pendingAction?.kind);
-		this.deps.io.listen(r.stationId, `${r.runId}:action`, { maxMs: this.deps.policy.confirmMs, expect: "Confirm" });
+		this.deps.io.listen(r.stationId, `${r.runId}:action`, { maxMs: this.deps.policy.confirmMs, expect: "Confirm", language: r.language });
 		this.clearTimer(r.runId, "listen");
 		const t = setTimeout(() => void this.onListenTimeout(r.runId), this.deps.policy.confirmMs + 1500);
 		t.unref?.();
@@ -1219,15 +1588,16 @@ export class RunEngine {
 		await this.listenAction(r);
 	}
 
-	private async beginDiscard(r: RunRecord): Promise<void> {
+	private async beginDiscard(r: RunRecord, session: HubSession | undefined): Promise<void> {
 		if (!this.voiceActionsAllowed(r)) {
 			await this.say(r, tr(r.language, "discard_on_screen"));
 			return;
 		}
 		this.clearTimers(r.runId);
 		this.deps.io.stopListening(r.stationId);
-		r.pendingAction = { kind: "discard", step: "reason" };
-		const list = DISCARD_REASONS.map((x, i) => `${spokenNumber(i + 1, r.language)}, ${x.title}`).join(". ");
+		const reasons = session ? await this.discardReasons(session, r.templateId) : DISCARD_REASONS;
+		r.pendingAction = { kind: "discard", step: "reason", reasons };
+		const list = reasons.map((x, i) => `${spokenNumber(i + 1, r.language)}, ${x.title}`).join(". ");
 		await this.say(r, tr(r.language, "discard_reasons", { name: r.templateName, list }));
 		await this.listenAction(r);
 	}
@@ -1253,11 +1623,12 @@ export class RunEngine {
 		}
 		if (a.kind === "discard" && a.step === "reason") {
 			const n = wordsToNumber(t.replace(/^(reason|orsak|årsak|motif|grund|number|nummer)\s+/, ""));
-			const byNum = n !== undefined && Number.isInteger(n) && n >= 1 && n <= DISCARD_REASONS.length ? DISCARD_REASONS[n - 1] : undefined;
-			const byName = DISCARD_REASONS.find((x) => t.includes(normalizeTranscript(x.title)) || normalizeTranscript(x.title).includes(t));
+			const options = a.reasons?.length ? a.reasons : DISCARD_REASONS;
+			const byNum = n !== undefined && Number.isInteger(n) && n >= 1 && n <= options.length ? options[n - 1] : undefined;
+			const byName = options.find((x) => t.includes(normalizeTranscript(x.title)) || normalizeTranscript(x.title).includes(t));
 			const reason = byNum ?? byName;
 			if (!reason) {
-				const list = DISCARD_REASONS.map((x, i) => `${spokenNumber(i + 1, r.language)}, ${x.title}`).join(". ");
+				const list = options.map((x, i) => `${spokenNumber(i + 1, r.language)}, ${x.title}`).join(". ");
 				await this.say(r, tr(r.language, "discard_reasons", { name: r.templateName, list }));
 				await this.listenAction(r);
 				return;
@@ -1359,10 +1730,26 @@ export class RunEngine {
 			this.deps.io.stopListening(r.stationId);
 		}
 		item.utteredAt = iso(this.deps.now());
-		const text = valueText ?? (value === "true" ? "yes" : value === "false" ? "no" : item.options?.find((o) => o.value === value)?.title ?? value);
+		if (item.type === "Checkbox") {
+			// the screen sends "true" / "false"; Flow wants "OK" (or the option key) / nothing
+			const checked = checkboxCheckedValue(item.options);
+			if (value === "true" || value === "yes" || value === CHECKBOX_CHECKED || value === checked.value) {
+				value = checked.value;
+				valueText = valueText ?? checked.title ?? "yes";
+			} else if (value === "false" || value === "no" || value === CHECKBOX_NOT_DONE) {
+				value = CHECKBOX_NOT_DONE;
+				valueText = valueText ?? "no";
+			}
+		}
+		const text = valueText ?? (value === CHECKBOX_CHECKED || value === "true" ? "yes" : value === "false" || (item.type === "Checkbox" && value === CHECKBOX_NOT_DONE) ? "no" : item.options?.find((o) => o.value === value)?.title ?? value);
 		if (wasCurrent && r.state === "active") {
 			await this.commit(r, item, { taskId, value, valueText: text, transcript: "", confidence: 1 }, "manual");
 			return this.view(runId);
+		}
+		if (item.type === "Checkbox" && value === CHECKBOX_NOT_DONE) {
+			// "no" on a checkbox is not a value Flow can store: the item stays open
+			await this.audit(r, "item.not_done", { taskId, dataId: item.dataId, transcript: "", confidence: 1, sub: session.sub, text: "manual" });
+			return this.skip(runId, taskId, "not done");
 		}
 		// answer out of order: commit without touching the spoken flow
 		const user = r.users[r.users.length - 1];
@@ -1415,6 +1802,10 @@ export class RunEngine {
 		this.clearTimers(r.runId);
 		this.deps.io.stopListening(r.stationId);
 		if (item.state === "answered" || item.state === "unsynced") item.state = "unanswered";
+		if (r.waiting) {
+			r.waiting = undefined;
+			this.emit("run.proceeded", r, { taskId: item.taskId, text: "external", data: { by: "external", jump: true } });
+		}
 		await this.speakItem(r, item);
 		return this.view(runId);
 	}
@@ -1432,6 +1823,7 @@ export class RunEngine {
 		this.deps.io.stopListening(r.stationId);
 		r.state = "paused";
 		r.exchange = "idle";
+		r.waiting = undefined;
 		r.pendingReadback = undefined;
 		for (const i of r.items) if (i.state === "current") i.state = "unanswered";
 		await this.save(r);
@@ -1488,8 +1880,12 @@ export class RunEngine {
 		const api = await this.deps.credentials.apiSettings(session);
 		if (!api) throw noCredential();
 		if (r.instanceId) {
-			const res = await this.deps.flows.setStatus(api, r.instanceId, "discard", { reasonId: reasonCode, reason: reasonCode, comment });
-			if (!res.ok) throw new EngineError(res.status === 422 ? 422 : 502, "MARANICS", `discard checklist: ${res.message}`);
+			// v3 accepts exactly {action, reason, comment, force}; `reason` is the discard reason's name (template list or tenant list).
+			const res = await this.deps.flows.setStatus(api, r.instanceId, "discard", comment ? { reason: reasonCode, comment } : { reason: reasonCode });
+			if (!res.ok) {
+				this.deps.log.warn(`discard of ${r.instanceId} (${reasonCode}) refused by Flow: ${res.message}`);
+				throw new EngineError(res.status === 422 ? 422 : 502, "MARANICS", `discard checklist: ${res.message}`);
+			}
 		}
 		await this.abandon(runId, `discarded: ${reasonCode}`);
 		await this.audit(r, "run.discarded", { sub: session.sub, text: `${reasonCode}${comment ? ` — ${comment}` : ""}` });
@@ -1529,6 +1925,11 @@ export class RunEngine {
 	/** After a restart: no timers exist; put every active run back to a clean waiting state. */
 	async recover(): Promise<void> {
 		for (const r of this.deps.store.get().runs) {
+			if (r.state === "active" && r.exchange === "waiting" && r.waiting) {
+				// a held item stays held over a restart; a timer picks up where it was (or fires at once when overdue)
+				if (r.waiting.until) this.armStep(r);
+				continue;
+			}
 			if (r.state === "active" && r.exchange !== "idle") {
 				r.exchange = "idle";
 				r.pendingReadback = undefined;
@@ -1542,9 +1943,11 @@ export class RunEngine {
 	/** The station's endpoint (re)connected: continue an active run from the next item. */
 	async onEndpointReady(stationId: string, session?: HubSession): Promise<void> {
 		const r = this.activeRun(stationId);
-		const lang = this.deps.io.endpointLanguage(stationId);
+		// the checklist's own language (Checklist setup / station rule) always wins; only without one does the run follow the client
+		const fixed = r ? this.templateLang(r.templateId, this.deps.store.get().stations.find((x) => x.stationId === stationId)) : undefined;
+		const lang = fixed ?? this.deps.io.endpointLanguage(stationId);
 		if (r && lang && r.language !== lang) {
-			r.language = lang; // the phone switched language: the rest of the run follows it
+			r.language = lang;
 			await this.save(r);
 		}
 		if (!r) {
@@ -1557,6 +1960,11 @@ export class RunEngine {
 			await this.say(r, r.pendingReason ?? tr(r.language, "ready", { name: r.templateName }));
 			return;
 		}
+		if (r.state === "active" && r.exchange === "waiting" && r.waiting) {
+			if (r.waiting.until && Date.parse(r.waiting.until) <= this.deps.now()) await this.proceed(r.runId, "timer");
+			else if (r.waiting.until) this.armStep(r);
+			return;
+		}
 		if (r.state === "active" && r.exchange === "idle" && !this.speaking.has(r.runId)) {
 			const next = nextItem(r.items);
 			if (next) await this.speakItem(r, next);
@@ -1566,6 +1974,10 @@ export class RunEngine {
 	async onEndpointLost(stationId: string): Promise<void> {
 		const r = this.activeRun(stationId);
 		if (!r || r.state !== "active") return;
+		if (r.exchange === "waiting") {
+			this.clearTimer(r.runId, "step");
+			return;
+		}
 		this.clearTimers(r.runId);
 		if (r.exchange !== "idle") {
 			r.exchange = "idle";
@@ -1576,7 +1988,7 @@ export class RunEngine {
 	}
 
 	/** `Interpretation` re-exported for the HTTP layer's manual-value preview. */
-	preview(type: string, text: string, options?: { title: string; value: string }[]): Interpretation {
-		return interpret(type, text, { utteredAt: new Date(this.deps.now()), tzMode: this.deps.store.get().settings.tzMode, timeZone: this.deps.policy.timeZone, maxPastHours: this.deps.policy.maxPastHours, options, language: normLang(this.deps.policy.defaultLanguage) });
+	preview(type: string, text: string, options?: { title: string; value: string }[], answers?: string[], answersOnly?: boolean, answerMatch?: number): Interpretation {
+		return interpret(type, text, { utteredAt: new Date(this.deps.now()), tzMode: this.deps.store.get().settings.tzMode, timeZone: this.deps.policy.timeZone, maxPastHours: this.deps.policy.maxPastHours, options, language: normLang(this.deps.policy.defaultLanguage), answers, answersOnly, answerMatch });
 	}
 }

@@ -33,7 +33,7 @@ export function isInfoType(t: string | undefined): boolean {
 
 export type RunState = "pending" | "active" | "paused" | "completed" | "abandoned";
 export type ItemState = "unanswered" | "current" | "answered" | "skipped" | "needs_screen" | "info" | "unsynced";
-export type ExchangeState = "idle" | "speaking" | "listening" | "interpreting" | "confirming" | "committing" | "clarifying" | "escalated";
+export type ExchangeState = "idle" | "speaking" | "listening" | "interpreting" | "confirming" | "committing" | "clarifying" | "escalated" | "waiting";
 
 export interface RunItem {
 	/** Maranics task id. */
@@ -59,6 +59,9 @@ export interface RunItem {
 	committedAt?: string;
 	outboxId?: string;
 	skipReason?: string;
+	/** Words set in Admin → Answers: an answer that contains one of them counts as the answer for this item. A word
+	 * written "a + b" is a combination: every part must be heard, in any order. */
+	expected?: string[];
 }
 
 export interface RunView {
@@ -70,6 +73,8 @@ export interface RunView {
 	state: RunState;
 	exchange: ExchangeState;
 	currentTaskId?: string;
+	/** Set while the next item is held back (exchange "waiting"): what releases it. */
+	waiting?: { taskId: string; mode: "ask" | "timer" | "external"; until?: string };
 	items: RunItem[];
 	answered: number;
 	total: number;
@@ -104,6 +109,12 @@ export interface ChecklistPick {
 	lastActivity?: string;
 	source: "instance" | "template";
 	activeRunId?: string;
+	/** false when an admin left this template out of the home-screen start buttons (Admin → Start buttons). */
+	startable?: boolean;
+	/** What the asking station may do with it: start new ones, only work on open ones, or nothing. */
+	access?: "start" | "use" | "off";
+	/** Language set for this template in Admin → Start buttons (absent → the station's language). */
+	language?: string;
 }
 
 // ---------------------------------------------------------------- AEP
@@ -124,7 +135,7 @@ export type EndpointMessage =
 	| { type: "hello"; endpointId: string; stationId: string; capabilities: EndpointCapabilities; language?: string; observer?: boolean }
 	| { type: "ptt"; state: "down" | "up" }
 	| { type: "audio.end"; reason: "silence" | "ptt" | "timeout" | "cancel" }
-	| { type: "transcript"; text: string; confidence?: number; final?: boolean }
+	| { type: "transcript"; text: string; confidence?: number; final?: boolean; /** Other guesses of the recogniser for the same words, best first (browsers give up to five). */ alternatives?: string[] }
 	| { type: "spoken"; promptId?: string }
 	| { type: "command"; name: string }
 	| { type: "takeover" }
@@ -133,7 +144,7 @@ export type EndpointMessage =
 export type HubToEndpointMessage =
 	| { type: "hello"; protocol: number; hubVersion: string; stationId: string; role: "endpoint" | "observer"; runId?: string }
 	| { type: "speak"; promptId: string; text: string; language: string; bargeIn: boolean; audioFormat?: "opus" | "wav" | "none" }
-	| { type: "listen.open"; promptId: string; maxMs: number; vad: boolean; bias?: string[]; expect?: string }
+	| { type: "listen.open"; promptId: string; maxMs: number; vad: boolean; bias?: string[]; expect?: string; grammar?: string[]; /** Language of the run: the endpoint recognises in it (the checklist decides, not the phone). */ language?: string }
 	| { type: "listen.close" }
 	| { type: "status"; state: ExchangeState; text?: string }
 	| { type: "released"; by?: string }
@@ -159,6 +170,9 @@ export type HubEventType =
 	| "run.item.queued_offline"
 	| "run.item.skipped"
 	| "run.item.escalated"
+	| "run.item.missed"
+	| "run.waiting"
+	| "run.proceeded"
 	| "run.paused"
 	| "run.resumed"
 	| "run.completed"
@@ -214,7 +228,7 @@ export function parseEndpointMessage(raw: string): EndpointMessage | undefined {
 		case "audio.end":
 			return { type: "audio.end", reason: (["silence", "ptt", "timeout", "cancel"] as const).find((r) => r === v.reason) ?? "silence" };
 		case "transcript":
-			return typeof v.text === "string" ? { type: "transcript", text: v.text, confidence: typeof v.confidence === "number" ? v.confidence : undefined, final: v.final !== false } : undefined;
+			return typeof v.text === "string" ? { type: "transcript", text: v.text, confidence: typeof v.confidence === "number" ? v.confidence : undefined, final: v.final !== false, alternatives: Array.isArray(v.alternatives) ? v.alternatives.filter((a): a is string => typeof a === "string" && a.length <= 300).slice(0, 5) : undefined } : undefined;
 		case "spoken":
 			return { type: "spoken", promptId: typeof v.promptId === "string" ? v.promptId : undefined };
 		case "command":
