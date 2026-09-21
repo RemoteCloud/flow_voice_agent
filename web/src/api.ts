@@ -26,7 +26,6 @@ async function request<T>(method: string, path: string, body?: unknown, opts: { 
 		body: body !== undefined ? JSON.stringify(body) : undefined,
 		credentials: "same-origin",
 	});
-	if (res.status === 401 && !opts.noAuthRedirect) unauthorizedHandler?.();
 	if (!res.ok) {
 		let err: Partial<ApiError> = {};
 		try {
@@ -34,6 +33,9 @@ async function request<T>(method: string, path: string, body?: unknown, opts: { 
 		} catch {
 			/* not json */
 		}
+		// only the hub's own "login required" ends the session; any other 401 (a proxy, a stale bundle) must not
+		// bounce the app to the login screen, where the session probe would send it straight back
+		if (res.status === 401 && !opts.noAuthRedirect && (err.code ?? "UNAUTHORIZED") === "UNAUTHORIZED") unauthorizedHandler?.();
 		throw new ApiClientError(res.status, err.code ?? "HTTP", err.error ?? `HTTP ${res.status}`);
 	}
 	if (res.status === 204) return undefined as T;
@@ -56,4 +58,11 @@ export function toApiError(e: unknown): ApiClientError {
 export function wsUrl(path: string): string {
 	const proto = location.protocol === "https:" ? "wss:" : "ws:";
 	return `${proto}//${location.host}${path}`;
+}
+
+/** Picker / Home load errors. The two credential codes get a plain-language line; everything else its message. */
+export function credentialErrorText(e: ApiClientError): string {
+	if (e.code === "NO_CREDENTIAL") return "No Maranics token for this session — sign out and in again.";
+	if (e.code === "MARANICS_UNAUTHORIZED") return `Maranics rejected this session's token. Signing in again will not help until the hub's OIDC client is granted Flow API access. (${e.message})`;
+	return e.message;
 }

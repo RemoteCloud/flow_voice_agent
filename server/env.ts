@@ -34,9 +34,14 @@ export interface SpeechEnv {
 	sttUrl?: string;
 	sttModel: string;
 	sttApiKey?: string;
+	/** Backup recogniser: the device still transcribes itself, and sends the audio of a window here only when it could not (no model / language pack, nothing recognised). Same API as `sttUrl`. */
+	sttBackupUrl?: string;
+	sttBackupModel: string;
 	/** `endpoint` = device speaks; `http` = GET `ttsUrl?text=` for audio (Piper HTTP server). */
 	ttsMode: "endpoint" | "http";
 	ttsUrl?: string;
+	/** Raw `TTS_VOICES` (language=piper voice, comma-separated); defaults in `speech/tts.ts`. */
+	ttsVoices?: string;
 }
 
 export interface PolicyEnv {
@@ -66,6 +71,10 @@ export interface HubEnv {
 	maranics?: MaranicsEnv;
 	oidc?: OidcEnv;
 	oidcReason?: string;
+	/** Password of the central admin area (`/central`, tenant management). Unset → main-hub admins manage tenants instead. */
+	centralPassword?: string;
+	/** Set on the core of a token tenant (`server/tenants.ts`); the main hub leaves it unset. */
+	tokenTenant?: { id: string; name: string };
 	speech: SpeechEnv;
 	policy: PolicyEnv;
 	/** Service bearer tokens accepted on POST /v1/prompts and /v1/runs/trigger (comma separated). */
@@ -160,6 +169,8 @@ export function parseEnv(e: Env, defaults: { cwd: string } = { cwd: process.cwd(
 			};
 	} else oidcReason = "Sign-in is not configured (HUB_OIDC_ISSUER, HUB_OIDC_CLIENT_ID, HUB_OIDC_CLIENT_SECRET)";
 
+	const centralPassword = s(e, "CENTRAL_PASSWORD", "HUB_CENTRAL_PASSWORD");
+	if (centralPassword && centralPassword.length < 12) throw new EnvError("CENTRAL_PASSWORD must be at least 12 characters");
 	const devUserName = s(e, "DEV_USER");
 	const devUser = devUserName ? { sub: `dev:${devUserName.toLowerCase().replace(/\s+/g, "-")}`, name: devUserName, email: s(e, "DEV_USER_EMAIL") ?? `${devUserName.toLowerCase().replace(/\s+/g, ".")}@example.com` } : undefined;
 
@@ -194,8 +205,11 @@ export function parseEnv(e: Env, defaults: { cwd: string } = { cwd: process.cwd(
 			sttUrl,
 			sttModel: s(e, "STT_MODEL") ?? "whisper-1",
 			sttApiKey: s(e, "STT_API_KEY"),
+			sttBackupUrl: normalizeBaseUrl(s(e, "STT_BACKUP_ENDPOINT", "STT_BACKUP_URL")),
+			sttBackupModel: s(e, "STT_BACKUP_MODEL") ?? s(e, "STT_MODEL") ?? "whisper-1",
 			ttsMode: ttsUrl ? "http" : "endpoint",
 			ttsUrl,
+			ttsVoices: s(e, "TTS_VOICES"),
 		},
 		policy: {
 			listenMs: n(e, "LISTEN_MS", 8000),
@@ -208,6 +222,7 @@ export function parseEnv(e: Env, defaults: { cwd: string } = { cwd: process.cwd(
 			defaultLanguage: s(e, "DEFAULT_LANGUAGE") ?? "en",
 			readNotices: b(e, "READ_NOTICES"),
 		},
+		centralPassword,
 		serviceTokens: (s(e, "SERVICE_TOKENS", "FLOW_SERVICE_TOKEN") ?? "")
 			.split(",")
 			.map((x) => x.trim())

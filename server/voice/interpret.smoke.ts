@@ -1,5 +1,5 @@
 import assert from "node:assert/strict";
-import { controlWord, itemNumber, interpret, parseClock, parseRelative, wordsToNumber, type InterpretContext } from "./interpret.js";
+import { bestTranscript, containsAllWords, controlWord, itemNumber, interpret, normalizeTranscript, parseClock, parseRelative, wordsToNumber, type InterpretContext } from "./interpret.js";
 
 const ctx: InterpretContext = { utteredAt: new Date("2026-09-09T07:47:03Z"), tzMode: "utc", maxPastHours: 12 };
 const ok = (r: ReturnType<typeof interpret>) => {
@@ -8,6 +8,76 @@ const ok = (r: ReturnType<typeof interpret>) => {
 };
 
 export async function run(): Promise<void> {
+	// answer words set per item: any answer that contains the word counts, a negation never does
+	const ramp: InterpretContext = { ...ctx, answers: ["up", "stowed"] };
+	assert.equal(ok(interpret("Checkbox", "the ramp is up now", ramp)).valueText, "up");
+	assert.equal(ok(interpret("Checkbox", "Stowed", ramp)).value, "OK");
+	assert.equal(ok(interpret("Checkbox", "yes", ramp)).valueText.toLowerCase(), "yes");
+	assert.equal(interpret("Checkbox", "supper", ramp).ok, false, "whole words only");
+	const neg = interpret("Checkbox", "not up", ramp);
+	assert.ok(!neg.ok || neg.value !== "OK", "a negation is never the answer word");
+	assert.equal(ok(interpret("QuickSelect", "it reads high today", { ...ctx, answers: ["high"], options: [{ title: "Normal", value: "Normal" }, { title: "High", value: "High" }] })).value, "High");
+
+	// strict checklist: only the marked words count
+	const strict: InterpretContext = { ...ctx, answers: ["körbro"], answersOnly: true };
+	assert.equal(ok(interpret("Checkbox", "hivt körbro", strict)).valueText, "körbro");
+	assert.equal(interpret("Checkbox", "ja", strict).ok, false, "a plain yes is refused");
+	assert.equal(interpret("Checkbox", "confirmed", strict).ok, false);
+	assert.equal(interpret("Checkbox", "no", strict).ok, false);
+	assert.equal(ok(interpret("Checkbox", "yes", { ...ctx, answersOnly: true })).value, "OK", "an item without words still takes yes");
+
+	assert.equal(ok(interpret("Checkbox", "ja nå er körbron hivt og sikret", strict)).valueText, "körbro", "inflected, inside a sentence");
+	assert.equal(ok(interpret("Checkbox", "hovedkörbro er oppe", strict)).valueText, "körbro");
+	assert.equal(interpret("Checkbox", "ikke körbron", strict).ok, false);
+
+	// near misses of the recogniser: tolerance per checklist
+	assert.equal(ok(interpret("Checkbox", "kjørbro hivt", strict)).valueText, "körbro", "normal takes one wrong letter");
+	assert.equal(ok(interpret("Checkbox", "kjørebro hivt", strict)).valueText, "körbro", "normal takes the Norwegian spelling");
+	assert.equal(interpret("Checkbox", "kjempebra hivt", strict).ok, false, "another word is too far");
+	assert.equal(interpret("Checkbox", "kurbo hivt", strict).ok, false, "normal: too far");
+	assert.equal(ok(interpret("Checkbox", "kurbo hivt", { ...strict, answerMatch: 0.6 })).valueText, "körbro", "loose takes it");
+	assert.equal(ok(interpret("Checkbox", "kjøre bro hivt", { ...strict, answerMatch: 0.6 })).valueText, "körbro", "loose, and split in two words");
+	assert.equal(interpret("Checkbox", "kjørbro hivt", { ...strict, answerMatch: 1 }).ok, false, "exact");
+	assert.equal(interpret("Checkbox", "us", { ...ctx, answers: ["up"], answersOnly: true, answerMatch: 0.6 }).ok, false, "short words stay exact");
+
+	// a combination: every part must be heard, in any order and any distance apart
+	const combo: InterpretContext = { ...ctx, answers: ["hivt + körbro"], answersOnly: true };
+	assert.equal(ok(interpret("Checkbox", "hivt körbro", combo)).valueText, "hivt körbro", "as written");
+	assert.equal(ok(interpret("Checkbox", "körbro er hivt", combo)).valueText, "hivt körbro", "the other order");
+	assert.equal(ok(interpret("Checkbox", "ja nå er körbron hivt og sikret", combo)).valueText, "hivt körbro", "words apart, inflected");
+	assert.equal(interpret("Checkbox", "körbro er nede", combo).ok, false, "one part missing");
+	assert.equal(interpret("Checkbox", "hivt", combo).ok, false, "the other part missing");
+	assert.equal(interpret("Checkbox", "ikke hivt körbro", combo).ok, false, "a negation is never the answer");
+	assert.equal(ok(interpret("Checkbox", "kjørebro er hivd", combo)).valueText, "hivt körbro", "each part may be a near miss");
+	assert.equal(interpret("Checkbox", "kjørebro er hivd", { ...combo, answerMatch: 1 }).ok, false, "exact wants both as written");
+	assert.equal(ok(interpret("Checkbox", "hivt körbro", { ...combo, answers: ["hivt + körbro", "sikret"] })).valueText, "hivt körbro", "beside plain words");
+	assert.equal(ok(interpret("Checkbox", "sikret", { ...combo, answers: ["hivt + körbro", "sikret"] })).valueText, "sikret");
+	assert.equal(
+		ok(interpret("QuickSelect", "styrbord körbro er hivt", { ...ctx, answers: ["hivt + styrbord"], options: [{ title: "Babord hivt", value: "P" }, { title: "Styrbord hivt", value: "S" }] })).value,
+		"S",
+		"a combination picks the option that holds both words",
+	);
+
+	// every word of an item name somewhere in the sentence: how an unprompted answer finds its item
+	assert.equal(containsAllWords(normalizeTranscript("körbro er hivt"), "Hivt körbro"), true);
+	assert.equal(containsAllWords(normalizeTranscript("ja körbron er hivt og sikret"), "Hivt körbro"), true, "inflected, words apart");
+	assert.equal(containsAllWords(normalizeTranscript("kjørebro er hivd"), "Hivt körbro"), true, "near misses count");
+	assert.equal(containsAllWords(normalizeTranscript("kjørebro er hivd"), "Hivt körbro", 1), false, "exact tolerance");
+	assert.equal(containsAllWords(normalizeTranscript("körbro er nede"), "Hivt körbro"), false, "one word missing");
+	assert.equal(containsAllWords(normalizeTranscript("pilot on board five minutes ago"), "Pilot on board"), true, "short filler words are not required");
+
+	// acronyms spoken as letters come back as words
+	const vts: InterpretContext = { ...ctx, answers: ["vts"], answersOnly: true };
+	for (const heard of ["VTS.", "Vet TES kanal 19.", "Ved TS kanal 19.", "Vet s kanalen 19."]) assert.equal(ok(interpret("Checkbox", heard, vts)).valueText, "vts", heard);
+	assert.equal(interpret("Checkbox", "vi venter litt", vts).ok, false);
+	assert.equal(interpret("Checkbox", "Så har vi jo et gen.", vts).ok, false);
+
+	// the recogniser's other guesses
+	assert.equal(bestTranscript("Hive, charro.", ["Hive sharro", "Hive kjørebro"], ["kjørebro"]), "Hive kjørebro");
+	assert.equal(bestTranscript("kjørebro hivt", ["noe annet"], ["kjørebro"]), "kjørebro hivt", "a first guess that fits stays");
+	assert.equal(bestTranscript("hopp over", ["kjørebro"], undefined), "hopp over");
+	assert.equal(bestTranscript("bla bla", ["mer bla"], ["kjørebro"]), "bla bla");
+
 	// numbers
 	assert.equal(wordsToNumber("twenty point five"), 20.5);
 	assert.equal(wordsToNumber("one hundred and twelve"), 112);
@@ -35,14 +105,14 @@ export async function run(): Promise<void> {
 
 	// DateAndTime: the spec's worked example
 	const pilot = ok(interpret("DateAndTime", "Pilot on board five minutes ago.", ctx, ["pilot on board"]));
-	assert.equal(pilot.value, "2026-09-09T07:42:03.000Z");
+	assert.equal(pilot.value, "2026-09-09T07:42"); // Flow's own DateAndTime format, never a full ISO stamp
 	assert.equal(pilot.valueText, "07:42 UTC");
 	const engine = ok(interpret("DateAndTime", "Engine started.", ctx, ["engine started"]));
 	assert.equal(engine.kind, "now");
 	// Appendix A: said at 08:14, "at zero eight zero five" resolves to 08:05 today; utteredAt stays 08:14
 	const later: InterpretContext = { ...ctx, utteredAt: new Date("2026-09-09T08:14:00Z") };
 	const at = ok(interpret("DateAndTime", "at zero eight zero five", later));
-	assert.equal(at.value, "2026-09-09T08:05:00.000Z");
+	assert.equal(at.value, "2026-09-09T08:05");
 	assert.equal(at.valueText, "08:05 UTC");
 	// a clock time in the future (by more than 5 min) rolls back a day and is then implausible → clarify
 	const future = interpret("DateAndTime", "at zero eight zero five", ctx);
@@ -55,10 +125,22 @@ export async function run(): Promise<void> {
 	assert.equal((old as { reason: string }).reason, "implausible");
 
 	// Checkbox
-	assert.equal(ok(interpret("Checkbox", "affirmative", ctx)).value, "true");
-	assert.equal(ok(interpret("Checkbox", "Yes.", ctx)).value, "true");
-	assert.equal(ok(interpret("Checkbox", "nope", ctx)).value, "false");
+	assert.equal(ok(interpret("Checkbox", "affirmative", ctx)).value, "OK"); // what Flow stores for a checked box
+	assert.equal(ok(interpret("Checkbox", "Yes.", ctx)).value, "OK");
+	assert.equal(ok(interpret("Checkbox", "nope", ctx)).value, ""); // not done: nothing to write
+	assert.equal(ok(interpret("RadioButtons", "ja", { ...ctx, options: undefined })).value, "Yes");
+	assert.equal(ok(interpret("RadioButtons", "non", { ...ctx, options: undefined })).value, "No");
 	assert.equal(interpret("Checkbox", "maybe", ctx).ok, false);
+	// a checkbox authored with one option ("Utført::completed") stores the option key; the title is what is read back
+	const keyed = { ...ctx, options: [{ title: "Utført", value: "completed" }] };
+	assert.equal(ok(interpret("Checkbox", "ja", keyed)).value, "completed");
+	assert.equal(ok(interpret("Checkbox", "ja", keyed)).valueText, "Utført");
+	assert.equal(ok(interpret("Checkbox", "utført", keyed)).value, "completed");
+	assert.equal(ok(interpret("Checkbox", "nei", keyed)).value, "");
+	// several options: a multi-select answered like a Dropdown
+	const multi = { ...ctx, options: [{ title: "Port", value: "port" }, { title: "Starboard", value: "stbd" }] };
+	assert.equal(ok(interpret("Checkbox", "starboard", multi)).value, "stbd");
+	assert.equal(interpret("Checkbox", "yes", multi).ok, false);
 
 	// QuickSelect bounded to the option set
 	const opts = { ...ctx, options: [{ title: "Yes", value: "Yes" }, { title: "No", value: "No" }, { title: "Not applicable", value: "N/A" }] };
@@ -83,6 +165,7 @@ export async function run(): Promise<void> {
 	// control vocabulary
 	assert.equal(controlWord("Confirmed."), "confirm");
 	assert.equal(controlWord("yes"), "confirm");
+	for (const w of ["ok", "okej", "greit", "det stemmer", "jawohl", "c'est bon", "stämmer", "passt"]) assert.equal(controlWord(w), "confirm", w);
 	assert.equal(controlWord("No"), "no");
 	assert.equal(controlWord("say again"), "repeat");
 	assert.equal(controlWord("skip"), "skip");
@@ -104,6 +187,6 @@ export async function run(): Promise<void> {
 	// local time mode with a zone
 	const local: InterpretContext = { ...ctx, tzMode: "local", timeZone: "Europe/Oslo" };
 	const l = ok(interpret("DateAndTime", "at zero nine four two", local));
-	assert.equal(l.value, "2026-09-09T07:42:00.000Z", "09:42 Oslo (CEST) = 07:42 UTC");
+	assert.equal(l.value, "2026-09-09T07:42", "09:42 Oslo (CEST) = 07:42 UTC");
 	assert.equal(l.valueText, "09:42 local time");
 }

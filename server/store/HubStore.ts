@@ -3,7 +3,7 @@
  * after every `update()`. Same pattern as the FlowDeck hub. Audio never lands here; the audit
  * record is text (section 15 of the spec).
  */
-import { mkdirSync, readFileSync, readdirSync, renameSync, writeFileSync, existsSync } from "node:fs";
+import { mkdirSync, readFileSync, readdirSync, renameSync, statSync, writeFileSync, existsSync } from "node:fs";
 import path from "node:path";
 import type { RunItem, RunState, ExchangeState } from "../protocol.js";
 
@@ -13,6 +13,9 @@ export interface HubUser {
 	name?: string;
 	positionId?: string;
 	positionName?: string;
+	/** Location from the sign-in claims: the Maranics location new flows are created at (the token decides). */
+	locationId?: string;
+	locationName?: string;
 	firstSeenAt: string;
 	lastLoginAt: string;
 	logins: number;
@@ -57,6 +60,61 @@ export interface Station {
 	verbosity?: "full" | "short" | "silent";
 	/** Complete / discard may be confirmed by voice (two-step). Default true; false = screen only (spec 21.3). */
 	voiceActions?: boolean;
+	/** Noisy place: on phones / tablets the mic opens only while the button is held (the app has no switch of its own). */
+	holdToAnswer?: boolean;
+	/**
+	 * What this station may do per template id. `start` = start new ones and work on open ones, `use` = only work on
+	 * open ones (started elsewhere), `off` = not shown here. A station with entries offers only those templates; no entries at all → the hub-wide Start buttons list decides.
+	 * `language` = the language the checklist is run in on this station (wins over the hub-wide template language).
+	 */
+	templates?: Record<string, StationTemplateRule>;
+}
+
+/** A token tenant: its own hub core under `<data>/tenants/<id>/`, acting with one pasted access token (sealed). */
+/** How a run moves on after an item: at once, when the crew says "next", after a delay, or when an external system says so. */
+export type StepMode = { mode: "auto" } | { mode: "ask" } | { mode: "timer"; delaySec: number } | { mode: "external" };
+export interface RunWaiting {
+	taskId: string;
+	mode: "ask" | "timer" | "external";
+	/** timer: when the next item is read (ISO). */
+	until?: string;
+}
+
+export interface TenantEntry {
+	id: string;
+	name: string;
+	/** Maranics tenant id sent as the `Tenant` header. */
+	tenant: string;
+	/** Gateway host when it differs from the main hub's. */
+	host?: string;
+	/** Maranics SSO (the normal way): the tenant's own OIDC client; users sign in as themselves. */
+	clientId?: string;
+	/** Client secret, sealed with the hub key. */
+	clientSecretEnc?: string;
+	/** OIDC issuer when it cannot be derived from the main hub's (same UserManagement, other tenant segment). */
+	issuer?: string;
+	/** Fallback without an SSO client: a pasted access token everyone in the tenant acts with. */
+	tokenEnc?: string;
+	tokenHint?: string;
+	/** Location of this entry (a vessel, a site): several entries may share name and Maranics tenant id and differ here. */
+	location?: string;
+	/** Another server of the same Maranics tenant (one per vessel, "colorline / colormagic"): id of the tenant entry it was added under. */
+	parent?: string;
+	createdAt: string;
+}
+
+export interface LibraryTemplate {
+	templateId: string;
+	name: string;
+	refId?: string;
+	categoryName?: string;
+	importedAt: string;
+	items: { key: string; name: string; section?: string; type?: string }[];
+}
+
+export interface StationTemplateRule {
+	access?: "start" | "use" | "off";
+	language?: string;
 }
 
 /**
@@ -68,6 +126,8 @@ export interface StationJoin {
 	/** sha256 hex of the `fvj_` token. */
 	tokenHash: string;
 	tokenHint: string;
+	/** The token itself, sealed with the hub key, so Admin can show the station link and QR again at any time. */
+	sealed?: string;
 	createdAt: string;
 	createdBy?: string;
 }
@@ -168,8 +228,10 @@ export interface RunRecord {
 	/** Task ids the user skipped, offered again in the sweep. */
 	skipped: string[];
 	/** A spoken complete / discard waiting for its confirmation. */
-	pendingAction?: { kind: "complete" | "discard"; reasonCode?: string; reasonTitle?: string; step: "reason" | "confirm" };
+	pendingAction?: { kind: "complete" | "discard"; reasonCode?: string; reasonTitle?: string; step: "reason" | "confirm"; reasons?: { code: string; title: string; requireComment: boolean }[] };
 	sweepOffered?: boolean;
+	/** Between items: the next item is held until asked ("next"), a timer, or an external trigger. */
+	waiting?: RunWaiting;
 }
 
 export interface PromptRecord {
@@ -221,7 +283,17 @@ export interface HubData {
 	outbox: OutboxEntry[];
 	audit: AuditEntry[];
 	idempotency: Record<string, { at: string; result: string }>;
-	settings: { readNotices: boolean; tzMode: "utc" | "local"; confirmation: "required" | "optional" };
+	/**
+	 * The central checklist register (Admin → Checklist setup): templates downloaded from the Templates app, with a snapshot of
+	 * their items. Once it holds anything, only registered checklists are offered; language and trigger words are set
+	 * here (`settings.templateLanguages` / `settings.itemAnswers`) and stations pick from it.
+	 */
+	library?: Record<string, LibraryTemplate>;
+	/** Main hub only: other Maranics tenants to try with a pasted access token (`server/tenants.ts`). */
+	tenants?: TenantEntry[];
+	/** Portable file → modification time it had when it was last imported; a file is imported again only after it changed. */
+	portableSeen?: Record<string, number>;
+	settings: { readNotices: boolean; tzMode: "utc" | "local"; confirmation: "required" | "optional"; /** Template ids that get a start button on the phone/tablet home screen and in the voice menu; empty or absent → every template. */ startable?: string[]; /** Template id → language the checklist is written in (en/sv/no/fr/de); wins over the station language. */ templateLanguages?: Record<string, string>; /** Template id → item key (`answerKey`) → words that count as that item's answer ("up", "closed"); "a + b" = every part must be heard, in any order. */ itemAnswers?: Record<string, Record<string, string[]>>; /** Template ids where only the marked answer words count: items with words refuse a plain yes / confirm / no. */ wordsOnly?: string[]; /** Template id → how close a heard word must be to a marked answer word; absent = normal. */ wordMatch?: Record<string, "exact" | "normal" | "loose">; /** Template id → how the run moves to the next item; absent = at once. */ stepMode?: Record<string, StepMode> };
 }
 
 export function emptyData(): HubData {
@@ -298,6 +370,7 @@ export class JsonHubStore implements HubStore {
 		mkdirSync(dataDir, { recursive: true });
 		this.file = path.join(dataDir, "hub.json");
 		this.data = emptyData();
+		const fresh = !existsSync(this.file);
 		if (existsSync(this.file)) {
 			try {
 				const raw = JSON.parse(readFileSync(this.file, "utf8")) as Partial<HubData>;
@@ -307,13 +380,26 @@ export class JsonHubStore implements HubStore {
 				this.log?.warn(`hub.json unreadable (${err instanceof Error ? err.message : String(err)}); starting empty`);
 			}
 		}
-		this.loadPortableFiles(dataDir);
+		this.loadPortableFiles(dataDir, fresh);
+	}
+
+	/**
+	 * A portable file is imported once per version of the file: on a fresh hub, or when the file changed since the last
+	 * import. Otherwise what Admin saved (hub.json) stands, so a restart never rolls stations back to an old file.
+	 */
+	private changed(file: string, key: string, fresh: boolean): boolean {
+		const mtime = Math.round(statSync(file).mtimeMs);
+		const seen = (this.data.portableSeen ??= {});
+		const before = seen[key];
+		seen[key] = mtime;
+		if (before === undefined) return fresh;
+		return before !== mtime;
 	}
 
 	/** `stations.json`, `profiles/*.json`, `mappings.json` next to hub.json override what hub.json holds — author once, copy to the next vessel. */
-	private loadPortableFiles(dataDir: string): void {
+	private loadPortableFiles(dataDir: string, fresh: boolean): void {
 		const stationsFile = path.join(dataDir, "stations.json");
-		if (existsSync(stationsFile)) {
+		if (existsSync(stationsFile) && this.changed(stationsFile, "stations.json", fresh)) {
 			try {
 				const list = JSON.parse(readFileSync(stationsFile, "utf8")) as Station[];
 				if (Array.isArray(list) && list.every((x) => x && typeof x.stationId === "string")) this.data.stations = list.map((x) => ({ ...x, audioPolicy: x.audioPolicy ?? "ptt", autoStartAllowed: x.autoStartAllowed ?? false, language: x.language ?? "en" }));
@@ -322,7 +408,7 @@ export class JsonHubStore implements HubStore {
 			}
 		}
 		const mappingsFile = path.join(dataDir, "mappings.json");
-		if (existsSync(mappingsFile)) {
+		if (existsSync(mappingsFile) && this.changed(mappingsFile, "mappings.json", fresh)) {
 			try {
 				const list = JSON.parse(readFileSync(mappingsFile, "utf8")) as EventMapping[];
 				if (Array.isArray(list)) this.data.mappings = list.filter((m) => m && typeof m.on === "string" && typeof m.start === "string" && typeof m.station === "string");
@@ -334,6 +420,7 @@ export class JsonHubStore implements HubStore {
 		if (existsSync(profilesDir)) {
 			try {
 				for (const f of readdirSync(profilesDir).filter((x: string) => x.endsWith(".json"))) {
+					if (!this.changed(path.join(profilesDir, f), `profiles/${f}`, fresh)) continue;
 					const p = JSON.parse(readFileSync(path.join(profilesDir, f), "utf8")) as VoiceProfile;
 					if (p && typeof p.profileId === "string" && Array.isArray(p.bindings)) {
 						this.data.profiles = this.data.profiles.filter((x) => x.profileId !== p.profileId);

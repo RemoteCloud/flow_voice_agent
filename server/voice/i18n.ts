@@ -34,6 +34,7 @@ const T: Record<Lang, Record<string, string>> = {
 		menu_nomatch: "I did not catch a checklist name. Say list to hear them again.",
 		menu_help: "Say list, the name of a checklist, or station followed by a station name.",
 		station_switch: "Switching to {name}.",
+		station_fixed: "The station is set by the station link. Scan another station's QR code to change it.",
 		station_unknown: "I do not know a station called {name}.",
 		complete_confirm: "Complete {name}, {answered} of {total}? Say confirm.",
 		complete_blocked_items: "{n} items are still open; the checklist cannot be completed yet.",
@@ -69,6 +70,8 @@ const T: Record<Lang, Record<string, string>> = {
 		complete_on_screen: "Complete it on screen to confirm.",
 		still_open: "{n} items are still open.",
 		discard_on_screen: "Discard must be confirmed on screen.",
+		not_done: "Not done. I will come back to {name}.",
+		item_missed: "{name} missed.",
 		flow_rejected: "Flow did not accept that value. {name} needs the screen.",
 		recorded_locally: "Recorded locally, will sync.",
 		confirmed: "Confirmed.",
@@ -82,6 +85,12 @@ const T: Record<Lang, Record<string, string>> = {
 		completed: "{name} complete, {answered} of {total}. Syncing to Flow.",
 		ready: "{name} ready. Say start, or open it on screen.",
 		readback: "{name}, {value}. Confirm?",
+		echo: "{name}, {value}.",
+		echo_short: "{value}.",
+		step_ask: "Say next when you are ready.",
+		step_timer_sec: "Next item in {n} seconds.",
+		step_timer_min: "Next item in {n} minutes.",
+		step_external: "Waiting for the next step.",
 		now: "now",
 		utc: "UTC",
 		local_time: "local time",
@@ -89,6 +98,7 @@ const T: Record<Lang, Record<string, string>> = {
 		no: "no",
 		// interpreter messages
 		m_empty: "I did not hear anything",
+		m_say_word: "Answer with the word: {words}",
 		m_when: "When? Say a time like zero seven four two, or five minutes ago",
 		m_time: "Say a time, for example zero seven four two",
 		m_date: "Say a date, for example yesterday or the ninth of September",
@@ -108,6 +118,7 @@ const T: Record<Lang, Record<string, string>> = {
 		menu_nomatch: "Jag uppfattade inget checklistnamn. Säg lista för att höra dem igen.",
 		menu_help: "Säg lista, namnet på en checklista, eller station följt av ett stationsnamn.",
 		station_switch: "Byter till {name}.",
+		station_fixed: "Stationen bestäms av stationslänken. Skanna en annan stations QR-kod för att byta.",
 		station_unknown: "Jag känner inte till någon station som heter {name}.",
 		complete_confirm: "Slutföra {name}, {answered} av {total}? Säg bekräfta.",
 		complete_blocked_items: "{n} punkter är fortfarande öppna; checklistan kan inte slutföras än.",
@@ -143,6 +154,8 @@ const T: Record<Lang, Record<string, string>> = {
 		complete_on_screen: "Slutför på skärmen för att bekräfta.",
 		still_open: "{n} punkter är fortfarande öppna.",
 		discard_on_screen: "Kassering måste bekräftas på skärmen.",
+		not_done: "Inte gjort. Jag återkommer till {name}.",
+		item_missed: "{name} missades.",
 		flow_rejected: "Flow godtog inte det värdet. {name} kräver skärmen.",
 		recorded_locally: "Sparat lokalt, synkas senare.",
 		confirmed: "Bekräftat.",
@@ -156,12 +169,19 @@ const T: Record<Lang, Record<string, string>> = {
 		completed: "{name} slutförd, {answered} av {total}. Synkar till Flow.",
 		ready: "{name} är redo. Säg starta, eller öppna på skärmen.",
 		readback: "{name}, {value}. Bekräfta?",
+		echo: "{name}, {value}.",
+		echo_short: "{value}.",
+		step_ask: "Säg nästa när du är redo.",
+		step_timer_sec: "Nästa punkt om {n} sekunder.",
+		step_timer_min: "Nästa punkt om {n} minuter.",
+		step_external: "Väntar på nästa steg.",
 		now: "nu",
 		utc: "UTC",
 		local_time: "lokal tid",
 		yes: "ja",
 		no: "nej",
 		m_empty: "Jag hörde ingenting",
+		m_say_word: "Svara med ordet: {words}",
 		m_when: "När? Säg en tid som noll sju fyrtiotvå, eller fem minuter sedan",
 		m_time: "Säg en tid, till exempel noll sju fyrtiotvå",
 		m_date: "Säg ett datum, till exempel igår eller nionde september",
@@ -181,6 +201,7 @@ const T: Record<Lang, Record<string, string>> = {
 		menu_nomatch: "Jeg oppfattet ikke noe sjekklistenavn. Si liste for å høre dem igjen.",
 		menu_help: "Si liste, navnet på en sjekkliste, eller stasjon etterfulgt av et stasjonsnavn.",
 		station_switch: "Bytter til {name}.",
+		station_fixed: "Stasjonen bestemmes av stasjonslenken. Skann QR-koden til en annen stasjon for å bytte.",
 		station_unknown: "Jeg kjenner ingen stasjon som heter {name}.",
 		complete_confirm: "Fullføre {name}, {answered} av {total}? Si bekreft.",
 		complete_blocked_items: "{n} punkter er fortsatt åpne; sjekklisten kan ikke fullføres ennå.",
@@ -216,6 +237,8 @@ const T: Record<Lang, Record<string, string>> = {
 		complete_on_screen: "Fullfør på skjermen for å bekrefte.",
 		still_open: "{n} punkter er fortsatt åpne.",
 		discard_on_screen: "Forkasting må bekreftes på skjermen.",
+		not_done: "Ikke gjort. Jeg kommer tilbake til {name}.",
+		item_missed: "{name} ble ikke gjort.",
 		flow_rejected: "Flow godtok ikke den verdien. {name} krever skjermen.",
 		recorded_locally: "Lagret lokalt, synkes senere.",
 		confirmed: "Bekreftet.",
@@ -229,12 +252,19 @@ const T: Record<Lang, Record<string, string>> = {
 		completed: "{name} fullført, {answered} av {total}. Synker til Flow.",
 		ready: "{name} er klar. Si start, eller åpne på skjermen.",
 		readback: "{name}, {value}. Bekreft?",
+		echo: "{name}, {value}.",
+		echo_short: "{value}.",
+		step_ask: "Si neste når du er klar.",
+		step_timer_sec: "Neste punkt om {n} sekunder.",
+		step_timer_min: "Neste punkt om {n} minutter.",
+		step_external: "Venter på neste steg.",
 		now: "nå",
 		utc: "UTC",
 		local_time: "lokal tid",
 		yes: "ja",
 		no: "nei",
 		m_empty: "Jeg hørte ingenting",
+		m_say_word: "Svar med ordet: {words}",
 		m_when: "Når? Si et klokkeslett som null sju førtito, eller fem minutter siden",
 		m_time: "Si et klokkeslett, for eksempel null sju førtito",
 		m_date: "Si en dato, for eksempel i går eller niende september",
@@ -254,6 +284,7 @@ const T: Record<Lang, Record<string, string>> = {
 		menu_nomatch: "Je n'ai pas compris le nom de la liste. Dites liste pour les réentendre.",
 		menu_help: "Dites liste, le nom d'une liste, ou station suivi du nom d'une station.",
 		station_switch: "Passage à {name}.",
+		station_fixed: "Le poste est défini par le lien du poste. Scannez le code QR d'un autre poste pour en changer.",
 		station_unknown: "Je ne connais pas de station appelée {name}.",
 		complete_confirm: "Terminer {name}, {answered} sur {total} ? Dites confirmer.",
 		complete_blocked_items: "{n} points sont encore ouverts ; la liste ne peut pas encore être terminée.",
@@ -289,6 +320,8 @@ const T: Record<Lang, Record<string, string>> = {
 		complete_on_screen: "Terminez sur l'écran pour confirmer.",
 		still_open: "{n} points sont encore ouverts.",
 		discard_on_screen: "L'abandon doit être confirmé sur l'écran.",
+		not_done: "Pas fait. Je reviendrai sur {name}.",
+		item_missed: "{name} manqué.",
 		flow_rejected: "Flow n'a pas accepté cette valeur. {name} nécessite l'écran.",
 		recorded_locally: "Enregistré localement, synchronisation plus tard.",
 		confirmed: "Confirmé.",
@@ -302,12 +335,19 @@ const T: Record<Lang, Record<string, string>> = {
 		completed: "{name} terminée, {answered} sur {total}. Synchronisation avec Flow.",
 		ready: "{name} est prête. Dites commencer, ou ouvrez-la sur l'écran.",
 		readback: "{name}, {value}. Confirmez ?",
+		echo: "{name}, {value}.",
+		echo_short: "{value}.",
+		step_ask: "Dites suivant quand vous êtes prêt.",
+		step_timer_sec: "Point suivant dans {n} secondes.",
+		step_timer_min: "Point suivant dans {n} minutes.",
+		step_external: "En attente de l'étape suivante.",
 		now: "maintenant",
 		utc: "UTC",
 		local_time: "heure locale",
 		yes: "oui",
 		no: "non",
 		m_empty: "Je n'ai rien entendu",
+		m_say_word: "Répondez avec le mot : {words}",
 		m_when: "Quand ? Dites une heure comme sept heures quarante-deux, ou il y a cinq minutes",
 		m_time: "Dites une heure, par exemple sept heures quarante-deux",
 		m_date: "Dites une date, par exemple hier ou le neuf septembre",
@@ -327,6 +367,7 @@ const T: Record<Lang, Record<string, string>> = {
 		menu_nomatch: "Ich habe keinen Checklistennamen verstanden. Sagen Sie Liste, um sie erneut zu hören.",
 		menu_help: "Sagen Sie Liste, den Namen einer Checkliste, oder Station gefolgt von einem Stationsnamen.",
 		station_switch: "Wechsle zu {name}.",
+		station_fixed: "Die Station wird durch den Stationslink festgelegt. Scannen Sie den QR-Code einer anderen Station, um zu wechseln.",
 		station_unknown: "Ich kenne keine Station namens {name}.",
 		complete_confirm: "{name} abschließen, {answered} von {total}? Sagen Sie bestätigen.",
 		complete_blocked_items: "{n} Punkte sind noch offen; die Checkliste kann noch nicht abgeschlossen werden.",
@@ -362,6 +403,8 @@ const T: Record<Lang, Record<string, string>> = {
 		complete_on_screen: "Zum Bestätigen am Bildschirm abschließen.",
 		still_open: "{n} Punkte sind noch offen.",
 		discard_on_screen: "Verwerfen muss am Bildschirm bestätigt werden.",
+		not_done: "Nicht erledigt. Ich komme auf {name} zurück.",
+		item_missed: "{name} verpasst.",
 		flow_rejected: "Flow hat diesen Wert nicht akzeptiert. {name} braucht den Bildschirm.",
 		recorded_locally: "Lokal gespeichert, wird später synchronisiert.",
 		confirmed: "Bestätigt.",
@@ -375,12 +418,19 @@ const T: Record<Lang, Record<string, string>> = {
 		completed: "{name} abgeschlossen, {answered} von {total}. Synchronisiere mit Flow.",
 		ready: "{name} ist bereit. Sagen Sie Start, oder öffnen Sie sie am Bildschirm.",
 		readback: "{name}, {value}. Bestätigen?",
+		echo: "{name}, {value}.",
+		echo_short: "{value}.",
+		step_ask: "Sagen Sie weiter, wenn Sie bereit sind.",
+		step_timer_sec: "Nächster Punkt in {n} Sekunden.",
+		step_timer_min: "Nächster Punkt in {n} Minuten.",
+		step_external: "Warte auf den nächsten Schritt.",
 		now: "jetzt",
 		utc: "UTC",
 		local_time: "Ortszeit",
 		yes: "ja",
 		no: "nein",
 		m_empty: "Ich habe nichts gehört",
+		m_say_word: "Antworten Sie mit dem Wort: {words}",
 		m_when: "Wann? Sagen Sie eine Uhrzeit wie null sieben zweiundvierzig, oder vor fünf Minuten",
 		m_time: "Sagen Sie eine Uhrzeit, zum Beispiel null sieben zweiundvierzig",
 		m_date: "Sagen Sie ein Datum, zum Beispiel gestern oder neunter September",
@@ -442,4 +492,24 @@ export function spokenNumber(n: number, lang: Lang | string = "en"): string {
 		default:
 			return n < 20 ? EN[n] : ones ? `${EN_TENS[tens]}-${EN[ones]}` : EN_TENS[tens];
 	}
+}
+
+const AND: Record<string, string> = { en: "and", sv: "och", no: "og", fr: "et", de: "und" };
+/**
+ * Text as it should be spoken: a voice reads "/" as "slash" and stumbles on brackets, underscores and list marks, so
+ * they become short pauses or nothing. Digits keep their own separators ("12:13", "1/2", "3.5", "-4").
+ */
+export function spokenText(text: string, lang: string): string {
+	return text
+		.replace(/\s*&\s*/g, ` ${AND[normLang(lang)] ?? "and"} `)
+		.replace(/(?<!\d)\s*[/\\|]+\s*|\s*[/\\|]+\s*(?!\d)/g, ", ")
+		.replace(/[()[\]{}<>]/g, ", ")
+		.replace(/[_*#~^`"“”«»=+]+/g, " ")
+		.replace(/(^|\s)[-–—•·]+(?=\s|$)/g, "$1")
+		.replace(/\s+([,.;:!?])/g, "$1")
+		.replace(/,(\s*,)+/g, ",")
+		.replace(/,\s*([.;:!?])/g, "$1")
+		.replace(/\s{2,}/g, " ")
+		.replace(/^[\s,]+|[\s,]+$/g, "")
+		.trim();
 }

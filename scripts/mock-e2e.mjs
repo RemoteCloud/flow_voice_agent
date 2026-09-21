@@ -9,6 +9,7 @@
  *   npm run mock          (builds nothing: expects dist/server.mjs from `npm run build:server`)
  */
 import assert from "node:assert/strict";
+import http from "node:http";
 import { spawn } from "node:child_process";
 import { cpSync, mkdtempSync, rmSync } from "node:fs";
 import os from "node:os";
@@ -23,9 +24,34 @@ const fake = await startFakeMaranics({ port: 0, tenant: "demo" });
 const dataDir = mkdtempSync(path.join(os.tmpdir(), "flow-voice-e2e-"));
 cpSync(path.join(root, "deploy", "data-template"), dataDir, { recursive: true }); // stations, mappings, the arrival-bridge voice profile
 const log = [];
+// fake backup recogniser (OpenAI-compatible): answers "ja" and records what it was asked
+const sttCalls = [];
+const sttServer = http.createServer(async (req, res) => {
+	const chunks = [];
+	for await (const c of req) chunks.push(c);
+	const body = Buffer.concat(chunks).toString("latin1");
+	sttCalls.push({ url: req.url, language: /name="language"\r\n\r\n(\w+)/.exec(body)?.[1], prompt: /name="prompt"\r\n\r\n([^\r]*)/.exec(body)?.[1], bytes: body.length });
+	res.writeHead(200, { "content-type": "application/json" });
+	res.end(JSON.stringify({ text: " Ja. [BLANK_AUDIO]", segments: [{ avg_logprob: -0.2, no_speech_prob: 0.05 }] }));
+});
+await new Promise((r) => sttServer.listen(0, "127.0.0.1", r));
+const sttUrl = `http://127.0.0.1:${sttServer.address().port}`;
+
+// fake voice server (Piper HTTP): answers a tiny WAV and records what it was asked
+const ttsCalls = [];
+const ttsServer = http.createServer(async (req, res) => {
+	const chunks = [];
+	for await (const c of req) chunks.push(c);
+	ttsCalls.push(JSON.parse(Buffer.concat(chunks).toString("utf8")));
+	res.writeHead(200, { "content-type": "audio/wav" });
+	res.end(Buffer.concat([Buffer.from("RIFF"), Buffer.alloc(60)]));
+});
+await new Promise((r) => ttsServer.listen(0, "127.0.0.1", r));
+const ttsUrl = `http://127.0.0.1:${ttsServer.address().port}`;
+
 const hub = spawn(process.execPath, ["dist/server.mjs"], {
 	cwd: root,
-	env: { ...process.env, HUB_SECRET: "e2e-secret-0123456789abcdef", HUB_PORT: String(port), HUB_DATA_DIR: dataDir, HUB_PUBLIC_DIR: path.join(root, "dist", "public"), HUB_TENANT: "demo", HUB_MARANICS_HOST: fake.url, DEV_USER: "Bridge Officer", DEV_MARANICS_TOKEN: "t0k3n", SERVICE_TOKENS: "svc-token", LOG_LEVEL: "debug", LISTEN_MS: "1500", CONFIRM_MS: "1500", EXCHANGE_MS: "20000" },
+	env: { ...process.env, HUB_SECRET: "e2e-secret-0123456789abcdef", HUB_PORT: String(port), HUB_DATA_DIR: dataDir, HUB_PUBLIC_DIR: path.join(root, "dist", "public"), HUB_PUBLIC_URL: `http://127.0.0.1:${port}`, HUB_TENANT: "demo", HUB_MARANICS_HOST: fake.url, DEV_USER: "Bridge Officer", DEV_MARANICS_TOKEN: "t0k3n", CENTRAL_PASSWORD: "central-pass-e2e", SERVICE_TOKENS: "svc-token", STT_BACKUP_ENDPOINT: sttUrl, TTS_ENDPOINT: ttsUrl, LOG_LEVEL: "debug", LISTEN_MS: "1500", CONFIRM_MS: "1500", EXCHANGE_MS: "20000" },
 	stdio: ["ignore", "pipe", "pipe"],
 });
 hub.stdout.on("data", (d) => log.push(String(d)));
@@ -80,7 +106,7 @@ try {
 	const minted = await api("POST", "stations/bridge-01/join-token");
 	assert.equal(minted.status, 201, JSON.stringify(minted.body));
 	assert.match(minted.body.token, /^fvj_[A-Za-z0-9_-]{40,}$/);
-	assert.ok(minted.body.url.endsWith(`/?mobile=1#/join/${minted.body.token}`), minted.body.url);
+	assert.ok(minted.body.url.endsWith(`/client#/join/${minted.body.token}`), minted.body.url);
 	assert.equal(minted.body.tokenHint, minted.body.token.slice(-4));
 	const stationsAfterMint = await api("GET", "stations");
 	const bridgeView = stationsAfterMint.body.find((s) => s.stationId === "bridge-01");
@@ -108,7 +134,8 @@ try {
 	assert.equal(rejoin.body.me.stationSource, "join");
 	assert.equal((await api("DELETE", "stations/bridge-01/join-token")).status, 200);
 	assert.equal((await api("POST", "auth/join", { token: minted.body.token }, new Map())).status, 404, "revoked token rejected");
-	assert.equal((await api("GET", "stations")).body.find((s) => s.stationId === "bridge-01").join, undefined);
+	const afterRevoke = (await api("GET", "stations")).body.find((s) => s.stationId === "bridge-01").join;
+	assert.ok(afterRevoke?.path && !afterRevoke.path.endsWith(minted.body.token), "a station always has a link: revoking issues a fresh one");
 	const repick = await api("PUT", "auth/station", { stationId: "bridge-01" });
 	assert.equal(repick.body.stationSource, "pick");
 	const stationList = (await api("GET", "stations")).body.map(({ endpoint: _e, activeRun: _r, join: _j, ...s }) => (s.stationId === "bridge-01" ? { ...s, location: "Location 1" } : s));
@@ -176,7 +203,7 @@ try {
 	await waitFor(() => fake.values.some((v) => v.task === "flow-arr-1:ft-arr-1a"), "value written to Flow");
 	const pilot = fake.values.find((v) => v.task === "flow-arr-1:ft-arr-1a");
 	assert.equal(pilot.bearer, "t0k3n", "written with the signed-in user's token");
-	const pilotAt = Date.parse(pilot.value);
+	const pilotAt = Date.parse(`${pilot.value}:00Z`); // Flow format "yyyy-MM-ddTHH:mm", UTC
 	assert.ok(Math.abs(Date.now() - 5 * 60000 - pilotAt) < 60000, `pilot time ≈ 5 min ago (${pilot.value})`);
 
 	// item two: yes/no
@@ -188,9 +215,10 @@ try {
 	await say("item ninety nine");
 	await waitFor(() => /^There is no item/.test(lastSpoken()), "unknown item refused");
 	await say("Yes.");
-	await waitFor(() => lastSpoken() === "Pilot card exchanged, yes. Confirm?", "yes read-back");
-	await say("yes");
-	await waitFor(() => fake.values.some((v) => v.task === "flow-arr-1:ft-arr-1b" && v.value === "true"), "checkbox true");
+	// a yes/no answer is its own confirmation: the hub repeats item and value, writes it, says "Confirmed."
+	await waitFor(() => spoken.includes("Pilot card exchanged, yes."), "yes echoed without a confirm question");
+	await waitFor(() => fake.values.some((v) => v.task === "flow-arr-1:ft-arr-1b" && v.value === "OK"), "checkbox checked as OK");
+	assert.ok(!spoken.includes("Pilot card exchanged, yes. Confirm?"), "no read-back question for a yes/no answer");
 
 	// item three: say again, then N/A (QuickSelect bounded to the option set)
 	step = "item 3";
@@ -225,6 +253,7 @@ try {
 	step = "item 5";
 	await waitFor(() => spoken.some((s) => s.includes("Bow thruster tested?")), "item five spoken");
 	await waitFor(() => listenOpen, "listen window for item five");
+	assert.ok(Array.isArray(listenOpen.grammar) && listenOpen.grammar.includes("yes") && listenOpen.grammar.includes("skip") && !listenOpen.grammar.includes("minutes ago"), "a checkbox window carries a yes/no grammar for the phone's recogniser");
 	listenOpen = undefined;
 	await waitFor(() => listenOpen, "mic re-armed after a silent window (LISTEN_MS 1500)", 6000);
 	assert.equal((await api("GET", `runs/${runId}`)).body.currentTaskId, "flow-arr-1:ft-arr-2b", "still on bow thruster after silence");
@@ -233,15 +262,18 @@ try {
 	await waitFor(() => /Say yes or no\. Bow thruster tested\?/.test(lastSpoken()), "clarification, never a guess");
 	await say("next item");
 	await waitFor(() => spoken.some((s) => s.includes("Steering gear tested?")), "item six spoken after next item");
+	// the room talks while the mic is open: a sentence that is no answer is ignored (no retry, no "say yes or no"), mic re-armed
+	await say("det är jättekul att du vill leka med Oskar");
+	await waitFor(() => listenOpen, "mic re-armed after side talk");
+	assert.ok(!spoken.some((s) => s.startsWith("Say yes or no. Steering gear tested?")), "side talk did not trigger a clarification");
 	await say("affirmative");
-	await waitFor(() => lastSpoken() === "Steering gear tested, yes. Confirm?", "read-back six");
-	await say("confirm");
+	await waitFor(() => spoken.includes("Steering gear tested, yes."), "yes echoed for item six");
 	step = "item 7";
 	await waitFor(() => spoken.some((s) => s.includes("Anchor ready for letting go?")), "item seven");
 	await say("where am I");
 	await waitFor(() => /Arrival Checklist.*item seven.*answered/.test(lastSpoken()), "where am I answered");
 	await say("yes");
-	await waitFor(() => lastSpoken() === "Anchor ready for letting go, Yes. Confirm?", "read-back seven");
+	await waitFor(() => lastSpoken() === "Anchor ready for letting go, Yes. Confirm?", "read-back seven"); // an option pick (Yes/No/N/A) still gets read back
 	await say("confirmed");
 
 	// sweep: the skipped bow thruster comes back, then completion text
@@ -249,9 +281,9 @@ try {
 	await waitFor(() => spoken.some((s) => /One item skipped\. Going back to it\./.test(s)), "skip sweep offered");
 	await waitFor(() => spoken.filter((s) => s.includes("Bow thruster tested?")).length >= 2, "skipped item re-asked");
 	await say("no");
-	await waitFor(() => lastSpoken() === "Bow thruster tested, no. Confirm?", "read-back no");
-	await say("confirm");
-	await waitFor(() => /^Two items need the screen\. Arrival Checklist Oslo, seven of nine answered\. Open on screen to finish\.$/.test(lastSpoken()), "completion summary");
+	// a plain checkbox has no "no" in Flow: the item stays open and joins the ones that need the screen
+	await waitFor(() => spoken.includes("Not done. I will come back to Bow thruster tested."), "no on a checkbox = not done");
+	await waitFor(() => /^Two items need the screen\. Arrival Checklist Oslo, six of nine answered\. Open on screen to finish\.$/.test(lastSpoken()), "completion summary");
 	assert.ok(!spoken.includes("Recorded locally, will sync."), "values synced immediately while Flow was reachable");
 
 	// complete is blocked (signatures), answer them on screen, then complete → Flow status Completed
@@ -264,6 +296,10 @@ try {
 		const r = await api("POST", `runs/${runId}/items/${encodeURIComponent(sig.taskId)}/answer`, { value: "signed on screen" });
 		assert.equal(r.status, 422, "the fake rejects values on Sign controls, like Flow does");
 	}
+	// the not-done checkbox gets ticked on screen: a manual answer writes Flow's "OK"
+	const ticked = await api("POST", `runs/${runId}/items/${encodeURIComponent("flow-arr-1:ft-arr-2b")}/answer`, { value: "true" }); // the screen sends "true"
+	assert.equal(ticked.status, 200, JSON.stringify(ticked.body));
+	await waitFor(() => fake.values.some((v) => v.task === "flow-arr-1:ft-arr-2b" && v.value === "OK"), "checkbox ticked on screen");
 	// the fake's complete only requires non-Sign tasks Done: mark the run's signature items as skipped-by-screen is not a value; complete via Flow rule
 	fake.setTaskStatus("flow-arr-1", "flow-arr-1:ft-arr-3a", "Done");
 	fake.setTaskStatus("flow-arr-1", "flow-arr-1:ft-arr-3b", "Done");
@@ -341,13 +377,23 @@ try {
 		const view = (await api("GET", `runs/${erRun.runId}`)).body;
 		const cur = view.items.find((x) => x.taskId === view.currentTaskId);
 		if (!cur) break;
-		await say(cur.type === "Number" ? "forty two" : cur.type === "QuickSelect" ? "normal" : "yes");
-		await waitFor(() => /Confirm\?$/.test(lastSpoken()), `read-back for ${cur.name}`);
-		await say("confirm");
+		const answer = cur.type === "Number" ? "forty two" : cur.type === "QuickSelect" ? "normal" : "yes";
+		await say(answer);
+		if (cur.type === "Checkbox") {
+			// yes/no needs no second confirmation: the hub echoes "item, value." and writes
+			await waitFor(() => spoken.some((s) => s.startsWith(`${cur.name}, `) && !s.endsWith("Confirm?")), `echo for ${cur.name}`);
+		} else {
+			await waitFor(() => /Confirm\?$/.test(lastSpoken()), `read-back for ${cur.name}`);
+			// confirm three ways: the control word, "ok", or by repeating the answer (must not re-open the read-back)
+			await say(i % 3 === 0 ? "confirm" : i % 3 === 1 ? "ok" : answer);
+		}
 		await waitFor(async () => (await api("GET", `runs/${erRun.runId}`)).body.items.find((x) => x.taskId === cur.taskId).state !== "current", `item ${cur.name} left current`);
 		if ((await api("GET", `runs/${erRun.runId}`)).body.answered >= (await api("GET", `runs/${erRun.runId}`)).body.total) break;
 	}
 	await waitFor(() => /Complete it on screen\.$/.test(lastSpoken()), "all answered");
+	// "Check generator 2" is a checkbox authored as "Done::completed": the option list comes from the template, the key is written
+	assert.ok(spoken.includes("Check generator 2, Done."), "option title read back for a keyed checkbox");
+	assert.ok(fake.values.some((v) => v.task.endsWith(":ft-er-2b") && v.value === "completed"), "keyed checkbox writes the option key, not OK");
 	send({ type: "transcript", text: "complete", confidence: 1, final: true });
 	await waitFor(() => /^Complete .*\? Say confirm\.$/.test(lastSpoken()), "complete confirmation asked");
 	await say("confirm");
@@ -358,7 +404,8 @@ try {
 
 	step = "voice station";
 	send({ type: "transcript", text: "station engine control room", confidence: 1, final: true });
-	await waitFor(() => navs.some((n) => n.stationId === "ecr-01"), "station switch sent to the screen");
+	await waitFor(() => /^The station is set by the station link/.test(lastSpoken()), "spoken station switch refused");
+	assert.ok(!navs.some((n) => n.stationId === "ecr-01"), "no client is ever moved to another station by voice");
 
 	// ---- REST control: start a checklist on a station from an integration, at a chosen item, and steer it
 	step = "rest";
@@ -388,11 +435,427 @@ try {
 	const ab = await svc("POST", `runs/${restRun.runId}/abandon`);
 	assert.equal(ab.status, 200);
 
+	// screen discard: reasons come from Flow (tenant list here), "Other" needs a comment, the status body is exactly what v3 accepts
+	step = "screen discard";
+	const dRes = await svc("POST", "runs", { stationId: "bridge-01", templateId: "NauticAI/ArrivalChecklist" }, { "idempotency-key": "rest-2" });
+	const dRun = await dRes.json();
+	assert.equal(dRes.status, 201);
+	const reasons = await api("GET", `templates/${encodeURIComponent("NauticAI/ArrivalChecklist")}/discard-reasons`);
+	assert.deepEqual(reasons.body.reasons.map((r) => r.code), ["Created by mistake or duplicate", "No longer needed", "Wrong checklist", "Other"], "discard reasons read from Flow");
+	assert.equal(reasons.body.reasons.at(-1).requireComment, true);
+	const noComment = await api("POST", `runs/${dRun.runId}/discard`, { reasonCode: "Other" });
+	assert.equal(noComment.status, 422, JSON.stringify(noComment.body));
+	assert.match(noComment.body.message ?? noComment.body.error ?? "", /requires a comment/);
+	const badReason = await api("POST", `runs/${dRun.runId}/discard`, { reasonCode: "duplicate" });
+	assert.equal(badReason.status, 422, "a reason Flow does not know is refused");
+	const discarded = await api("POST", `runs/${dRun.runId}/discard`, { reasonCode: "Other", comment: "started twice" });
+	assert.equal(discarded.status, 200, JSON.stringify(discarded.body));
+	assert.equal(discarded.body.state, "abandoned");
+	assert.deepEqual(fake.statusChanges.at(-1)?.body, { action: "discard", reason: "Other", comment: "started twice" });
+	assert.equal(fake.statusChanges.at(-1)?.flowId, dRun.instanceId);
+
+
+	// admin picks which templates get a start button; the flag rides on every pick, an empty list means all
+	step = "start buttons";
+	const setStart = await api("PUT", "settings", { startable: ["tpl-engine"] });
+	assert.deepEqual(setStart.body.startable, ["tpl-engine"]);
+	const flagged = (await api("GET", "checklists")).body;
+	assert.ok(flagged.filter((p) => p.templateId === "tpl-engine").every((p) => p.startable === true), "chosen template is startable");
+	assert.ok(flagged.filter((p) => p.templateId !== "tpl-engine").every((p) => p.startable === false), "others are not");
+	await api("PUT", "settings", { startable: [] });
+	assert.ok((await api("GET", "checklists")).body.every((p) => p.startable === true), "empty list → everything startable");
+
+	// checklist language is set per template in Admin and wins over the station's; the listen window tells the phone
+	step = "template language";
+	const setLang = await api("PUT", "settings", { templateLanguages: { "tpl-engine": "sv", bogus: "xx" } });
+	assert.deepEqual(setLang.body.templateLanguages, { "tpl-engine": "sv" }, "only known languages are kept");
+	assert.ok((await api("GET", "checklists")).body.filter((p) => p.templateId === "tpl-engine").every((p) => p.language === "sv"));
+	listenOpen = undefined;
+	const svRun = (await api("POST", "runs", { templateId: "tpl-engine", stationId: "bridge-01" })).body;
+	assert.equal(svRun.language, "sv", "run takes the template language");
+	await waitFor(() => listenOpen, "listen window of the Swedish run");
+	assert.equal(listenOpen.language, "sv", "listen.open carries the run language");
+	await api("POST", `runs/${svRun.runId}/abandon`);
+	// a client that connects after the run began reports the station language: the checklist language still wins
+	const svRun2 = (await api("POST", "runs", { templateId: "tpl-engine", stationId: "ecr-01" })).body;
+	assert.equal(svRun2.language, "sv");
+	const ws2 = new WebSocket(`ws://127.0.0.1:${port}/v1/audio`, { headers: { cookie } });
+	await new Promise((resolve, reject) => {
+		ws2.once("open", resolve);
+		ws2.once("error", reject);
+	});
+	ws2.send(JSON.stringify({ type: "hello", endpointId: "e2e-late", stationId: "ecr-01", capabilities: { pushToTalk: true, localStt: true, localTts: true, aec: false }, language: "en" }));
+	await new Promise((r) => setTimeout(r, 600));
+	assert.equal((await api("GET", `runs/${svRun2.runId}`)).body.language, "sv", "a client hello must not reset the checklist language");
+	ws2.close();
+	await new Promise((r) => setTimeout(r, 200));
+	await api("POST", `runs/${svRun2.runId}/abandon`);
+	const meNow = (await api("GET", "auth/me")).body;
+	if (meNow.stationId !== "bridge-01") await api("PUT", "auth/station", { stationId: "bridge-01" });
+	await api("PUT", "settings", { templateLanguages: {} });
+
+	// per station: start and use / use only / not here, and a language per template that beats the hub-wide one
+	assert.equal((await api("GET", "checklists")).body.find((p) => p.source === "template" && p.templateId === "tpl-engine").readiness, "full", "numeric task types from the Templates API count as voice items");
+	step = "station checklists";
+	const plain = (await api("GET", "stations")).body.map(({ endpoint, activeRun, join, ...st }) => st);
+	const ruled = plain.map((st) => (st.stationId === "bridge-01" ? { ...st, templates: { "tpl-engine": { access: "use", language: "de" }, "tpl-departure": { access: "off" }, junk: { access: "maybe", language: "xx" } } } : st));
+	const savedRules = (await api("PUT", "stations", ruled)).body.find((st) => st.stationId === "bridge-01").templates;
+	assert.deepEqual(savedRules, { "tpl-engine": { access: "use", language: "de" }, "tpl-departure": { access: "off" } }, "unknown values are dropped");
+	const herePicks = (await api("GET", "checklists")).body;
+	const engTpl = herePicks.find((p) => p.source === "template" && p.templateId === "tpl-engine");
+	assert.equal(engTpl.access, "use");
+	assert.equal(engTpl.startable, false, "use only: no start button");
+	assert.equal(engTpl.language, "de", "station language for the template");
+	assert.equal(herePicks.find((p) => p.source === "template" && p.templateId === "tpl-departure").access, "off");
+	assert.ok(herePicks.filter((p) => p.templateId === "NauticAI/ArrivalChecklist" || p.refId === "NauticAI/ArrivalChecklist").every((p) => p.access === "off"), "not added to the station → not available there");
+	assert.ok(herePicks.some((p) => p.access === "off" && p.templateId !== "tpl-departure"), "templates outside the station list are off");
+	const refusedStart = await api("POST", "runs", { templateId: "tpl-engine", stationId: "bridge-01" });
+	assert.equal(refusedStart.status, 403, JSON.stringify(refusedStart.body));
+	assert.equal(refusedStart.body.error?.code ?? refusedStart.body.code, "NOT_STARTABLE_HERE");
+	const elsewhere = await api("POST", "runs", { templateId: "tpl-engine", stationId: "ecr-01" });
+	assert.ok(elsewhere.status < 300 && elsewhere.body.language !== "de", `another station still starts it: ${elsewhere.status}`);
+	await api("POST", `runs/${elsewhere.body.runId}/abandon`);
+	await api("PUT", "stations", plain);
+
+	// Admin → Answers: a word per item; an answer that contains it is accepted and shown as the value
+	step = "item answers";
+	const tItems = (await api("GET", "template-items?templateId=tpl-engine")).body;
+	const lube = tItems.find((i) => i.name === "Check lube oil pressure");
+	assert.equal(lube.key, "d:ER/Main/LubeOil");
+	const setAns = await api("PUT", "settings", { itemAnswers: { "tpl-engine": { [lube.key]: ["Normal ", "normal", ""], bogus: ["x"] } } });
+	assert.deepEqual(setAns.body.itemAnswers, { "tpl-engine": { [lube.key]: ["Normal", "normal"] } });
+	const ansRun = (await api("POST", "runs", { templateId: "tpl-engine", stationId: "ecr-01" })).body;
+	assert.deepEqual(ansRun.items[0].expected, ["Normal", "normal"], "the run item carries its answer words");
+	const heardAns = (await api("POST", "interpret", { type: "Checkbox", text: "pressure is normal", answers: ["normal"] })).body;
+	assert.equal(heardAns.ok, true, JSON.stringify(heardAns));
+	await api("POST", `runs/${ansRun.runId}/abandon`);
+	await api("PUT", "settings", { itemAnswers: {} });
+
+	// central register: download from the Templates app, set language + answer words once, stations pick from it
+	step = "checklist register";
+	const avail = (await api("GET", "library/available")).body.templates;
+	assert.ok(avail.length >= 3 && avail.every((t) => t.registered === false), "nothing registered yet");
+	const reg = (await api("POST", "library", { templateId: "tpl-engine" })).body.templates;
+	assert.equal(reg.length, 1);
+	assert.equal(reg[0].items[0].key, "d:ER/Main/LubeOil", "items are snapshotted with their keys");
+	const entry = (await api("PUT", "library/entry", { templateId: "tpl-engine", language: "sv", words: { "d:ER/Main/LubeOil": ["Normal", "normal "], junk: ["x"] } })).body.templates[0];
+	assert.equal(entry.language, "sv");
+	assert.deepEqual(entry.words, { "d:ER/Main/LubeOil": ["normal"] });
+	assert.equal((await api("PUT", "library/entry", { templateId: "tpl-departure", language: "sv" })).status, 404, "only registered checklists can be edited");
+	// per checklist: only the marked words count, a plain yes / no is refused
+	assert.equal(entry.wordsOnly, false);
+	assert.equal((await api("PUT", "library/entry", { templateId: "tpl-engine", wordsOnly: true })).body.templates[0].wordsOnly, true);
+	assert.equal((await api("POST", "interpret", { type: "Checkbox", text: "ja", answers: ["körbro"], answersOnly: true })).body.ok, false);
+	assert.equal((await api("POST", "interpret", { type: "Checkbox", text: "hivt körbro", answers: ["körbro"], answersOnly: true })).body.valueText, "körbro");
+	assert.equal((await api("PUT", "library/entry", { templateId: "tpl-engine", wordsOnly: false })).body.templates[0].wordsOnly, false);
+	assert.equal(entry.wordMatch, "normal");
+	assert.equal((await api("PUT", "library/entry", { templateId: "tpl-engine", wordMatch: "loose" })).body.templates[0].wordMatch, "loose");
+	assert.equal((await api("POST", "interpret", { type: "Checkbox", text: "kurbo hivt", answers: ["körbro"], answersOnly: true, answerMatch: "loose" })).body.valueText, "körbro");
+	assert.equal((await api("POST", "interpret", { type: "Checkbox", text: "kurbo hivt", answers: ["körbro"], answersOnly: true, answerMatch: "exact" })).body.ok, false);
+	await api("PUT", "library/entry", { templateId: "tpl-engine", wordMatch: "normal" });
+	const regPicks = (await api("GET", "checklists")).body;
+	assert.ok(regPicks.filter((p) => p.templateId === "tpl-engine").every((p) => p.access === "start" && p.language === "sv"));
+	assert.ok(regPicks.filter((p) => p.templateId !== "tpl-engine").every((p) => p.access === "off"), "a non-empty register is the whole offer");
+	assert.equal((await api("POST", "runs", { templateId: "tpl-departure", stationId: "ecr-01" })).status, 403);
+	const regRun = (await api("POST", "runs", { templateId: "tpl-engine", stationId: "ecr-01" })).body;
+	assert.deepEqual(regRun.items[0].expected, ["normal"]);
+	assert.equal(regRun.language, "sv");
+	await api("POST", `runs/${regRun.runId}/abandon`);
+	// when to read the next item: ask ("next"), a timer, or an external trigger (POST /v1/runs/:id/proceed)
+	let mark = 0;
+	step = "step mode";
+	assert.deepEqual(entry.step, { mode: "auto" });
+	assert.equal((await api("PUT", "library/entry", { templateId: "tpl-engine", step: { mode: "ask" } })).body.templates[0].step.mode, "ask");
+	await api("PUT", "settings", { templateLanguages: { "tpl-engine": "en" } });
+	mark = spoken.length;
+	listenOpen = undefined;
+	const askRun = (await api("POST", "runs", { templateId: "tpl-engine", stationId: "bridge-01" })).body;
+	await waitFor(() => spoken.slice(mark).some((s) => s.includes("Check lube oil pressure")), "first item read at once");
+	await say("Checked.");
+	await waitFor(() => spoken.slice(mark).some((s) => s === "Say next when you are ready."), "hub waits after the answer");
+	let held = (await api("GET", `runs/${askRun.runId}`)).body;
+	assert.equal(held.exchange, "waiting");
+	assert.equal(held.waiting.mode, "ask");
+	assert.ok(!spoken.slice(mark).some((s) => s.includes("Check cooling water temp")), "second item not read yet");
+	send({ type: "transcript", text: "next", confidence: 0.9, final: true });
+	await waitFor(() => spoken.slice(mark).some((s) => s.includes("Check cooling water temp")), "second item read on \"next\"");
+	await api("POST", `runs/${askRun.runId}/abandon`);
+	// timer: a short delay, then the item comes by itself
+	assert.deepEqual((await api("PUT", "library/entry", { templateId: "tpl-engine", step: { mode: "timer", delaySec: 2 } })).body.templates[0].step, { mode: "timer", delaySec: 2 });
+	mark = spoken.length;
+	listenOpen = undefined;
+	const timRun = (await api("POST", "runs", { templateId: "tpl-engine", stationId: "bridge-01" })).body;
+	await waitFor(() => spoken.slice(mark).some((s) => s.includes("Check lube oil pressure")), "timer run first item");
+	await say("Checked.");
+	await waitFor(() => spoken.slice(mark).some((s) => s === "Next item in two seconds."), "timer announced");
+	held = (await api("GET", `runs/${timRun.runId}`)).body;
+	assert.equal(held.waiting.mode, "timer");
+	assert.ok(held.waiting.until);
+	await waitFor(() => spoken.slice(mark).some((s) => s.includes("Check cooling water temp")), "second item after the timer", 6000);
+	await api("POST", `runs/${timRun.runId}/abandon`);
+	// external: an integration releases the item; the screen button (POST /api/runs/:id/proceed) does the same
+	assert.equal((await api("PUT", "library/entry", { templateId: "tpl-engine", step: { mode: "external" } })).body.templates[0].step.mode, "external");
+	mark = spoken.length;
+	listenOpen = undefined;
+	const extRun = (await api("POST", "runs", { templateId: "tpl-engine", stationId: "bridge-01" })).body;
+	await waitFor(() => spoken.slice(mark).some((s) => s.includes("Check lube oil pressure")), "external run first item");
+	await say("Checked.");
+	await waitFor(() => spoken.slice(mark).some((s) => s === "Waiting for the next step."), "external wait announced");
+	const rel = await svc("POST", `stations/bridge-01/proceed`);
+	assert.equal(rel.status, 200, await rel.text());
+	await waitFor(() => spoken.slice(mark).some((s) => s.includes("Check cooling water temp")), "second item after the trigger");
+	assert.equal((await svc("POST", `stations/ecr-01/proceed`)).status, 404, "no run on that station");
+	// a named item (DataId) is read at once, held or not
+	const jumpRes = await svc("POST", `stations/bridge-01/proceed`, { item: "ER/Main/LubeOil" });
+	assert.equal(jumpRes.status, 200, await jumpRes.text());
+	await waitFor(() => spoken.slice(mark).filter((s) => s.includes("Check lube oil pressure")).length >= 2, "named item read again");
+	assert.equal((await svc("POST", `stations/bridge-01/proceed`, { item: "no/such" })).status, 404);
+	// "missed": the moment for an item has passed. The crew hears it, the run never sits on that item
+	const miss = await svc("POST", `stations/bridge-01/missed`);
+	assert.equal(miss.status, 200, await miss.text());
+	await waitFor(() => spoken.slice(mark).some((s) => s === "Check lube oil pressure missed."), "missed item spoken");
+	await waitFor(() => spoken.slice(mark).filter((s) => s === "Waiting for the next step.").length >= 2, "run moved on past the missed item");
+	let missRun = (await api("GET", `runs/${extRun.runId}`)).body;
+	assert.equal(missRun.items.find((i) => i.dataId === "ER/Main/LubeOil").state, "skipped");
+	assert.equal(missRun.waiting.taskId, missRun.items.find((i) => i.dataId === "ER/Main/CoolingTemp").taskId);
+	// with a value the answer is written as the signed-in user (option by title, any case), also for an item further down
+	const missNo = await svc("POST", `runs/${extRun.runId}/missed`, { item: "ER/Aux/Bilge", value: "high" });
+	assert.equal(missNo.status, 200, await missNo.text());
+	missRun = (await api("GET", `runs/${extRun.runId}`)).body;
+	assert.equal(missRun.items.find((i) => i.dataId === "ER/Aux/Bilge").value, "High");
+	assert.equal(missRun.items.find((i) => i.dataId === "ER/Aux/Bilge").state, "answered");
+	assert.equal(missRun.exchange, "waiting", "the run still waits where it was");
+	// a held item that is missed: the one after it is held instead
+	assert.equal((await svc("POST", `runs/${extRun.runId}/missed`)).status, 200);
+	missRun = (await api("GET", `runs/${extRun.runId}`)).body;
+	assert.equal(missRun.items.find((i) => i.dataId === "ER/Main/CoolingTemp").state, "skipped");
+	assert.equal(missRun.waiting.taskId, missRun.items.find((i) => i.dataId === "ER/Main/RunningHours").taskId);
+	assert.equal((await svc("POST", `stations/bridge-01/missed`, { item: "no/such" })).status, 404);
+	assert.equal((await svc("POST", `stations/ecr-01/missed`)).status, 404, "no run on that station");
+	await api("POST", `runs/${extRun.runId}/abandon`);
+	assert.equal((await api("PUT", "library/entry", { templateId: "tpl-engine", step: { mode: "auto" } })).body.templates[0].step.mode, "auto");
+
+	// answer words that must come together ("a + b"): every part heard, in any order — and they say which item was answered
+	step = "words together";
+	const comboWords = (await api("PUT", "library/entry", { templateId: "tpl-engine", words: { "d:ER/Main/LubeOil": ["normal"], "d:ER/Aux/Gen1": ["running+generator"] } })).body.templates[0].words;
+	assert.deepEqual(comboWords["d:ER/Aux/Gen1"], ["running + generator"], "stored the one way a combination is written");
+	assert.equal((await api("POST", "interpret", { type: "Checkbox", text: "generator one is running", answers: ["running + generator"] })).body.valueText, "running generator", "either order, words apart");
+	assert.equal((await api("POST", "interpret", { type: "Checkbox", text: "the generator is off", answers: ["running + generator"] })).body.ok, false, "one part missing is no answer");
+	assert.equal((await api("POST", "interpret", { type: "Checkbox", text: "not running the generator", answers: ["running + generator"] })).body.ok, false, "a negation is never the answer");
+	await api("PUT", "library/entry", { templateId: "tpl-engine", step: { mode: "ask" } });
+	mark = spoken.length;
+	listenOpen = undefined;
+	const comboRun = (await api("POST", "runs", { templateId: "tpl-engine", stationId: "bridge-01" })).body;
+	const genTask = comboRun.items.find((i) => i.dataId === "ER/Aux/Gen1").taskId;
+	await waitFor(() => spoken.slice(mark).some((s) => s.includes("Check lube oil pressure")), "first item read");
+	await say("pressure is normal");
+	await waitFor(async () => (await api("GET", `runs/${comboRun.runId}`)).body.exchange === "waiting", "hub waits after the answer");
+	// nothing was asked, and the words are not the item name: the combination alone finds "Check generator 1"
+	send({ type: "transcript", text: "the generator is running", confidence: 0.9, final: true });
+	await waitFor(() => fake.values.some((v) => v.task === genTask), "the item the words belong to was answered");
+	const comboAfter = (await api("GET", `runs/${comboRun.runId}`)).body;
+	assert.equal(comboAfter.items.find((i) => i.dataId === "ER/Aux/Gen1").state, "answered");
+	assert.equal(comboAfter.items.find((i) => i.dataId === "ER/Main/CoolingTemp").state, "unanswered", "the items in between are left alone");
+	await api("POST", `runs/${comboRun.runId}/abandon`);
+	await api("PUT", "library/entry", { templateId: "tpl-engine", step: { mode: "auto" } });
+
+	assert.equal((await api("DELETE", `library?templateId=${encodeURIComponent("tpl-engine")}`)).body.templates.length, 0);
+	await api("PUT", "settings", { itemAnswers: {}, templateLanguages: {} });
+	assert.ok((await api("GET", "checklists")).body.every((p) => p.access === "start"), "empty register → everything again");
+
+	// light multi-tenancy: a main-hub admin pastes a token for another tenant; it runs as its own isolated hub
+	step = "tenants";
+	const adminJar = new Map();
+	assert.equal((await api("POST", "auth/dev", undefined, adminJar)).body.isAdmin, true);
+	// tenants are managed in the central admin area: its own password, not the main hub's admin sign-in
+	const locked = (await api("GET", "tenants", undefined, adminJar)).body;
+	assert.equal(locked.canManage, false, "a hub admin alone does not manage tenants");
+	assert.equal(locked.central, true);
+	assert.equal((await api("POST", "tenants", { name: "X", tenant: "demo", token: "t0k3n" }, adminJar)).status, 403);
+	assert.deepEqual((await api("GET", "central/me", undefined, adminJar)).body, { configured: true, signedIn: false, mainName: "demo" });
+	assert.equal((await api("POST", "central/login", { password: "nope" }, adminJar)).status, 403);
+	assert.equal((await api("POST", "central/login", { password: "central-pass-e2e" }, adminJar)).status, 200);
+	assert.equal((await api("GET", "central/me", undefined, adminJar)).body.signedIn, true);
+	const forgedCentral = new Map([["fv_central", `${Date.now() + 3600_000}.AAAA`]]);
+	assert.equal((await api("GET", "central/me", undefined, forgedCentral)).body.signedIn, false, "a forged central cookie is nothing");
+	const t0 = (await api("GET", "tenants", undefined, adminJar)).body;
+	assert.equal(t0.canManage, true);
+	assert.equal(t0.current, undefined);
+	const stranger = new Map();
+	assert.equal((await api("POST", "tenants", { name: "X", tenant: "demo", token: "t0k3n" }, stranger)).status, 403, "only the central area adds tenants");
+	const added = await api("POST", "tenants", { name: "Other Co", tenant: "demo", token: "Bearer t0k3n" }, adminJar);
+	assert.equal(added.status, 201, JSON.stringify(added.body));
+	assert.equal(added.body.id, "other-co");
+	assert.equal(added.body.tokenHint, "t0k3n".slice(-6));
+	assert.ok(!JSON.stringify((await api("GET", "tenants", undefined, adminJar)).body).includes("tokenEnc"), "the token never comes back");
+	assert.equal((await api("POST", "tenants/other-co/enter", undefined, stranger)).status, 403, "nobody walks into a tenant");
+	assert.equal((await api("POST", "tenants/other-co/enter", undefined, adminJar)).status, 200);
+	assert.equal((await api("GET", "auth/me", undefined, adminJar)).status, 401, "a tenant has its own sessions");
+	const tMe = (await api("POST", "auth/dev", undefined, adminJar)).body;
+	assert.equal(tMe.isAdmin, true, "entered as admin");
+	assert.equal((await api("GET", "tenants", undefined, adminJar)).body.current?.id, "other-co");
+	assert.equal((await api("GET", "tenants", undefined, adminJar)).body.canManage, true, "the main-hub session survives next to the tenant's");
+	// its data is its own
+	await api("PUT", "settings", { itemAnswers: {} }, adminJar);
+	assert.equal((await api("POST", "library", { templateId: "tpl-engine" }, adminJar)).body.templates.length, 1);
+	assert.equal((await api("GET", "library")).body.templates.length, 0, "the main hub's register is untouched");
+	assert.ok((await api("GET", "checklists", undefined, adminJar)).body.some((p) => p.templateId === "tpl-engine" && p.access === "start"), "the pasted token reads Maranics");
+	// a station link of the tenant carries a phone into it, as a non-admin
+	const tStations = (await api("GET", "stations", undefined, adminJar)).body;
+	const tToken = tStations[0].join.path.split("/join/")[1];
+	const tPhone = new Map();
+	const tJoin = await api("POST", "auth/join", { token: tToken }, tPhone);
+	assert.equal(tJoin.status, 200, JSON.stringify(tJoin.body));
+	assert.ok(tPhone.get("fv_tenant")?.startsWith("other-co.client."), "the link moved the phone into its tenant");
+	const tPhoneMe = (await api("POST", "auth/dev", undefined, tPhone)).body;
+	assert.equal(tPhoneMe.isAdmin, false, "a station link never makes an admin");
+	assert.equal(tPhoneMe.stationId, tStations[0].stationId);
+	assert.equal((await api("PUT", "settings", { readNotices: true }, tPhone)).status, 403);
+	// a forged cookie is ignored: the request lands in the main hub
+	const forged = new Map([["fv_tenant", "other-co.admin.AAAA"]]);
+	assert.equal((await api("GET", "tenants", undefined, forged)).body.current, undefined);
+	// a forged role header is stripped
+	const sneaky = await fetch(`${base}/api/auth/dev`, { method: "POST", headers: { cookie: `fv_tenant=${tPhone.get("fv_tenant")}`, "x-fv-tenant-role": "admin" } });
+	assert.equal((await sneaky.json()).isAdmin, false, "the role comes from the signed cookie only");
+	// back to the main hub without signing in again; removing the tenant closes it
+	assert.equal((await api("POST", "tenants/leave", undefined, adminJar)).status, 200);
+	assert.equal((await api("GET", "auth/me", undefined, adminJar)).status, 200);
+	assert.equal((await api("DELETE", "tenants/other-co", undefined, adminJar)).status, 200);
+	// the normal way: a tenant with its own Maranics SSO client; people sign in as themselves
+	fake.oidc.setRedirectUri(`http://127.0.0.1:${port}/api/auth/callback`);
+	assert.equal((await api("POST", "tenants", { name: "Sso Co", tenant: "demo" }, adminJar)).status, 400, "a tenant needs a client");
+	const sso = await api("POST", "tenants", { name: "Sso Co", tenant: "demo", clientId: fake.oidc.clientId, clientSecret: fake.oidc.clientSecret, issuer: fake.oidc.issuer }, adminJar);
+	assert.equal(sso.status, 201, JSON.stringify(sso.body));
+	assert.equal(sso.body.mode, "sso");
+	assert.equal(sso.body.loginPath, "/t/sso-co");
+	assert.ok(!JSON.stringify((await api("GET", "tenants", undefined, adminJar)).body).includes(fake.oidc.clientSecret), "the client secret never comes back");
+	const ssoJar = new Map();
+	const hop = async (url) => {
+		const res = await fetch(url, { redirect: "manual", headers: { cookie: [...ssoJar].map(([k, v]) => `${k}=${v}`).join("; ") } });
+		for (const sc of res.headers.getSetCookie()) {
+			const [k, ...v] = sc.split(";")[0].split("=");
+			if (v.join("=")) ssoJar.set(k.trim(), v.join("="));
+			else ssoJar.delete(k.trim());
+		}
+		return res;
+	};
+	assert.equal((await hop(`${base}/t/nope`)).status, 404);
+	const door = await hop(`${base}/t/sso-co`);
+	assert.equal(door.status, 302);
+	assert.ok(ssoJar.get("fv_tenant")?.startsWith("sso-co."), "the tenant link picks the tenant");
+	assert.equal((await api("POST", "auth/dev", undefined, ssoJar)).status >= 400, true, "no sign-in without Maranics in an SSO tenant");
+	const toIdp = await hop(`${base}/api/auth/login`);
+	assert.equal(toIdp.status, 302, "login redirects to Maranics");
+	assert.ok(toIdp.headers.get("location").startsWith(fake.oidc.issuer), toIdp.headers.get("location"));
+	const back = await hop(toIdp.headers.get("location"));
+	assert.ok(back.headers.get("location").startsWith(`${base}/api/auth/callback`));
+	assert.ok((await hop(back.headers.get("location"))).status < 400, "callback lands in the tenant");
+	const ssoMe = await api("GET", "auth/me", undefined, ssoJar);
+	assert.equal(ssoMe.status, 200, JSON.stringify(ssoMe.body));
+	assert.equal(ssoMe.body.isAdmin, true, "first to sign in is the tenant's admin");
+	assert.equal((await api("GET", "tenants", undefined, ssoJar)).body.current?.id, "sso-co");
+	assert.ok((await api("GET", "checklists", undefined, ssoJar)).body.length > 0, "the user's own token reads Maranics");
+	assert.equal((await api("PUT", "tenants/sso-co/client", { clientId: fake.oidc.clientId, clientSecret: fake.oidc.clientSecret }, ssoJar)).status, 403, "a tenant admin is not the central admin");
+	// sign-out, then sign-in: Maranics is asked for its sign-in page again (other person, other location); once only
+	assert.ok(!new URL(toIdp.headers.get("location")).searchParams.has("prompt"), "a normal sign-in does not force the login page");
+	assert.equal((await api("POST", "auth/logout", {}, ssoJar)).status, 200);
+	assert.equal(ssoJar.get("fv_fresh"), "1");
+	assert.ok(fake.oidc.revoked.includes(fake.oidc.refreshTokens.at(-1)), "sign-out revokes the refresh token at Maranics");
+	assert.ok(fake.oidc.revoked.includes(fake.oidc.tokens.at(-1)), "and the access token");
+	assert.equal((await api("GET", "auth/me", undefined, ssoJar)).status, 401, "the hub session is gone");
+	const reLogin = await hop(`${base}/api/auth/login`);
+	assert.equal(new URL(reLogin.headers.get("location")).searchParams.get("prompt"), "login", "after a sign-out the login page is forced");
+	assert.ok(!ssoJar.has("fv_fresh"), "only the next sign-in");
+	assert.ok(!new URL((await hop(`${base}/api/auth/login`)).headers.get("location")).searchParams.has("prompt"));
+	assert.equal((await api("DELETE", "tenants/sso-co", undefined, adminJar)).status, 200);
+	// a tenant on its own Maranics server: the sign-in address is worked out from the server address
+	assert.ok((await api("GET", "tenants", undefined, adminJar)).body.mainHost, "the form knows the main hub's server");
+	const far = await api("POST", "tenants", { name: "Far Co", tenant: "farco", host: "https://api.cloud.maranics.com/", clientId: "c", clientSecret: "s3cret-s3cret" }, adminJar);
+	assert.equal(far.status, 201, JSON.stringify(far.body));
+	assert.equal(far.body.host, "https://api.cloud.maranics.com");
+	assert.equal(far.body.issuer, "https://usermanagement.cloud.maranics.com/farco");
+	assert.equal((await api("POST", "tenants", { name: "Bad Co", tenant: "x", host: "https://api.evil.example", clientId: "c", clientSecret: "s3cret-s3cret" }, adminJar)).status, 400, "only allowed servers");
+	// tenant + location straight from the add form: five "Color Line" rows are fine
+	const loc = await api("POST", "tenants", { name: "Far Co", location: "Magic Two", tenant: "farco", host: "https://api.m2.maranics.com", clientId: "m2", clientSecret: "s3cret-m2-s3cret" }, adminJar);
+	assert.equal(loc.status, 201, JSON.stringify(loc.body));
+	assert.equal(loc.body.id, "far-co-magic-two");
+	assert.equal(loc.body.name, "Far Co");
+	assert.equal(loc.body.location, "Magic Two");
+	assert.equal(loc.body.tenant, "farco");
+	assert.equal((await api("DELETE", "tenants/far-co-magic-two", undefined, adminJar)).status, 200);
+	// one tenant, several servers ("far co / magic"): same client, own address, own sign-in link
+	const magic = await api("POST", "tenants/far-co/servers", { name: "Magic", host: "https://api.magic.maranics.com", issuer: far.body.issuer }, adminJar);
+	assert.equal(magic.status, 201, JSON.stringify(magic.body));
+	assert.equal(magic.body.id, "far-co-magic");
+	assert.equal(magic.body.parent, "far-co");
+	assert.equal(magic.body.name, "Far Co");
+	assert.equal(magic.body.location, "Magic");
+	assert.equal(magic.body.tenant, "farco");
+	assert.equal(magic.body.issuer, far.body.issuer, "people sign in at the same place");
+	assert.equal(magic.body.loginPath, "/t/far-co-magic");
+	const own = await api("POST", "tenants/far-co/servers", { name: "Fantasy", host: "https://api.fantasy.maranics.com" }, adminJar);
+	assert.equal(own.body.issuer, "https://usermanagement.fantasy.maranics.com/farco", "or at the server's own sign-in");
+	assert.equal(own.body.clientId, "c", "a location shares the tenant's client unless it has its own");
+	const sep = await api("POST", "tenants/far-co/servers", { name: "Hybrid", host: "https://api.hybrid.maranics.com", clientId: "loc-client", clientSecret: "l0cation-s3cret" }, adminJar);
+	assert.equal(sep.status, 201, JSON.stringify(sep.body));
+	assert.equal(sep.body.clientId, "loc-client");
+	assert.ok(!JSON.stringify((await api("GET", "tenants", undefined, adminJar)).body).includes("l0cation-s3cret"), "a location's secret never comes back");
+	assert.equal((await api("POST", "tenants/far-co/servers", { name: "Half", host: "https://api.half.maranics.com", clientId: "only-id" }, adminJar)).status, 400);
+	assert.equal((await api("DELETE", "tenants/far-co-hybrid", undefined, adminJar)).status, 200);
+	assert.equal((await api("POST", "tenants/far-co/servers", { name: "X" }, adminJar)).status, 400);
+	assert.equal((await api("POST", "tenants/nope/servers", { name: "X", host: "https://api.x.maranics.com" }, adminJar)).status, 404);
+	for (const id of ["far-co-magic", "far-co-fantasy"]) assert.equal((await api("DELETE", `tenants/${id}`, undefined, adminJar)).status, 200);
+	assert.equal((await api("DELETE", "tenants/far-co", undefined, adminJar)).status, 200);
+	assert.equal((await api("POST", "central/logout", undefined, adminJar)).status, 200);
+	assert.equal((await api("GET", "tenants", undefined, adminJar)).body.canManage, false, "signed out of the central area");
+	assert.equal((await api("GET", "auth/me", undefined, tPhone)).status, 401, "a removed tenant's cookie falls back to the main hub");
+
+	// server-side voice: signed-in clients fetch the sentence as a WAV in the checklist's language
+	step = "server voice";
+	assert.equal((await api("GET", "auth/session")).body.speech.tts, "http");
+	const ttsRes = await fetch(`${base}/api/tts?lang=nb-NO&text=${encodeURIComponent("Punkt en. Er rampen oppe?")}`, { headers: { cookie } });
+	assert.equal(ttsRes.status, 200);
+	assert.equal(ttsRes.headers.get("content-type"), "audio/wav");
+	assert.equal(Buffer.from(await ttsRes.arrayBuffer()).subarray(0, 4).toString(), "RIFF");
+	assert.equal(ttsCalls.at(-1).voice, "no_NO-talesyntese-medium");
+	await fetch(`${base}/api/tts?lang=no&text=${encodeURIComponent("Punkt en. Er rampen oppe?")}`, { headers: { cookie } });
+	assert.equal(ttsCalls.length, 1, "a repeated sentence comes from the hub's cache");
+	assert.equal((await fetch(`${base}/api/tts?lang=no&text=hei`)).status, 401, "no voice for strangers");
+	assert.equal((await fetch(`${base}/api/tts?lang=es&text=hola`, { headers: { cookie } })).status, 404);
+
+	step = "speech models";
+	const modelList = await (await fetch(`${base}/models/vosk`)).json();
+	assert.deepEqual(modelList.map((m) => m.language).sort(), ["de", "en", "fr", "sv"]);
+	assert.equal((await fetch(`${base}/models/vosk/xx.zip`)).status, 404);
+
+	// backup recognition: the phone posts the PCM of a window it could not transcribe; the hub asks the recogniser once
+	step = "backup stt";
+	assert.equal((await api("GET", "auth/session")).body.speech.sttBackup, true, "boot info advertises the backup recogniser");
+	const pcm = Buffer.alloc(16000 * 2, 1); // one second
+	const sttRes = await fetch(`${base}/api/stt?language=nb&prompt=${encodeURIComponent("ja, nei, bekreft")}`, { method: "POST", headers: { "content-type": "application/octet-stream", cookie }, body: pcm });
+	assert.equal(sttRes.status, 200);
+	assert.deepEqual((await sttRes.json()).text, "Ja.", "non-speech tags are stripped");
+	assert.equal(sttCalls.at(-1).language, "no");
+	assert.equal(sttCalls.at(-1).prompt, "ja, nei, bekreft");
+	assert.equal(sttCalls.at(-1).url, "/v1/audio/transcriptions");
+	const tiny = await fetch(`${base}/api/stt`, { method: "POST", headers: { cookie }, body: Buffer.alloc(100) });
+	assert.equal((await tiny.json()).text, "", "too short to hear: the recogniser is not bothered");
+
+	// every station has its own permanent client link; admins can read it again at any time
+	step = "station links";
+	const links = (await api("GET", "stations")).body;
+	assert.ok(links.every((st) => /^\/client#\/join\/fvj_/.test(st.join?.path ?? "")), "each station carries its link");
+	assert.equal(new Set(links.map((st) => st.join.path)).size, links.length, "links are unique per station");
+	const again = (await api("GET", "stations")).body;
+	assert.deepEqual(again.map((st) => st.join.path), links.map((st) => st.join.path), "stable until rotated");
+
 	// audit is text only
-	const audit = await api("GET", "audit?limit=50");
+	const audit = await api("GET", "audit?limit=500");
 	assert.ok(audit.body.some((a) => a.kind === "item.committed" && a.transcript === "Pilot on board five minutes ago."));
 
 	ws.close();
+	sttServer.close();
+	ttsServer.close();
 	console.log("mock-e2e: OK —", spoken.length, "utterances,", fake.values.length, "values written to Flow");
 	console.log(spoken.map((s) => `  APP  ${s}`).join("\n"));
 } catch (err) {

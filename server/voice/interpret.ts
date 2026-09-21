@@ -17,13 +17,31 @@ export interface InterpretContext {
 	maxPastHours: number;
 	options?: { title: string; value: string }[];
 	language?: string;
+	/** The item's own answer words (Admin → Answers): a transcript that contains one counts as the answer. */
+	answers?: string[];
+	/** Checklist setting "only the marked words count": an item with answer words refuses a plain yes / confirm / no. */
+	answersOnly?: boolean;
+	/** How close a heard word must be to a marked one (checklist setting): exact = 1, normal = 0.75, loose = 0.6. */
+	answerMatch?: number;
 }
 
 export type Interpretation =
-	| { ok: true; value: string; valueText: string; confidence: number; kind: string }
+	| { ok: true; value: string; valueText: string; confidence: number; kind: string; /** Answered with one of the item's own answer words: the word is the confirmation, no read-back question. */ byWord?: boolean }
 	| { ok: false; reason: "no_match" | "ambiguous" | "implausible" | "empty"; message: string; confidence: number };
 
 export type ControlKind = "DateAndTime" | "Time" | "Date" | "Number" | "Checkbox" | "QuickSelect" | "Dropdown" | "RadioButtons" | "Text" | "LongText";
+
+/** What the Flow API stores for a checked plain checkbox (`TaskValueValidation.cs`: `val == "OK"`). */
+export const CHECKBOX_CHECKED = "OK";
+/**
+ * What a "yes" writes for a checkbox: a checkbox authored with one option ("Utført::completed") stores that
+ * option's key, a plain one stores "OK". Several options make it a multi-select (see `interpret`).
+ */
+export function checkboxCheckedValue(options: { title: string; value: string }[] | undefined): { value: string; title?: string } {
+	return options?.length === 1 ? { value: options[0].value, title: options[0].title } : { value: CHECKBOX_CHECKED };
+}
+/** A spoken "no" on a plain checkbox: nothing to write, the item stays open. */
+export const CHECKBOX_NOT_DONE = "";
 
 export const THRESHOLDS: Record<string, number> = { DateAndTime: 0.6, Time: 0.6, Date: 0.6, Number: 0.7, Checkbox: 0.7, QuickSelect: 0.6, Dropdown: 0.6, RadioButtons: 0.6, Text: 0.3, LongText: 0.1 };
 
@@ -34,7 +52,7 @@ export type ControlWord = "list" | "help" | "confirm" | "no" | "correction" | "r
 const CONTROL: [RegExp, ControlWord][] = [
 	[/^(list|checklists|list checklists|what can i run|which checklists|lista|checklistor|liste|sjekklister|liste des listes|quelles listes|checklisten|welche checklisten)$/i, "list"],
 	[/^(help|what can i say|hjälp|hjelp|aide|hilfe|was kann ich sagen)$/i, "help"],
-	[/^(confirm(ed)?|yes|yep|yeah|correct|affirmative|roger|ok(ay)?|that'?s right|right|ja|jo|jepp|jaha|bekreft(et)?|bekräfta(t)?|bekräftar|stimmt|richtig|bestätigt?|genau|oui|ouais|d'accord|confirm[ée]|exact|c'est ça|affirmatif)$/i, "confirm"],
+	[/^(confirm(ed)?|yes|yep|yeah|yup|correct|affirmative|roger|ok(ay)?|that'?s right|right|good|fine|sure|ja|jo|jepp|japp|jaha|jada|javisst|okej|okay|ok[eé]|greit|stemmer|det stemmer|riktig|precis|stämmer|det stämmer|bekreft(et)?|bekräfta(t)?|bekräftar|stimmt|richtig|bestätigt?|bestätige|genau|jawohl|passt|korrekt|oui|ouais|d'accord|confirm[ée]|exact|c'est ça|c'est bon|affirmatif|voilà|très bien)$/i, "confirm"],
 	[/^(no|nope|negative|wrong|incorrect|nei|nej|nein|falsch|feil|fel|non|négatif|faux|nicht richtig)$/i, "no"],
 	[/^(correction|correct that|change that|redo|rett|rettelse|ändra|rättelse|korrektur|korrigieren|ändern|corriger|changer|modifier)$/i, "correction"],
 	[/^(say again|repeat|again|pardon|what|gjenta|si igjen|igjen|upprepa|säg igen|igen|wiederholen|nochmal|wie bitte|répéter|répète|encore|comment)$/i, "repeat"],
@@ -238,6 +256,15 @@ export function formatClock(d: Date, ctx: InterpretContext): string {
 	const p = partsIn(d, ctx);
 	const lang = normLang(ctx.language);
 	return `${pad(p.h)}:${pad(p.min)} ${ctx.tzMode === "utc" ? tr(lang, "utc") : tr(lang, "local_time")}`;
+}
+
+/**
+ * What Flow stores for a DateAndTime: UTC "yyyy-MM-ddTHH:mm" (the app's own rules parse exactly that, and
+ * OutputFormatHelper appends the UTC zone). Never a full ISO stamp: the v3 bulk endpoint's JSON parser turns
+ * "…:52.418Z" into a date token and then rejects it as "value must be a JSON string".
+ */
+export function flowDateTime(d: Date): string {
+	return d.toISOString().slice(0, 16);
 }
 
 export function formatDate(d: Date, ctx: InterpretContext): string {
@@ -539,12 +566,149 @@ function fuzzyScore(a: string, b: string): number {
 	return A.size && B.size ? ((2 * c) / (A.size + B.size)) * 0.8 : 0;
 }
 
+const NEGATION = /(^| )(not|no|isn t|ikke|nei|inte|nej|nicht|nein|kein|pas|non)( |$)/;
+
+export const ANSWER_MATCH = { exact: 1, normal: 0.75, loose: 0.6 } as const;
+export type AnswerMatch = keyof typeof ANSWER_MATCH;
+
+/** Letters as a recogniser may spell them: "kjørebro" and "körbro" differ less once ø / ö / å / æ are folded. */
+const fold = (s: string) => s.replace(/[öøó]/g, "o").replace(/[äæ]/g, "a").replace(/å/g, "a").replace(/[éèê]/g, "e").replace(/ü/g, "u");
+function similarity(a: string, b: string): number {
+	if (a === b) return 1;
+	const m = a.length;
+	const n = b.length;
+	if (!m || !n) return 0;
+	let prev = Array.from({ length: n + 1 }, (_, i) => i);
+	for (let i = 1; i <= m; i++) {
+		const cur = [i];
+		for (let j = 1; j <= n; j++) cur[j] = Math.min(prev[j]! + 1, cur[j - 1]! + 1, prev[j - 1]! + (a[i - 1] === b[j - 1] ? 0 : 1));
+		prev = cur;
+	}
+	return 1 - prev[n]! / Math.max(m, n);
+}
+
+/** An answer word may be a combination: every part must be heard, in any order ("hivt + körbro" ⊇ "körbro er hivt"). */
+export const answerParts = (a: string) => a.split("+").map((p) => p.trim()).filter(Boolean);
+/** What the crew reads and hears for an answer word: the parts without the "+". */
+export const answerLabel = (a: string) => answerParts(a).join(" ");
+
+/** The word itself, whole or as part of a compound ("körbroen", "hovedkörbro"). Short words stay whole-word only. */
+function containsWord(normalized: string, hay: string, n: string): boolean {
+	if (!n) return false;
+	if (hay.includes(` ${n} `)) return true;
+	// anywhere in a longer sentence, also inflected or compounded: "körbron er hivt", "körbroen", "hovedkörbro".
+	// Short words ("up", "on") stay whole-word only, or "supper" would count as "up".
+	if (n.length < 5) return false;
+	if (!n.includes(" ")) return normalized.split(" ").some((w) => w.startsWith(n) || (w.endsWith(n) && w.length <= n.length + 8));
+	return hay.includes(` ${n}`);
+}
+
+/**
+ * The answer word the transcript contains ("the ramp is up now" ⊇ "up"); never inside a negation. `match` < 1 also takes
+ * a word the recogniser got nearly right ("kjørebro" for "körbro", "kjøre bro" split in two). Short words stay exact.
+ * A word written with "+" is a combination: each part is looked up on its own, so order and distance do not matter.
+ */
+export function heardAnswer(normalized: string, answers: string[] | undefined, match: number = ANSWER_MATCH.normal): string | undefined {
+	if (!answers?.length || NEGATION.test(normalized)) return undefined;
+	const hay = ` ${normalized} `;
+	const words = normalized.split(" ").filter(Boolean);
+	// score = the weakest part (1 = heard as written), so an answer heard exactly beats one the recogniser nearly got
+	let best: { answer: string; score: number } | undefined;
+	for (const a of answers) {
+		let worst = 1;
+		let ok = true;
+		for (const p of answerParts(a)) {
+			const n = normalizeTranscript(p);
+			if (containsWord(normalized, hay, n)) continue;
+			const near = nearWord(words, n, match);
+			if (near === undefined) {
+				ok = false;
+				break;
+			}
+			worst = Math.min(worst, near);
+		}
+		if (ok && (!best || worst > best.score)) best = { answer: a, score: worst };
+	}
+	return best?.answer;
+}
+
+/**
+ * Every word of a phrase somewhere in the transcript, in any order and any distance apart ("körbro er hivt" ⊇
+ * "hivt körbro"): how an unprompted answer finds its item when the crew says the name its own way.
+ */
+export function containsAllWords(normalized: string, phrase: string, match: number = ANSWER_MATCH.normal): boolean {
+	const all = normalizeTranscript(phrase).split(" ").filter(Boolean);
+	const parts = all.filter((w) => w.length > 2);
+	if (!parts.length || !all.length) return false;
+	const hay = ` ${normalized} `;
+	const words = normalized.split(" ").filter(Boolean);
+	return parts.every((p) => containsWord(normalized, hay, p) || nearWord(words, p, match) !== undefined);
+}
+
+/**
+ * A recogniser's first guess is often a near miss on ship terms ("Vet TES" for VTS). When it holds none of the item's
+ * answer words but another guess of the same utterance does, that guess is what the crew said.
+ */
+export function bestTranscript(text: string, alternatives: string[] | undefined, answers: string[] | undefined, match?: number): string {
+	if (!alternatives?.length || !answers?.length) return text;
+	const hit = (t: string) => !!heardAnswer(normalizeTranscript(t), answers, match);
+	return hit(text) ? text : alternatives.find(hit) ?? text;
+}
+
+const skeleton = (s: string) => fold(s).replace(/[aeiouy ]/g, "");
+/** "vts", "vhf", "gps": letters only, no vowel. A recogniser writes the spoken letters as words ("vet tes", "ved TS"). */
+const isAcronym = (n: string) => /^[a-z]{2,5}$/.test(n) && !/[aeiouy]/.test(n);
+
+/** How well one answer word (or one part of a combination) is heard, or undefined when it is not there at all. */
+function nearWord(words: string[], n: string, match: number): number | undefined {
+	if (match >= 1 || !n) return undefined;
+	let best: number | undefined;
+	if (isAcronym(n)) {
+		// spelled-out letters keep their consonants: "vet tes" → vtts, "ved ts" → vdts, "vet s" → vts
+		for (let size = 1; size <= 3; size++) {
+			for (let i = 0; i + size <= words.length; i++) {
+				const win = words.slice(i, i + size).join("");
+				if (win[0] !== n[0] || win.length > n.length * 3) continue;
+				const score = similarity(skeleton(win), n);
+				if (score >= 0.74 && (best === undefined || score > best)) best = score;
+			}
+		}
+		return best;
+	}
+	if (n.length < 4) return undefined; // "up", "on", "av": one wrong letter is another word
+	const target = fold(n.replace(/ /g, ""));
+	const span = n.split(" ").length;
+	// the recogniser may split a compound ("kjøre bro") or join two words: try windows of span-1 … span+1 words
+	for (let size = Math.max(1, span - 1); size <= span + 1; size++) {
+		for (let i = 0; i + size <= words.length; i++) {
+			const score = similarity(fold(words.slice(i, i + size).join("")), target);
+			if (score >= match && (best === undefined || score > best)) best = score;
+		}
+	}
+	return best;
+}
+
 export function interpret(type: string, transcript: string, ctx: InterpretContext, phrases?: string[]): Interpretation {
 	const lang: Lang = normLang(ctx.language);
 	const msg = (key: string, params: Record<string, string | number> = {}) => tr(lang, key, params);
 	const raw = transcript.trim();
 	const normalized = normalizeTranscript(raw);
 	if (!normalized) return { ok: false, reason: "empty", message: msg("m_empty"), confidence: 0 };
+	const heard = heardAnswer(normalized, ctx.answers, ctx.answerMatch);
+	if (heard) {
+		const said = answerLabel(heard); // a combination is read back as its parts, without the "+"
+
+		const opts = ctx.options ?? [];
+		if (type === "Checkbox" && opts.length <= 1) return { ok: true, value: checkboxCheckedValue(opts).value, valueText: said, confidence: 0.92, kind: "bool", byWord: true };
+		if (type === "RadioButtons" && !opts.length) return { ok: true, value: "Yes", valueText: said, confidence: 0.92, kind: "bool", byWord: true };
+		if (type === "DateAndTime") return { ok: true, value: flowDateTime(ctx.utteredAt), valueText: `${said}, ${formatClock(ctx.utteredAt, ctx)}`, confidence: 0.85, kind: "now", byWord: true };
+		if (type === "Text" || type === "LongText") return { ok: true, value: said, valueText: said, confidence: 0.9, kind: "text", byWord: true };
+		const n = normalizeTranscript(said);
+		const opt = opts.find((o) => ` ${normalizeTranscript(o.title)} `.includes(` ${n} `) || normalizeTranscript(o.value) === n) ?? opts.find((o) => containsAllWords(normalizeTranscript(o.title), said));
+		if (opt) return { ok: true, value: opt.value, valueText: opt.title, confidence: 0.92, kind: "option", byWord: true };
+	}
+	// strict checklist: the crew must say the word itself ("hivt körbro"), a bare "yes" proves nothing
+	if (ctx.answersOnly && ctx.answers?.length) return { ok: false, reason: "no_match", message: msg("m_say_word", { words: ctx.answers.map(answerLabel).join(", ") }), confidence: 0.1 };
 	const stripped = stripPhrase(normalized, phrases);
 	/** The user said only the bound phrase ("engine started"): the event itself, with no value attached. */
 	const phraseOnly = !stripped;
@@ -552,19 +716,19 @@ export function interpret(type: string, transcript: string, ctx: InterpretContex
 	const nowText = () => `${msg("now")}, ${formatClock(ctx.utteredAt, ctx)}`;
 	switch (type) {
 		case "DateAndTime": {
-			if (phraseOnly) return { ok: true, value: ctx.utteredAt.toISOString(), valueText: nowText(), confidence: 0.85, kind: "now" };
+			if (phraseOnly) return { ok: true, value: flowDateTime(ctx.utteredAt), valueText: nowText(), confidence: 0.85, kind: "now" };
 			const rel = parseRelative(t, ctx);
 			if (rel) {
 				if (rel.confidence < 0.5) return { ok: false, reason: "implausible", message: msg("m_implausible", { value: rel.text, hours: ctx.maxPastHours }), confidence: rel.confidence };
-				return { ok: true, value: rel.at.toISOString(), valueText: rel.text === "now" ? nowText() : formatClock(rel.at, ctx), confidence: rel.confidence, kind: "relative" };
+				return { ok: true, value: flowDateTime(rel.at), valueText: rel.text === "now" ? nowText() : formatClock(rel.at, ctx), confidence: rel.confidence, kind: "relative" };
 			}
 			const clock = parseClock(t);
 			if (clock) {
 				const at = resolveClock(clock, ctx);
 				if (ctx.utteredAt.getTime() - at.getTime() > ctx.maxPastHours * 3600000) return { ok: false, reason: "implausible", message: msg("m_implausible", { value: formatClock(at, ctx), hours: ctx.maxPastHours }), confidence: 0.3 };
-				return { ok: true, value: at.toISOString(), valueText: formatClock(at, ctx), confidence: clock.confidence, kind: "clock" };
+				return { ok: true, value: flowDateTime(at), valueText: formatClock(at, ctx), confidence: clock.confidence, kind: "clock" };
 			}
-			if (YES.test(t)) return { ok: true, value: ctx.utteredAt.toISOString(), valueText: nowText(), confidence: 0.85, kind: "now" };
+			if (YES.test(t)) return { ok: true, value: flowDateTime(ctx.utteredAt), valueText: nowText(), confidence: 0.85, kind: "now" };
 			return { ok: false, reason: "no_match", message: msg("m_when"), confidence: 0.1 };
 		}
 		case "Time": {
@@ -589,9 +753,18 @@ export function interpret(type: string, transcript: string, ctx: InterpretContex
 			return { ok: false, reason: "no_match", message: msg("m_number"), confidence: 0.1 };
 		}
 		case "Checkbox": {
-			if (phraseOnly) return { ok: true, value: "true", valueText: msg("yes"), confidence: 0.8, kind: "bool" };
-			if (YES.test(t)) return { ok: true, value: "true", valueText: msg("yes"), confidence: 0.95, kind: "bool" };
-			if (NO.test(t)) return { ok: true, value: "false", valueText: msg("no"), confidence: 0.95, kind: "bool" };
+			// Flow stores a plain checkbox as "OK" (checked) or nothing (TaskValueValidation.cs); "true"/"false" are rejected.
+			// A checkbox authored with options ("Utført::completed") stores the option key instead: one option is still a
+			// yes/no question, several make it a multi-select answered like a Dropdown.
+			// "no" therefore carries no value: the engine leaves the item open (CHECKBOX_NOT_DONE) instead of writing.
+			const opts = ctx.options ?? [];
+			if (opts.length > 1) return interpret("Dropdown", transcript, ctx, phrases);
+			const checked = checkboxCheckedValue(opts);
+			const yesText = checked.title ?? msg("yes");
+			if (phraseOnly) return { ok: true, value: checked.value, valueText: yesText, confidence: 0.8, kind: "bool" };
+			if (YES.test(t)) return { ok: true, value: checked.value, valueText: yesText, confidence: 0.95, kind: "bool" };
+			if (checked.title && fuzzyScore(t, normalizeTranscript(checked.title)) >= 0.7) return { ok: true, value: checked.value, valueText: yesText, confidence: 0.9, kind: "bool" };
+			if (NO.test(t)) return { ok: true, value: CHECKBOX_NOT_DONE, valueText: msg("no"), confidence: 0.95, kind: "bool" };
 			if (NA_WORDS.includes(t)) return { ok: false, reason: "no_match", message: msg("m_yesno_na"), confidence: 0.2 };
 			return { ok: false, reason: "no_match", message: msg("m_yesno"), confidence: 0.1 };
 		}
@@ -599,6 +772,12 @@ export function interpret(type: string, transcript: string, ctx: InterpretContex
 		case "Dropdown":
 		case "RadioButtons": {
 			const options = ctx.options ?? [];
+			if (!options.length && type === "RadioButtons") {
+				// a RadioButtons control without its own option list is Flow's yes/no: it accepts exactly "Yes" / "No"
+				if (YES.test(t)) return { ok: true, value: "Yes", valueText: msg("yes"), confidence: 0.95, kind: "bool" };
+				if (NO.test(t)) return { ok: true, value: "No", valueText: msg("no"), confidence: 0.95, kind: "bool" };
+				return { ok: false, reason: "no_match", message: msg("m_yesno"), confidence: 0.1 };
+			}
 			if (!options.length) return { ok: true, value: raw, valueText: raw, confidence: 0.5, kind: "free" };
 			const scored = options
 				.map((o) => {

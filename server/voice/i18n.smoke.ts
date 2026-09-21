@@ -1,5 +1,5 @@
 import assert from "node:assert/strict";
-import { normLang, spokenNumber, t } from "./i18n.js";
+import { spokenText, normLang, spokenNumber, t } from "./i18n.js";
 import { controlWord, interpret, parseClock, parseRelative, wordsToNumber, type InterpretContext } from "./interpret.js";
 import { startAnnouncement } from "./checklist.js";
 import type { RunItem } from "../protocol.js";
@@ -11,6 +11,12 @@ const ok = (r: ReturnType<typeof interpret>) => {
 };
 
 export async function run(): Promise<void> {
+	// spoken text: no "slash", brackets or list marks
+	assert.equal(spokenText("Körbro / ramp hivt", "sv"), "Körbro, ramp hivt");
+	assert.equal(spokenText("Baugport (fremre) lukket/sikret", "no"), "Baugport, fremre, lukket, sikret");
+	assert.equal(spokenText("- Pilot_on_board *", "en"), "Pilot on board");
+	assert.equal(spokenText("Lys & signal", "no"), "Lys og signal");
+	assert.equal(spokenText("Started 12:13, level 1/2, -4 degrees.", "en"), "Started 12:13, level 1/2, -4 degrees.");
 	assert.equal(normLang("nb-NO"), "no");
 	assert.equal(normLang("sv-SE"), "sv");
 	assert.equal(normLang("fr"), "fr");
@@ -67,13 +73,13 @@ export async function run(): Promise<void> {
 	// full interpretations per language, with read-back text in that language
 	const sv = { ...base, language: "sv" };
 	const pilot = ok(interpret("DateAndTime", "Lots ombord för fem minuter sedan", sv, ["lots ombord"]));
-	assert.equal(pilot.value, "2026-09-09T07:42:03.000Z");
+	assert.equal(pilot.value, "2026-09-09T07:42");
 	assert.equal(pilot.valueText, "07:42 UTC");
 	const de = { ...base, language: "de" };
-	assert.equal(ok(interpret("DateAndTime", "Lotse an Bord vor zehn Minuten", de, ["lotse an bord"])).value, "2026-09-09T07:37:03.000Z");
+	assert.equal(ok(interpret("DateAndTime", "Lotse an Bord vor zehn Minuten", de, ["lotse an bord"])).value, "2026-09-09T07:37");
 	const fr = { ...base, language: "fr", tzMode: "local" as const, timeZone: "Europe/Paris" };
 	const eng = ok(interpret("DateAndTime", "moteur démarré à neuf heures quarante-deux", fr, ["moteur démarré"]));
-	assert.equal(eng.value, "2026-09-09T07:42:00.000Z");
+	assert.equal(eng.value, "2026-09-09T07:42");
 	assert.equal(eng.valueText, "09:42 heure locale");
 	const no = { ...base, language: "no" };
 	assert.equal(ok(interpret("DateAndTime", "hovedmotor startet", no, ["hovedmotor startet"])).kind, "now");
@@ -81,9 +87,9 @@ export async function run(): Promise<void> {
 
 	// yes / no / N/A
 	assert.equal(ok(interpret("Checkbox", "Ja", sv)).valueText, "ja");
-	assert.equal(ok(interpret("Checkbox", "nej", sv)).value, "false");
+	assert.equal(ok(interpret("Checkbox", "nej", sv)).value, ""); // not done: nothing to write
 	assert.equal(ok(interpret("Checkbox", "oui", fr)).valueText, "oui");
-	assert.equal(ok(interpret("Checkbox", "non", fr)).value, "false");
+	assert.equal(ok(interpret("Checkbox", "non", fr)).value, "");
 	assert.equal(ok(interpret("Checkbox", "nein", de)).valueText, "nein");
 	assert.equal(interpret("Checkbox", "kanske", sv).ok, false);
 	assert.equal((interpret("Checkbox", "kanske", sv) as { message: string }).message, "Säg ja eller nej");
