@@ -1,8 +1,18 @@
 /** HTTP view types shared with the web app (relative import from web/src). */
+import type { StepMode } from "./store/HubStore.js";
 import type { AuthErrorCode, AuthProviderView } from "./http/auth.js";
 import type { ChecklistPick, RunView } from "./protocol.js";
-import type { AuditEntry, Device, EventMapping, OutboxEntry, PendingEnrollment, Station, StationJoin, VoiceProfile } from "./store/HubStore.js";
+import type { AuditEntry, Device, LibraryTemplate, EventMapping, OutboxEntry, PendingEnrollment, Station, StationJoin, VoiceProfile } from "./store/HubStore.js";
 
+export type { LibraryTemplate };
+/** `GET /api/library`: the central checklist register with its language and trigger words. */
+export interface LibraryView {
+	templates: (LibraryTemplate & { language?: string; words: Record<string, string[]>; /** Only the marked words count: no plain yes / confirm / no on items that have words. */ wordsOnly: boolean; /** How close a heard word must be to a marked one. */ wordMatch: "exact" | "normal" | "loose"; /** How the run moves to the next item. */ step: StepMode })[];
+}
+/** `GET /api/library/available`: what the Templates app offers, flagged when already in the register. */
+export interface LibraryAvailable {
+	templates: { templateId: string; name: string; refId?: string; categoryName?: string; registered: boolean }[];
+}
 export type { AuthErrorCode, AuthProviderView, ChecklistPick, RunView, Station, StationJoin, Device, PendingEnrollment, VoiceProfile, EventMapping, OutboxEntry, AuditEntry };
 
 export interface MeResponse {
@@ -10,6 +20,8 @@ export interface MeResponse {
 	name?: string;
 	email?: string;
 	positionName?: string;
+	/** Maranics location of the sign-in (name, or id when the claim has no name). Flows start there. */
+	locationName?: string;
 	isAdmin: boolean;
 	stationId?: string;
 	/** How the station was bound: scanned QR ("join") or picked on screen ("pick"). */
@@ -27,7 +39,7 @@ export interface SessionProbeResponse {
 	/** The address the Android app pairs with (also rendered at GET /api/qr.svg). */
 	hubUrl: string;
 	stations: Station[];
-	speech: { stt: "endpoint" | "http"; tts: "endpoint" | "http" };
+	speech: { stt: "endpoint" | "http"; tts: "endpoint" | "http"; /** the hub can transcribe a window the device could not (POST /api/stt) */ sttBackup?: boolean };
 	maranicsConfigured: boolean;
 }
 
@@ -48,7 +60,7 @@ export interface StationView extends Station {
 	endpoint?: { endpointId: string; user?: string; observers: number; aec?: boolean; pushToTalk?: boolean; localStt?: boolean; localTts?: boolean };
 	activeRun?: { runId: string; templateName: string; state: string; answered: number; total: number };
 	/** The station's live QR join token, never the hash. */
-	join?: { tokenHint: string; createdAt: string; createdBy?: string };
+	join?: { tokenHint: string; createdAt: string; createdBy?: string; /** `/client#/join/<token>` — admins only; absent on links minted before the hub kept them (rotate once). */ path?: string };
 }
 
 /** `POST /api/auth/join` — redeem a station QR token (no session required). */
@@ -68,7 +80,7 @@ export interface JoinTokenResponse {
 	token: string;
 	tokenHint: string;
 	createdAt: string;
-	/** `/?mobile=1#/join/<token>` — the client may prepend a different base URL before printing. */
+	/** `/client#/join/<token>` — the client may prepend a different base URL before printing. */
 	path: string;
 	/** `path` on HUB_PUBLIC_URL, or on the request origin when unset. */
 	url: string;
@@ -84,8 +96,8 @@ export interface StatusResponse {
 	pendingEnrollments: PendingEnrollment[];
 	sessions: { id: string; sub: string; name?: string; stationId?: string; lastSeenAt: string; createdAt: string; credential: string }[];
 	prompts: { promptId: string; stationId: string; prompt: string; state: string; createdAt: string }[];
-	speech: { stt: "endpoint" | "http"; tts: "endpoint" | "http"; sttUrl?: string };
-	settings: { readNotices: boolean; tzMode: "utc" | "local"; confirmation: "required" | "optional" };
+	speech: { stt: "endpoint" | "http"; tts: "endpoint" | "http"; sttUrl?: string; sttBackup?: boolean; sttBackupUrl?: string };
+	settings: { readNotices: boolean; tzMode: "utc" | "local"; confirmation: "required" | "optional"; /** Template ids that get a start button on the phone/tablet home screen and in the voice menu; empty or absent → every template. */ startable?: string[]; /** Template id → language the checklist is written in (en/sv/no/fr/de); wins over the station language. */ templateLanguages?: Record<string, string>; /** Template id → item key (`answerKey`) → words that count as that item's answer ("up", "closed"); "a + b" = every part must be heard, in any order. */ itemAnswers?: Record<string, Record<string, string[]>> };
 }
 
 export interface EnrollRequest {

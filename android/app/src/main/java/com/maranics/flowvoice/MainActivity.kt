@@ -49,6 +49,32 @@ class MainActivity : AppCompatActivity() {
     private var ttsReady = false
     private var recognizer: SpeechRecognizer? = null
     private var listening = false
+    /** Grammar-restricted offline recogniser; used when the hub sends a vocabulary and a model for the language is loaded. */
+    private val vosk by lazy { VoskStt(this, voskCallbacks) { hubUrl } }
+    private val packsRequested = HashSet<String>()
+
+    /**
+     * Languages without a grammar model (Norwegian) use the system recogniser. On Android 13+ ask it to fetch the
+     * offline language pack when it is missing, so recognition keeps working without internet. Older versions have
+     * no API for this: the pack is installed in Settings → Google → Voice → Offline speech recognition.
+     */
+    private fun ensureSystemLanguagePack(language: String) {
+        if (Build.VERSION.SDK_INT < 33 || !packsRequested.add(language)) return
+        runCatching {
+            if (!SpeechRecognizer.isOnDeviceRecognitionAvailable(this)) return
+            val intent = Intent(RecognizerIntent.ACTION_RECOGNIZE_SPEECH).putExtra(RecognizerIntent.EXTRA_LANGUAGE, localeOf(language).toLanguageTag())
+            val r = SpeechRecognizer.createOnDeviceSpeechRecognizer(this)
+            r.checkRecognitionSupport(intent, ContextCompat.getMainExecutor(this), object : android.speech.RecognitionSupportCallback {
+                override fun onSupportResult(support: android.speech.RecognitionSupport) {
+                    val tag = localeOf(language).toLanguageTag()
+                    if (support.installedOnDeviceLanguages.none { it.equals(tag, true) }) runCatching { r.triggerModelDownload(intent) }
+                    r.destroy()
+                }
+                override fun onError(error: Int) { r.destroy() }
+            })
+        }
+    }
+    private var voskListening = false
     private var pttDown = false
     private var micGranted = false
 
@@ -64,6 +90,14 @@ class MainActivity : AppCompatActivity() {
     private val scanQr = registerForActivityResult(ScanContract()) { result ->
         val text = result.contents?.trim()
         if (text.isNullOrEmpty()) return@registerForActivityResult
+        val station = stationLinkFromQr(text)
+        if (station != null) {
+            // station poster: {hub}/client#/join/<token> (older posters: /?mobile=1#/join/<token>) → remember the hub, then let the PWA redeem the token.
+            // A changed query string forces a full load (a bare hash change would not re-run the join on boot).
+            prefs.edit().putString("hubUrl", station.first).apply()
+            web.loadUrl("${station.first}/client?scan=${System.currentTimeMillis()}#/join/${station.second}")
+            return@registerForActivityResult
+        }
         val url = hubUrlFromQr(text)
         if (url == null) {
             Toast.makeText(this, getString(R.string.qr_not_hub, text.take(60)), Toast.LENGTH_LONG).show()
@@ -151,6 +185,15 @@ class MainActivity : AppCompatActivity() {
         return candidate.trimEnd('/')
     }
 
+    /** A station poster link → (hub origin, join token); null for anything else. */
+    private fun stationLinkFromQr(text: String): Pair<String, String>? {
+        val u = runCatching { Uri.parse(text) }.getOrNull() ?: return null
+        if (u.scheme != "http" && u.scheme != "https" || u.host.isNullOrBlank()) return null
+        val token = Regex("^/?join/(fvj_[A-Za-z0-9_-]+)$").find(u.fragment ?: return null)?.groupValues?.get(1) ?: return null
+        val origin = "${u.scheme}://${u.host}${if (u.port > 0) ":${u.port}" else ""}"
+        return origin to token
+    }
+
     private fun saveHubUrl(v: String) {
         prefs.edit().putString("hubUrl", v).apply()
         if (v.isNotEmpty()) web.loadUrl(v)
@@ -233,6 +276,7 @@ class MainActivity : AppCompatActivity() {
     }
 
     override fun onDestroy() {
+        vosk.shutdown()
         recognizer?.destroy()
         tts?.shutdown()
         VoiceService.stop(this)
@@ -298,31 +342,173 @@ class MainActivity : AppCompatActivity() {
                 js("window.flowVoiceBridge&&window.flowVoiceBridge.onListenEnd('cancel')")
                 return@runOnUiThread
             }
-            if (recognizer == null) recognizer = SpeechRecognizer.createSpeechRecognizer(this@MainActivity).also { it.setRecognitionListener(listener) }
-            tts?.stop()
-            val intent = Intent(RecognizerIntent.ACTION_RECOGNIZE_SPEECH).apply {
-                putExtra(RecognizerIntent.EXTRA_LANGUAGE_MODEL, RecognizerIntent.LANGUAGE_MODEL_FREE_FORM)
-                putExtra(RecognizerIntent.EXTRA_LANGUAGE, localeOf(language).toLanguageTag())
-                putExtra(RecognizerIntent.EXTRA_PARTIAL_RESULTS, true)
-                putExtra(RecognizerIntent.EXTRA_MAX_RESULTS, 1)
-                putExtra(RecognizerIntent.EXTRA_CALLING_PACKAGE, packageName)
-                putExtra(RecognizerIntent.EXTRA_SPEECH_INPUT_COMPLETE_SILENCE_LENGTH_MILLIS, 1200L)
-                putExtra(RecognizerIntent.EXTRA_SPEECH_INPUT_POSSIBLY_COMPLETE_SILENCE_LENGTH_MILLIS, 1200L)
-                if (Build.VERSION.SDK_INT >= 33) putExtra(RecognizerIntent.EXTRA_PREFER_OFFLINE, true)
+            beginListening(language, preferOffline = language !in offlineUnavailable)
+        }
+
+        /** Like startListening, but on Android 14+ the recogniser may switch to any of `extraLanguages` (comma-separated tags). */
+        @JavascriptInterface
+        fun startListeningIn(language: String, extraLanguages: String, maxMs: Int, promptId: String) = startListeningWith(language, extraLanguages, "", maxMs, promptId)
+
+        /** Like startListeningIn, plus words the hub expects (item name, yes/no, options) as recogniser bias (Android 13+). */
+        @JavascriptInterface
+        fun startListeningWith(language: String, extraLanguages: String, bias: String, maxMs: Int, promptId: String) = runOnUiThread {
+            if (!micGranted) {
+                js("window.flowVoiceBridge&&window.flowVoiceBridge.onListenEnd('cancel')")
+                return@runOnUiThread
             }
-            listening = true
-            recognizer?.startListening(intent)
+            listenExtraLanguages = extraLanguages.split(',').map { it.trim() }.filter { it.isNotEmpty() }
+            listenBias = bias.split(',').map { it.trim() }.filter { it.isNotEmpty() }.take(40)
+            beginListening(language, preferOffline = language !in offlineUnavailable)
         }
 
         @JavascriptInterface
         fun stopListening() = runOnUiThread {
+            if (voskListening) vosk.stop()
             if (listening) recognizer?.stopListening()
+        }
+
+        /** Open the camera to scan a station poster (or a hub QR): the only way to change station on this device. */
+        @JavascriptInterface
+        fun scanStation() = runOnUiThread { startScan() }
+
+        /** Is the grammar recogniser's model for this language loaded? (web/src/audio.ts decides per window.) */
+        @JavascriptInterface
+        fun hasGrammarStt(language: String): Boolean = vosk.hasModel(language)
+
+        /** Load or download the model for this language in the background. */
+        @JavascriptInterface
+        fun prepareGrammarStt(language: String) = runOnUiThread {
+            vosk.prepare(language)
+            if (!vosk.supports(language)) ensureSystemLanguagePack(language)
+        }
+
+        /** Listen for the phrases in `grammarJson` (a JSON array) only; anything else is reported as silence. */
+        @JavascriptInterface
+        fun startListeningGrammar(language: String, grammarJson: String, maxMs: Int, promptId: String) = runOnUiThread {
+            if (!micGranted) {
+                js("window.flowVoiceBridge&&window.flowVoiceBridge.onListenEnd('cancel')")
+                return@runOnUiThread
+            }
+            if (listening) recognizer?.cancel()
+            listening = false
+            tts?.stop()
+            voskListening = vosk.start(language, grammarJson, maxMs)
+            if (!voskListening) {
+                // model gone or mic busy: fall back to the platform recogniser so the window is not lost
+                listenBias = emptyList()
+                beginListening(language, preferOffline = language !in offlineUnavailable)
+            }
+        }
+
+        /** The hub offers backup recognition (boot info): windows the phone cannot transcribe may be sent there. */
+        @JavascriptInterface
+        fun setServerStt(enabled: Boolean) { vosk.serverBackup = enabled }
+
+        /** Is there a grammar model for this language at all? (No → `startListeningServer` when the hub has a backup recogniser.) */
+        @JavascriptInterface
+        fun supportsGrammarStt(language: String): Boolean = vosk.supports(language)
+
+        /** Record one utterance and let the hub transcribe it (languages without a model on the phone). Falls back to the system recogniser. */
+        @JavascriptInterface
+        fun startListeningServer(language: String, hintsJson: String, maxMs: Int, promptId: String) = runOnUiThread {
+            if (!micGranted) {
+                js("window.flowVoiceBridge&&window.flowVoiceBridge.onListenEnd('cancel')")
+                return@runOnUiThread
+            }
+            if (listening) recognizer?.cancel()
+            listening = false
+            tts?.stop()
+            voskListening = vosk.startServer(language, hintsJson, maxMs)
+            if (!voskListening) beginListening(language, preferOffline = language !in offlineUnavailable)
         }
 
         @JavascriptInterface
         fun setForeground(active: Boolean, text: String) = runOnUiThread {
             if (active) VoiceService.start(this@MainActivity, text) else VoiceService.stop(this@MainActivity)
             web.keepScreenOn = active
+        }
+    }
+
+    /** The language of the open listen window, so a "language unavailable" error can be retried online once. */
+    private var listenLanguage = ""
+    private var listenRetriedOnline = false
+    /** Extra languages the recogniser may switch to (Android 14+ language switch; English for a Norwegian checklist). */
+    private var listenExtraLanguages: List<String> = emptyList()
+    /** Words the hub expects for the open window; a biased recogniser picks "utført" over "utfor" in noise. */
+    private var listenBias: List<String> = emptyList()
+    /** Languages this phone has no offline pack for (recogniser error 12/13): go straight to the online recogniser. */
+    private val offlineUnavailable = mutableSetOf<String>()
+
+    /**
+     * Offline recognition first (fast, works at sea); when the phone has no offline pack for the language the
+     * recogniser answers ERROR_LANGUAGE_UNAVAILABLE / NOT_SUPPORTED and we retry once with the online recogniser.
+     */
+    private fun beginListening(language: String, preferOffline: Boolean) {
+        if (recognizer == null) recognizer = SpeechRecognizer.createSpeechRecognizer(this@MainActivity).also { it.setRecognitionListener(listener) }
+        tts?.stop()
+        val intent = Intent(RecognizerIntent.ACTION_RECOGNIZE_SPEECH).apply {
+            putExtra(RecognizerIntent.EXTRA_LANGUAGE_MODEL, RecognizerIntent.LANGUAGE_MODEL_FREE_FORM)
+            putExtra(RecognizerIntent.EXTRA_LANGUAGE, localeOf(language).toLanguageTag())
+            putExtra(RecognizerIntent.EXTRA_PARTIAL_RESULTS, true)
+            putExtra(RecognizerIntent.EXTRA_MAX_RESULTS, 1)
+            putExtra(RecognizerIntent.EXTRA_CALLING_PACKAGE, packageName)
+            putExtra(RecognizerIntent.EXTRA_SPEECH_INPUT_COMPLETE_SILENCE_LENGTH_MILLIS, 1200L)
+            putExtra(RecognizerIntent.EXTRA_SPEECH_INPUT_POSSIBLY_COMPLETE_SILENCE_LENGTH_MILLIS, 1200L)
+            if (Build.VERSION.SDK_INT >= 33 && preferOffline) putExtra(RecognizerIntent.EXTRA_PREFER_OFFLINE, true)
+            if (Build.VERSION.SDK_INT >= 33 && listenBias.isNotEmpty()) putStringArrayListExtra(RecognizerIntent.EXTRA_BIASING_STRINGS, ArrayList(listenBias))
+            if (Build.VERSION.SDK_INT >= 34 && listenExtraLanguages.isNotEmpty()) {
+                // crew may answer a Norwegian checklist in English: let the (on-device) recogniser switch languages
+                val allowed = ArrayList(listOf(localeOf(language).toLanguageTag()) + listenExtraLanguages)
+                putExtra(RecognizerIntent.EXTRA_ENABLE_LANGUAGE_DETECTION, true)
+                putStringArrayListExtra(RecognizerIntent.EXTRA_LANGUAGE_DETECTION_ALLOWED_LANGUAGES, allowed)
+                putExtra(RecognizerIntent.EXTRA_ENABLE_LANGUAGE_SWITCH, RecognizerIntent.LANGUAGE_SWITCH_BALANCED)
+                putStringArrayListExtra(RecognizerIntent.EXTRA_LANGUAGE_SWITCH_ALLOWED_LANGUAGES, allowed)
+            }
+        }
+        listenLanguage = language
+        listenRetriedOnline = !preferOffline
+        listening = true
+        recognizer?.startListening(intent)
+    }
+
+    private fun sttErrorName(error: Int): String = when (error) {
+        SpeechRecognizer.ERROR_NETWORK_TIMEOUT -> "network timeout"
+        SpeechRecognizer.ERROR_NETWORK -> "network"
+        SpeechRecognizer.ERROR_AUDIO -> "audio"
+        SpeechRecognizer.ERROR_SERVER -> "server"
+        SpeechRecognizer.ERROR_CLIENT -> "client"
+        SpeechRecognizer.ERROR_SPEECH_TIMEOUT -> "speech timeout"
+        SpeechRecognizer.ERROR_NO_MATCH -> "no match"
+        SpeechRecognizer.ERROR_RECOGNIZER_BUSY -> "recognizer busy"
+        SpeechRecognizer.ERROR_INSUFFICIENT_PERMISSIONS -> "microphone permission"
+        SpeechRecognizer.ERROR_TOO_MANY_REQUESTS -> "too many requests"
+        SpeechRecognizer.ERROR_SERVER_DISCONNECTED -> "server disconnected"
+        SpeechRecognizer.ERROR_LANGUAGE_NOT_SUPPORTED -> "language not supported"
+        SpeechRecognizer.ERROR_LANGUAGE_UNAVAILABLE -> "language pack not installed"
+        SpeechRecognizer.ERROR_CANNOT_CHECK_SUPPORT -> "cannot check language support"
+        else -> "error $error"
+    }
+
+    private val voskCallbacks = object : VoskStt.Callbacks {
+        override fun onPartial(text: String) {
+            js("window.flowVoiceBridge&&window.flowVoiceBridge.onTranscript(${q(text)},0,false)")
+        }
+        override fun onFinal(text: String, confidence: Float) {
+            voskListening = false
+            js("window.flowVoiceBridge&&window.flowVoiceBridge.onTranscript(${q(text)},$confidence,true)")
+        }
+        override fun onSilence() {
+            voskListening = false
+            js("window.flowVoiceBridge&&window.flowVoiceBridge.onListenEnd('silence')")
+        }
+        override fun onError(message: String) {
+            voskListening = false
+            js("window.flowVoiceBridge&&window.flowVoiceBridge.onListenEnd(${q("error:$message")})")
+        }
+        override fun onModelState(language: String, state: String) {
+            if (state == "downloading" || state == "ready" || state.startsWith("error")) {
+                Toast.makeText(this@MainActivity, getString(R.string.grammar_model_state, language, state), Toast.LENGTH_SHORT).show()
+            }
         }
     }
 
@@ -349,13 +535,21 @@ class MainActivity : AppCompatActivity() {
 
         override fun onError(error: Int) {
             listening = false
+            val languageProblem = error == SpeechRecognizer.ERROR_LANGUAGE_UNAVAILABLE || error == SpeechRecognizer.ERROR_LANGUAGE_NOT_SUPPORTED
+            if (languageProblem && !listenRetriedOnline && listenLanguage.isNotEmpty()) {
+                // no offline pack for this language: try the online recogniser, and skip offline for it from now on
+                offlineUnavailable.add(listenLanguage)
+                beginListening(listenLanguage, preferOffline = false)
+                return
+            }
             val reason = when (error) {
                 SpeechRecognizer.ERROR_NO_MATCH, SpeechRecognizer.ERROR_SPEECH_TIMEOUT -> "silence"
                 SpeechRecognizer.ERROR_CLIENT -> "cancel"
-                else -> "timeout"
+                else -> "error:" + sttErrorName(error) // never "silence": the hub would retry and move on without anyone seeing why
             }
             js("window.flowVoiceBridge&&window.flowVoiceBridge.onListenEnd(${q(reason)})")
             if (error == SpeechRecognizer.ERROR_INSUFFICIENT_PERMISSIONS) Toast.makeText(this@MainActivity, R.string.mic_denied, Toast.LENGTH_LONG).show()
+            else if (reason.startsWith("error:")) Toast.makeText(this@MainActivity, getString(R.string.stt_failed, sttErrorName(error), localeOf(listenLanguage).displayName), Toast.LENGTH_LONG).show()
         }
     }
 }

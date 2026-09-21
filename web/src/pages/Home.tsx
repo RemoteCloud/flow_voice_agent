@@ -1,9 +1,10 @@
 import { useCallback, useEffect, useState } from "react";
 import type { ChecklistPick, RunView } from "../../../server/api.js";
-import { api, toApiError } from "../api.js";
+import { api, credentialErrorText, toApiError } from "../api.js";
 import { useApp } from "../context.js";
-import { Icon, iconFor } from "../icons.js";
+import { Icon } from "../icons.js";
 import { useVoice, VoiceBar } from "../voice.js";
+import { versionLine } from "../build.js";
 
 const READINESS: Record<ChecklistPick["readiness"], { label: string; cls: string }> = {
 	full: { label: "Voice", cls: "border-ok/50 text-ok" },
@@ -17,8 +18,8 @@ const OPEN_STATES = new Set<RunView["state"]>(["active", "paused", "pending"]);
  * Phone home: the one open run on this station as a big Continue button, then large icon tiles
  * for every checklist. Station chips only when the phone was not locked to a station by QR.
  */
-export function HomePage({ onOpenRun }: { onOpenRun: (runId: string) => void }) {
-	const { me, stations, setStation } = useApp();
+export function HomePage({ onOpenRun, mobile = true }: { onOpenRun: (runId: string) => void; mobile?: boolean }) {
+	const { me, stations, boot } = useApp();
 	const v = useVoice();
 	const [picks, setPicks] = useState<ChecklistPick[] | undefined>();
 	const [runs, setRuns] = useState<RunView[]>([]);
@@ -33,7 +34,7 @@ export function HomePage({ onOpenRun }: { onOpenRun: (runId: string) => void }) 
 			setRuns(r);
 		} catch (e) {
 			const a = toApiError(e);
-			setErr(a.code === "NO_CREDENTIAL" ? "No Maranics token for this session — sign out and in again." : a.message);
+			setErr(credentialErrorText(a));
 			setPicks([]);
 		}
 	}, []);
@@ -64,17 +65,43 @@ export function HomePage({ onOpenRun }: { onOpenRun: (runId: string) => void }) 
 	};
 
 	const open = runs.find((r) => r.stationId === me.stationId && OPEN_STATES.has(r.state));
-	const tiles = [...(picks?.filter((p) => p.source === "instance") ?? []), ...(picks?.filter((p) => p.source === "template") ?? [])].filter((p) => !open || p.activeRunId !== open.runId);
+	const tiles = [...(picks?.filter((p) => p.source === "instance") ?? []), ...(picks?.filter((p) => p.source === "template") ?? [])].filter((p) => p.startable !== false && (!open || p.activeRunId !== open.runId));
 	const locked = me.stationSource === "join";
+	const canScan = !!window.FlowVoiceAndroid?.scanStation;
+	const scan = () => window.FlowVoiceAndroid?.scanStation?.();
 	const station = stations.find((s) => s.stationId === me.stationId);
+
+	// every client takes its station from the station link / QR code, never from a control on screen
+	if (!locked || !me.stationId) {
+		return (
+			<div className="flex min-h-[70vh] flex-col items-center justify-center gap-5 text-center">
+				<Icon name="qr" size={72} strokeWidth={1.4} />
+				<h1 className="text-2xl font-semibold tracking-wide uppercase">{canScan ? "Scan the station QR code" : "Open the station link"}</h1>
+				<p className="max-w-sm text-sm text-fg-muted">{canScan ? "This device works on one station, set by the QR poster at that station." : "This client works on one station. Open that station's own link (Admin → Stations), or scan its QR code with a phone or tablet."}</p>
+				{canScan && (
+					<button type="button" className="start-btn max-w-sm justify-center text-lg font-semibold tracking-wide uppercase" onClick={scan}>
+						Scan QR code
+					</button>
+				)}
+				<p className="text-[11px] text-fg-faint">{versionLine(boot.hubVersion)}</p>
+			</div>
+		);
+	}
 
 	return (
 		<div className="space-y-4">
 			<div className="flex items-center justify-between gap-2">
 				<VoiceBar compact />
-				<button type="button" className="btn btn-sm btn-ghost" onClick={() => void load()} aria-label="Refresh">
-					Refresh
-				</button>
+				<div className="flex items-center gap-1">
+					{canScan && (
+						<button type="button" className="btn btn-sm btn-ghost" onClick={scan}>
+							<Icon name="qr" size={14} /> Change station
+						</button>
+					)}
+					<button type="button" className="btn btn-sm btn-ghost" onClick={() => void load()} aria-label="Refresh">
+						Refresh
+					</button>
+				</div>
 			</div>
 			{(v.transcript || v.error) && (
 				<p className="text-sm text-fg-muted">
@@ -83,17 +110,13 @@ export function HomePage({ onOpenRun }: { onOpenRun: (runId: string) => void }) 
 				</p>
 			)}
 
-			{!locked && stations.length > 1 && (
-				<div className="flex flex-wrap gap-2">
-					{stations.map((s) => (
-						<button key={s.stationId} type="button" className={`btn btn-sm ${me.stationId === s.stationId ? "btn-primary" : ""}`} onClick={() => void setStation(s.stationId).then(load)}>
-							{s.location ? `${s.location} · ${s.name}` : s.name}
-						</button>
-					))}
-				</div>
+			{(me.name || me.locationName) && (
+				<p className="text-xs text-fg-faint">
+					{me.name}
+					{me.locationName ? ` · ${me.locationName}` : ""}
+					{me.positionName ? ` · ${me.positionName}` : ""}
+				</p>
 			)}
-			{!stations.length && <p className="text-sm text-warn">No station configured on this hub. Set one up in the browser.</p>}
-			{stations.length > 0 && !me.stationId && <p className="text-sm text-warn">Pick a station to start a checklist.</p>}
 
 			{open && (
 				<button type="button" className="btn btn-primary btn-hero" onClick={() => onOpenRun(open.runId)}>
@@ -115,31 +138,32 @@ export function HomePage({ onOpenRun }: { onOpenRun: (runId: string) => void }) 
 			)}
 
 			{err && <p className="text-sm text-danger">{err}</p>}
+			{open && tiles.length > 0 && <p className="text-xs text-fg-muted">One checklist at a time on this station. Finish or discard “{open.templateName}” to start another.</p>}
 			{picks === undefined ? (
 				<p className="text-sm text-fg-muted">Loading checklists…</p>
 			) : (
-				<div className="grid grid-cols-2 gap-3">
+				<div className="grid grid-cols-1 gap-3 sm:grid-cols-2 lg:grid-cols-3">
 					{tiles.map((p) => {
 						const key = p.instanceId ?? p.templateId;
-						const r = READINESS[p.readiness];
-						const disabled = busy === key || p.readiness === "none";
+						const disabled = busy === key || p.readiness === "none" || !!open;
 						return (
-							<button key={key} type="button" className="tile" disabled={disabled} onClick={() => void start(p)}>
-								<span className="flex h-16 w-16 items-center justify-center rounded-2xl bg-accent/10 text-accent">
-									<Icon name={iconFor(p.templateName)} size={36} strokeWidth={1.6} />
+							<button key={key} type="button" className="start-btn" disabled={disabled} onClick={() => void start(p)}>
+								<span className="min-w-0 flex-1 text-left">
+									<span className="line-clamp-2 block text-lg leading-tight font-semibold tracking-wide uppercase">{p.templateName}</span>
+									<span className="mt-1 block text-xs tracking-wide text-fg-muted uppercase">
+										{busy === key ? "Starting…" : p.source === "template" ? "Start" : STATE[p.state]}
+										{p.progress ? ` · ${p.progress.done}/${p.progress.total}` : ""}
+										{p.readiness !== "full" ? ` · ${READINESS[p.readiness].label}` : ""}
+									</span>
 								</span>
-								<span className="line-clamp-2 text-base leading-snug font-medium">{p.templateName}</span>
-								<span className="text-xs text-fg-muted">
-									{busy === key ? "Starting…" : p.source === "template" ? "New" : STATE[p.state]}
-									{p.progress ? ` · ${p.progress.done}/${p.progress.total}` : ""}
-								</span>
-								{p.readiness !== "full" && <span className={`pill ${r.cls}`}>{r.label}</span>}
+								<Icon name="chevron" size={24} className="shrink-0 opacity-60" />
 							</button>
 						);
 					})}
-					{!tiles.length && !open && <p className="col-span-2 text-sm text-fg-muted">Nothing to run{station ? ` on ${station.name}` : ""}.</p>}
+					{!tiles.length && !open && <p className="col-span-full text-sm text-fg-muted">Nothing to run{station ? ` on ${station.name}` : ""}.</p>}
 				</div>
 			)}
+			<p className="mt-6 text-center text-[11px] text-fg-faint">{versionLine(boot.hubVersion)}</p>
 		</div>
 	);
 }

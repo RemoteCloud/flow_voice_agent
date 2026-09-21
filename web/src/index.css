@@ -6,58 +6,58 @@
 	color-scheme: light;
 	--c-bg: #ffffff;
 	--c-panel: #ffffff;
-	--c-panel-2: #f5f6f8;
-	--c-line: #e8ecf1;
-	--c-line-strong: #d3dae4;
-	--c-fg: #0f172a;
-	--c-fg-muted: #526078;
-	--c-fg-faint: #8391a7;
-	--c-accent: #1f6fe5;
+	--c-panel-2: #f4f4f4;
+	--c-line: #e6e6e6;
+	--c-line-strong: #c9c9c9;
+	--c-fg: #0a0a0a;
+	--c-fg-muted: #555555;
+	--c-fg-faint: #8a8a8a;
+	--c-accent: #0a0a0a;
 	--c-accent-fg: #ffffff;
-	--c-ok: #158a4b;
-	--c-warn: #b2620a;
-	--c-danger: #d13438;
-	--c-info: #0b6fa4;
-	--c-key: #eaeff6;
-	--c-shadow: 0 1px 2px rgb(15 23 42 / 0.05), 0 4px 16px rgb(15 23 42 / 0.05);
+	--c-ok: #0b7a3b;
+	--c-warn: #a65c00;
+	--c-danger: #c62828;
+	--c-info: #00708f;
+	--c-key: #ededed;
+	--c-shadow: none;
 }
 :root[data-theme="dark"] {
 	color-scheme: dark;
-	--c-bg: #0a0f19;
-	--c-panel: #111826;
-	--c-panel-2: #172034;
-	--c-line: #24304a;
-	--c-line-strong: #344565;
-	--c-fg: #e6ecf7;
-	--c-fg-muted: #98a8c0;
-	--c-fg-faint: #67768f;
-	--c-accent: #5fb0ff;
-	--c-accent-fg: #06111f;
-	--c-ok: #3ddc97;
-	--c-warn: #fbbf24;
-	--c-danger: #ff6b6b;
-	--c-info: #7dd3fc;
-	--c-key: #1b2436;
+	--c-bg: #000000;
+	--c-panel: #0b0b0b;
+	--c-panel-2: #161616;
+	--c-line: #242424;
+	--c-line-strong: #3a3a3a;
+	--c-fg: #f2f2f2;
+	--c-fg-muted: #a3a3a3;
+	--c-fg-faint: #6f6f6f;
+	--c-accent: #f2f2f2;
+	--c-accent-fg: #000000;
+	--c-ok: #2fe06d;
+	--c-warn: #ffb000;
+	--c-danger: #ff5252;
+	--c-info: #27e0ff;
+	--c-key: #1c1c1c;
 	--c-shadow: none;
 }
 @media (prefers-color-scheme: dark) {
 	:root:not([data-theme="light"]) {
 		color-scheme: dark;
-		--c-bg: #0a0f19;
-		--c-panel: #111826;
-		--c-panel-2: #172034;
-		--c-line: #24304a;
-		--c-line-strong: #344565;
-		--c-fg: #e6ecf7;
-		--c-fg-muted: #98a8c0;
-		--c-fg-faint: #67768f;
-		--c-accent: #5fb0ff;
-		--c-accent-fg: #06111f;
-		--c-ok: #3ddc97;
-		--c-warn: #fbbf24;
-		--c-danger: #ff6b6b;
-		--c-info: #7dd3fc;
-		--c-key: #1b2436;
+		--c-bg: #000000;
+		--c-panel: #0b0b0b;
+		--c-panel-2: #161616;
+		--c-line: #242424;
+		--c-line-strong: #3a3a3a;
+		--c-fg: #f2f2f2;
+		--c-fg-muted: #a3a3a3;
+		--c-fg-faint: #6f6f6f;
+		--c-accent: #f2f2f2;
+		--c-accent-fg: #000000;
+		--c-ok: #2fe06d;
+		--c-warn: #ffb000;
+		--c-danger: #ff5252;
+		--c-info: #27e0ff;
+		--c-key: #1c1c1c;
 		--c-shadow: none;
 	}
 }
@@ -86,11 +86,16 @@
 	html {
 		font-variant-numeric: tabular-nums;
 		-webkit-tap-highlight-color: transparent;
+		overflow-x: clip; /* the WebView scrolls the root element: clip there, or a wide control drags the page sideways */
 	}
 	body {
 		@apply bg-bg text-fg antialiased;
 		padding-bottom: env(safe-area-inset-bottom);
 		overflow-x: clip; /* never a sideways scroll on a phone */
+		max-width: 100vw;
+	}
+	select.input {
+		max-width: 100%;
 	}
 	:focus-visible {
 		@apply outline-2 outline-offset-2 outline-accent;
@@ -174,7 +179,53 @@
 		@apply flex w-full items-center gap-4 rounded-2xl px-4 py-4 text-base;
 		min-height: 5.5rem;
 	}
-	/* run item list */
+	/* home: one big button per startable checklist */
+	.start-btn {
+		@apply flex w-full items-center gap-3 rounded-xl border-2 border-fg bg-panel px-5 py-5 text-fg transition-colors select-none active:bg-panel-2 disabled:opacity-40;
+		min-height: 6rem;
+	}
+	/* run item list, laid out like an ECAM page: ITEM ......... VALUE, monospace capitals, colour carries the state
+	   (cyan = to do, green = done, amber = needs attention, boxed = now) */
+	.ecam {
+		@apply font-mono text-[0.95rem] leading-snug tracking-wide uppercase sm:text-base;
+	}
+	.ecam-title {
+		@apply sticky top-0 z-[1] flex items-baseline justify-between gap-3 bg-panel px-3 pt-3 pb-1 font-bold text-fg;
+	}
+	.ecam-title > span:first-child {
+		@apply underline underline-offset-4;
+	}
+	.ecam-row {
+		@apply flex w-full items-end gap-2 border border-transparent px-3 py-1.5 text-left font-mono tracking-wide uppercase;
+	}
+	.ecam-name {
+		@apply max-w-[72%] min-w-0 break-words;
+	}
+	.ecam-dots {
+		@apply min-w-4 flex-1 overflow-hidden whitespace-nowrap opacity-60 select-none;
+	}
+	.ecam-dots::after {
+		content: " . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . .";
+	}
+	.ecam-value {
+		@apply max-w-[45%] shrink-0 text-right break-words;
+	}
+	.ecam-todo {
+		@apply text-info;
+	}
+	.ecam-done {
+		@apply text-ok;
+	}
+	.ecam-attn {
+		@apply text-warn;
+	}
+	.ecam-info {
+		@apply text-fg-muted;
+	}
+	.ecam-now {
+		@apply border-info font-bold text-info;
+	}
+	/* (legacy) run item list */
 	.row-current {
 		@apply border-l-4 border-accent bg-accent/10;
 	}

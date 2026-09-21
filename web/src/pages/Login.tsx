@@ -1,6 +1,7 @@
-import { useState } from "react";
+import { useEffect, useRef, useState } from "react";
 import type { AuthProviderView, MeResponse } from "../../../server/api.js";
 import { api, AUTH_LOGIN_URL, toApiError, type ApiClientError } from "../api.js";
+import { versionLine } from "../build.js";
 import { navigate } from "../router.js";
 
 const AUTH_ERROR_TEXT: Record<string, string> = {
@@ -21,6 +22,7 @@ export function LoginPage(p: { provider?: AuthProviderView; hubVersion?: string;
 	const [showQr, setShowQr] = useState(false);
 	const oidc = p.provider?.kind === "oidc" && p.provider.configured;
 	const dev = !!p.provider?.devUserName;
+	const auto = !!p.provider?.auto;
 
 	const devLogin = async () => {
 		setBusy(true);
@@ -33,6 +35,15 @@ export function LoginPage(p: { provider?: AuthProviderView; hubVersion?: string;
 			setBusy(false);
 		}
 	};
+
+	// a token tenant has nothing to type: sign in straight away (once)
+	const tried = useRef(false);
+	useEffect(() => {
+		if (!auto || tried.current) return;
+		tried.current = true;
+		void devLogin();
+		// eslint-disable-next-line react-hooks/exhaustive-deps
+	}, [auto]);
 
 	return (
 		<main className="flex min-h-screen items-center justify-center px-4 py-10">
@@ -78,7 +89,7 @@ export function LoginPage(p: { provider?: AuthProviderView; hubVersion?: string;
 				<div className="card">
 					<div className="card-body space-y-3">
 						{oidc ? (
-							<a className="btn btn-primary btn-lg w-full" href={AUTH_LOGIN_URL}>
+							<a className="btn btn-primary btn-lg w-full" href={`${AUTH_LOGIN_URL}?returnTo=${encodeURIComponent(location.pathname)}`}>
 								Sign in with Maranics
 							</a>
 						) : (
@@ -106,7 +117,7 @@ export function LoginPage(p: { provider?: AuthProviderView; hubVersion?: string;
 							</button>
 						</>
 					)}
-					{p.hubVersion ? ` · hub ${p.hubVersion}` : ""}
+					{` · ${versionLine(p.hubVersion)}`}
 				</p>
 				{showQr && p.hubUrl && <HubQr hubUrl={p.hubUrl} />}
 			</div>

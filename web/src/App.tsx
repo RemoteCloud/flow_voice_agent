@@ -7,7 +7,6 @@ import { AdminPage } from "./pages/Admin.js";
 import { EnrollPage } from "./pages/Enroll.js";
 import { HomePage } from "./pages/Home.js";
 import { LoginPage } from "./pages/Login.js";
-import { PickerPage } from "./pages/Picker.js";
 import { RunPage } from "./pages/Run.js";
 import { isMobileClient } from "./platform.js";
 import { navigate, parseRoute, useRoute } from "./router.js";
@@ -150,7 +149,7 @@ export function App() {
 		<AppContext.Provider value={ctx}>
 			<VoiceProvider>
 				<Shell route={route} mobile={mobile}>
-					{route.page === "run" && route.id ? <RunPage runId={route.id} mobile={mobile} /> : route.page === "admin" && !mobile ? <AdminPage /> : mobile ? <HomePage onOpenRun={(id) => navigate({ page: "run", id })} /> : <PickerPage onOpenRun={(id) => navigate({ page: "run", id })} />}
+					{route.page === "run" && route.id ? <RunPage runId={route.id} mobile={mobile} /> : route.page === "admin" && !mobile ? <AdminPage /> : <HomePage mobile={mobile} onOpenRun={(id) => navigate({ page: "run", id })} />}
 				</Shell>
 			</VoiceProvider>
 		</AppContext.Provider>

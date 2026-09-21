@@ -6,21 +6,25 @@ import { readFileSync, existsSync } from "node:fs";
 import { createHmac, timingSafeEqual } from "node:crypto";
 import { Hono, type Context } from "hono";
 import QRCode from "qrcode";
-import { getCookie } from "hono/cookie";
-import type { ApiError, EnrollPollResponse, EnrollRequest, EnrollResponse, HealthResponse, JoinRequest, JoinResponse, JoinTokenResponse, LogoutResponse, MeResponse, SessionProbeResponse, StationView, StatusResponse } from "../api.js";
+import { deleteCookie, getCookie, setCookie } from "hono/cookie";
+import type { ApiError, EnrollPollResponse, EnrollRequest, EnrollResponse, HealthResponse, JoinRequest, JoinResponse, JoinTokenResponse, LibraryView, LogoutResponse, MeResponse, SessionProbeResponse, StationView, StatusResponse } from "../api.js";
 import { isJoinToken } from "../protocol.js";
 import type { HubEnv } from "../env.js";
 import type { Logger } from "../core/log.js";
 import type { SttAdapter } from "../speech/stt.js";
+import { MAX_TTS_CHARS, type HttpTts } from "../speech/tts.js";
+import { ANSWER_MATCH, type AnswerMatch } from "../voice/interpret.js";
 import { hashDeckToken, newDeckId, newDeckToken, newJoinToken, tokenHint, verifyDeckToken } from "../store/crypto.js";
 import type { Credentials } from "../store/credentials.js";
-import type { Device, HubSession, HubStore, PendingEnrollment, PromptRecord, Station, StationJoin, VoiceProfile, EventMapping } from "../store/HubStore.js";
-import { DISCARD_REASONS, EngineError, type RunEngine } from "../voice/RunEngine.js";
+import type { Device, HubData, HubSession, HubStore, PendingEnrollment, PromptRecord, Station, StationJoin, StationTemplateRule, VoiceProfile, EventMapping } from "../store/HubStore.js";
+import { deriveKey, openToken, sealToken } from "../store/crypto.js";
+import { EngineError, type RunEngine } from "../voice/RunEngine.js";
+import { SpeechModels, VOSK_MODELS } from "../speech/models.js";
 import type { Outbox } from "../voice/Outbox.js";
 import type { Gateway } from "../ws/Gateway.js";
 import { OidcAuth } from "./auth.js";
 import { JOIN_LIMITS, LOGIN_LIMITS, RateLimiter } from "./rateLimit.js";
-import { clearJoinCookie, clearLoginCookie, clearSession, JOIN_MAX_AGE_SEC, LOGIN_COOKIE, newSession, readJoinCookie, readLoginCookie, readSession, requireSession, sidHash, validSession, writeJoinCookie, writeLoginCookie, writeSession, type SessionEnv } from "./session.js";
+import { ROLE_HEADER, clearJoinCookie, clearLoginCookie, clearSession, JOIN_MAX_AGE_SEC, LOGIN_COOKIE, newSession, readJoinCookie, readLoginCookie, readSession, requireSession, sidHash, validSession, writeJoinCookie, writeLoginCookie, writeSession, type SessionEnv } from "./session.js";
 import { resolveStatic } from "./static.js";
 
 export interface AppDeps {
@@ -32,6 +36,9 @@ export interface AppDeps {
 	outbox: Outbox;
 	gateway: Gateway;
 	stt: SttAdapter;
+	/** Backup recogniser for windows the device could not transcribe (STT_BACKUP_ENDPOINT); absent → POST /api/stt answers 404. */
+	sttBackup?: SttAdapter;
+	tts?: HttpTts;
 	log: Logger;
 	version: string;
 	now(): number;
@@ -57,6 +64,21 @@ function hmacOk(secret: string, raw: string, header: string | undefined): boolea
 	return timingSafeEqual(Buffer.from(given, "utf8"), Buffer.from(expected, "utf8"));
 }
 
+/** Station → per-template rules: only known access values and languages survive; an empty rule is dropped. */
+function templateRules(raw: unknown): Record<string, StationTemplateRule> | undefined {
+	if (!raw || typeof raw !== "object" || Array.isArray(raw)) return undefined;
+	const out: Record<string, StationTemplateRule> = {};
+	for (const [id, v] of Object.entries(raw as Record<string, unknown>)) {
+		if (!id.trim() || !v || typeof v !== "object") continue;
+		const r = v as { access?: unknown; language?: unknown };
+		const rule: StationTemplateRule = {};
+		if (r.access === "start" || r.access === "use" || r.access === "off") rule.access = r.access;
+		if (typeof r.language === "string" && /^(en|sv|no|fr|de)$/.test(r.language)) rule.language = r.language;
+		if (rule.access || rule.language) out[id] = rule;
+	}
+	return Object.keys(out).length ? out : undefined;
+}
+
 export function createApp(deps: AppDeps): Hono {
 	const { env, store, auth, engine, log } = deps;
 	const secure = !!env.publicUrl && env.publicUrl.startsWith("https://");
@@ -69,7 +91,11 @@ export function createApp(deps: AppDeps): Hono {
 		try {
 			return await fn();
 		} catch (err) {
-			if (err instanceof EngineError) return fail(c, err.status as 400, err.code, err.message);
+			if (err instanceof EngineError) {
+				// refusals are part of normal use, but they must be findable when someone says "it would not start"
+				log.warn(`${c.req.method} ${c.req.path} refused: ${err.status} ${err.code}: ${err.message}`);
+				return fail(c, err.status as 400, err.code, err.message);
+			}
 			log.error(`${c.req.method} ${c.req.path}: ${err instanceof Error ? err.stack ?? err.message : String(err)}`);
 			return fail(c, 500, "INTERNAL", err instanceof Error ? err.message : String(err));
 		}
@@ -91,7 +117,7 @@ export function createApp(deps: AppDeps): Hono {
 
 	const meOf = (row: HubSession): MeResponse => {
 		const u = store.get().users.find((x) => x.sub === row.sub);
-		return { sub: row.sub, name: u?.name, email: u?.email, positionName: u?.positionName, isAdmin: u?.isAdmin ?? false, stationId: row.stationId, stationSource: row.stationSource, sessionId: row.id, credential: row.credential ? row.credential.state : row.sub.startsWith("dev:") ? "ok" : "none" };
+		return { sub: row.sub, name: u?.name, email: u?.email, positionName: u?.positionName, locationName: u?.locationName ?? u?.locationId, isAdmin: u?.isAdmin ?? false, stationId: row.stationId, stationSource: row.stationSource, sessionId: row.id, credential: row.credential ? row.credential.state : row.sub.startsWith("dev:") ? "ok" : "none" };
 	};
 
 	/** Bind a session to a station (store row + the live row object). */
@@ -182,7 +208,7 @@ export function createApp(deps: AppDeps): Hono {
 	// ----- auth
 	api.get("/auth/session", async (c) => {
 		const row = await sessionFromRequest(c);
-		const res: SessionProbeResponse = { authenticated: !!row, me: row ? meOf(row) : undefined, provider: auth.providerView(), hubVersion: deps.version, vesselId: env.vesselId, hubUrl: hubUrlOf(c), stations: store.get().stations, speech: { stt: env.speech.sttMode, tts: env.speech.ttsMode }, maranicsConfigured: !!env.maranics };
+		const res: SessionProbeResponse = { authenticated: !!row, me: row ? meOf(row) : undefined, provider: auth.providerView(), hubVersion: deps.version, vesselId: env.vesselId, hubUrl: hubUrlOf(c), stations: store.get().stations, speech: { stt: env.speech.sttMode, tts: env.speech.ttsMode, sttBackup: !!deps.sttBackup }, maranicsConfigured: !!env.maranics };
 		return c.json(res);
 	});
 
@@ -191,7 +217,11 @@ export function createApp(deps: AppDeps): Hono {
 		const lim = loginLimiter.check(ip);
 		if (!lim.ok) return c.redirect(`/?auth_error=rate_limited`);
 		const returnTo = str(c.req.query("returnTo"));
-		const start = await auth.startLogin(returnTo);
+		// after a sign-out the Maranics session is often still alive: ask for its sign-in page again, so the person
+		// can sign in as someone else or pick another location instead of landing straight back where they were
+		const fresh = getCookie(c, "fv_fresh") === "1";
+		if (fresh) deleteCookie(c, "fv_fresh", { path: "/api/auth" });
+		const start = await auth.startLogin(returnTo, fresh);
 		if (!start.ok) return c.redirect(`/?auth_error=${start.code}`);
 		await writeLoginCookie(c, start.cookie, env.sessionSecret, secure, env.oidc?.flowMaxAgeSec ?? 600);
 		return c.redirect(start.redirectUrl);
@@ -216,7 +246,9 @@ export function createApp(deps: AppDeps): Hono {
 
 	api.post("/auth/dev", async (c) => {
 		if (!env.devUser) return fail(c, 404, "NOT_FOUND", "dev sign-in is not enabled");
-		const out = await auth.devLogin(clientIp(c, env.trustProxy));
+		// inside a token tenant the dispatcher says how the caller got in (main-hub admin, or a station link)
+		const role = env.tokenTenant ? (c.req.header(ROLE_HEADER) === "admin" ? "admin" : "client") : undefined;
+		const out = await auth.devLogin(clientIp(c, env.trustProxy), role);
 		if (!out.ok) return fail(c, 500, out.code, out.detail);
 		await writeSession(c, newSession({ sid: out.sid, sub: out.user.sub, tenant: env.maranics?.tenant ?? "", epoch: store.get().sessionEpoch, nowMs: deps.now() }), env.sessionSecret, secure);
 		await applyJoinCookie(c, out.session);
@@ -252,9 +284,10 @@ export function createApp(deps: AppDeps): Hono {
 	api.post("/auth/logout", async (c) => {
 		const row = await sessionFromRequest(c);
 		const hint = row ? deps.credentials.idToken(row) : undefined;
-		const res = await auth.logout(row, hint);
+		const res = await auth.logout(row, hint, row ? deps.credentials.tokensOf(row) : undefined);
 		if (row) deps.gateway.dropSession(row.id);
 		clearSession(c, secure);
+		if (row) setCookie(c, "fv_fresh", "1", { path: "/api/auth", httpOnly: true, secure, sameSite: "Lax", maxAge: 3600 });
 		return c.json<LogoutResponse>(res);
 	});
 
@@ -351,6 +384,7 @@ export function createApp(deps: AppDeps): Hono {
 		}),
 	);
 	api.post("/runs/:id/repeat", (c) => handle(c, async () => c.json(await engine.repeat(c.req.param("id")))));
+	api.post("/runs/:id/proceed", (c) => handle(c, async () => c.json(await engine.proceed(c.req.param("id"), "screen"))));
 	api.post("/runs/:id/pause", (c) => handle(c, async () => c.json(await engine.pause(c.req.param("id")))));
 	api.post("/runs/:id/resume", (c) => handle(c, async () => c.json(await engine.resume(c.req.param("id"), c.get("sessionRow")))));
 	api.post("/runs/:id/complete", (c) => handle(c, async () => c.json(await engine.complete(c.req.param("id"), c.get("sessionRow")))));
@@ -363,11 +397,18 @@ export function createApp(deps: AppDeps): Hono {
 		}),
 	);
 	api.post("/runs/:id/abandon", (c) => handle(c, async () => c.json(await engine.abandon(c.req.param("id"), "stopped on screen"))));
-	api.get("/templates/:id/discard-reasons", (c) => c.json({ reasons: DISCARD_REASONS }));
+	// template ids may contain "/" (NauticAI/ArrivalChecklist): query, not path
+	api.get("/template-items", (c) => handle(c, async () => c.json(await engine.templateItems(c.get("sessionRow"), c.req.query("templateId") ?? ""))));
+	api.get("/templates/:id/discard-reasons", (c) =>
+		handle(c, async () => {
+			const id = c.req.param("id");
+			return c.json({ reasons: await engine.discardReasons(c.get("sessionRow"), id === "any" ? undefined : id) });
+		}),
+	);
 	api.post("/interpret", async (c) => {
-		const body = (await c.req.json().catch(() => ({}))) as { type?: string; text?: string; options?: { title: string; value: string }[] };
+		const body = (await c.req.json().catch(() => ({}))) as { type?: string; text?: string; options?: { title: string; value: string }[]; answers?: unknown; answersOnly?: unknown; answerMatch?: unknown };
 		if (!str(body.type) || !str(body.text)) return fail(c, 400, "BAD_REQUEST", "type and text are required");
-		return c.json(engine.preview(body.type as string, body.text as string, body.options));
+		return c.json(engine.preview(body.type as string, body.text as string, body.options, Array.isArray(body.answers) ? body.answers.filter((a): a is string => typeof a === "string") : undefined, body.answersOnly === true, typeof body.answerMatch === "string" && body.answerMatch in ANSWER_MATCH ? ANSWER_MATCH[body.answerMatch as AnswerMatch] : undefined));
 	});
 
 	// ----- stations / devices / status (admin screens; every signed-in user can read, admins write)
@@ -376,14 +417,41 @@ export function createApp(deps: AppDeps): Hono {
 		return u?.isAdmin ? undefined : fail(c, 403, "FORBIDDEN", "admin only");
 	};
 
-	const stationViews = (): StationView[] => {
+	const joinKey = deriveKey(env.secret);
+	/** Every station has its own client link; the token is kept sealed so Admin can show it again. */
+	const mintJoin = (d: HubData, stationId: string, sub: string | undefined): string => {
+		const token = newJoinToken();
+		const createdAt = new Date(deps.now()).toISOString();
+		d.stationJoins[stationId] = { stationId, tokenHash: hashDeckToken(token), tokenHint: tokenHint(token), sealed: sealToken(token, joinKey), createdAt, createdBy: sub };
+		d.audit.push({ at: createdAt, kind: "station.join.rotated", stationId, sub });
+		return token;
+	};
+	const ensureJoins = async (sub?: string): Promise<void> => {
+		const d0 = store.get();
+		if (d0.stations.every((s) => d0.stationJoins[s.stationId])) return;
+		await store.update((d) => {
+			for (const s of d.stations) if (!d.stationJoins[s.stationId]) mintJoin(d, s.stationId, sub);
+		});
+	};
+	const isAdminCtx = (c: Context<SessionEnv>): boolean => !!store.get().users.find((x) => x.sub === c.get("sessionRow").sub)?.isAdmin;
+
+	const stationViews = (withLinks = false): StationView[] => {
 		const eps = deps.gateway.stations();
 		return store.get().stations.map((s) => {
 			const ep = eps.find((e) => e.stationId === s.stationId);
 			const run = engine.activeRun(s.stationId);
 			const v: StationView = { ...s };
 			const j = store.get().stationJoins[s.stationId];
-			if (j) v.join = { tokenHint: j.tokenHint, createdAt: j.createdAt, createdBy: j.createdBy };
+			if (j) {
+				v.join = { tokenHint: j.tokenHint, createdAt: j.createdAt, createdBy: j.createdBy };
+				if (withLinks && j.sealed) {
+					try {
+						v.join.path = `/client#/join/${openToken(j.sealed, joinKey)}`;
+					} catch {
+						/* sealed with another HUB_SECRET: rotate to get a link again */
+					}
+				}
+			}
 			if (ep) v.endpoint = { endpointId: ep.endpointId, user: ep.user, observers: ep.observers, aec: ep.caps.aec, pushToTalk: ep.caps.pushToTalk, localStt: ep.caps.localStt, localTts: ep.caps.localTts };
 			if (run) {
 				const view = engine.toView(run);
@@ -393,17 +461,21 @@ export function createApp(deps: AppDeps): Hono {
 		});
 	};
 
-	api.get("/stations", (c) => c.json(stationViews()));
+	api.get("/stations", async (c) => {
+		if (isAdminCtx(c)) await ensureJoins(c.get("sessionRow").sub);
+		return c.json(stationViews(isAdminCtx(c)));
+	});
 	api.put("/stations", async (c) => {
 		const denied = requireAdmin(c);
 		if (denied) return denied;
 		const body = (await c.req.json().catch(() => undefined)) as Station[] | undefined;
 		if (!Array.isArray(body) || !body.every((s) => isObj(s) && str(s.stationId) && str(s.name))) return fail(c, 400, "BAD_REQUEST", "array of stations expected");
 		await store.update((d) => {
-			d.stations = body.map((s) => ({ stationId: s.stationId, name: s.name, location: str(s.location), defaultProfile: s.defaultProfile ?? null, language: s.language || "en", audioPolicy: s.audioPolicy === "open" ? "open" : "ptt", autoStartAllowed: !!s.autoStartAllowed, verbosity: s.verbosity ?? "full", voiceActions: s.voiceActions !== false }));
+			d.stations = body.map((s) => ({ stationId: s.stationId, name: s.name, location: str(s.location), defaultProfile: s.defaultProfile ?? null, language: s.language || "en", audioPolicy: s.audioPolicy === "open" ? "open" : "ptt", autoStartAllowed: !!s.autoStartAllowed, verbosity: s.verbosity ?? "full", voiceActions: s.voiceActions !== false, holdToAnswer: s.holdToAnswer === true, templates: templateRules(s.templates) }));
 			for (const id of Object.keys(d.stationJoins)) if (!d.stations.some((s) => s.stationId === id)) delete d.stationJoins[id];
 		});
-		return c.json(stationViews());
+		await ensureJoins(c.get("sessionRow").sub);
+		return c.json(stationViews(true));
 	});
 
 	// ----- station QR join tokens (admin). The token is returned once; only its hash is kept.
@@ -412,16 +484,15 @@ export function createApp(deps: AppDeps): Hono {
 		if (denied) return denied;
 		const id = c.req.param("id");
 		if (!store.get().stations.some((s) => s.stationId === id)) return fail(c, 404, "STATION_NOT_FOUND", "unknown station");
-		const token = newJoinToken();
 		const sub = c.get("sessionRow").sub;
-		const createdAt = new Date(deps.now()).toISOString();
-		const join: StationJoin = { stationId: id, tokenHash: hashDeckToken(token), tokenHint: tokenHint(token), createdAt, createdBy: sub };
+		let token = "";
 		await store.update((d) => {
-			d.stationJoins[id] = join;
-			d.audit.push({ at: createdAt, kind: "station.join.rotated", stationId: id, sub });
+			token = mintJoin(d, id, sub);
 		});
-		log.info(`station ${id} QR join token rotated by ${sub} (…${join.tokenHint})`);
-		const path = `/?mobile=1#/join/${token}`;
+		const join = store.get().stationJoins[id];
+		const createdAt = join.createdAt;
+		log.info(`station ${id} link rotated by ${sub} (…${join.tokenHint})`);
+		const path = `/client#/join/${token}`;
 		const base = env.publicUrl ? env.publicUrl.replace(/\/$/, "") : new URL(c.req.url).origin;
 		return c.json<JoinTokenResponse>({ stationId: id, token, tokenHint: join.tokenHint, createdAt, path, url: base + path }, 201);
 	});
@@ -441,18 +512,19 @@ export function createApp(deps: AppDeps): Hono {
 	});
 
 	api.get("/status", async (c) => {
+		if (isAdminCtx(c)) await ensureJoins(c.get("sessionRow").sub);
 		const d = store.get();
 		const res: StatusResponse = {
 			hubVersion: deps.version,
 			uptimeSec: Math.round(deps.uptime()),
-			stations: stationViews(),
+			stations: stationViews(isAdminCtx(c)),
 			runs: engine.listRuns(),
 			outbox: { queued: d.outbox.filter((o) => o.state === "queued").length, failed: d.outbox.filter((o) => o.state === "failed").length, entries: d.outbox.slice(-100) },
 			devices: d.devices,
 			pendingEnrollments: d.pendingEnrollments.filter((p) => !p.token),
 			sessions: d.sessions.map((s) => ({ id: s.id, sub: s.sub, name: d.users.find((u) => u.sub === s.sub)?.name, stationId: s.stationId, lastSeenAt: s.lastSeenAt, createdAt: s.createdAt, credential: s.credential?.state ?? (s.sub.startsWith("dev:") ? "dev" : "none") })),
 			prompts: d.prompts.slice(-50).map((p) => ({ promptId: p.promptId, stationId: p.stationId, prompt: p.item.prompt, state: p.state, createdAt: p.createdAt })),
-			speech: { stt: env.speech.sttMode, tts: env.speech.ttsMode, sttUrl: env.speech.sttUrl },
+			speech: { stt: env.speech.sttMode, tts: env.speech.ttsMode, sttUrl: env.speech.sttUrl, sttBackup: !!deps.sttBackup, sttBackupUrl: env.speech.sttBackupUrl },
 			settings: d.settings,
 		};
 		return c.json(res);
@@ -548,6 +620,137 @@ export function createApp(deps: AppDeps): Hono {
 		});
 		return c.json(store.get().mappings);
 	});
+	// ----- backup recognition: the device sends the PCM of ONE listen window it could not transcribe itself.
+	// One transcription at a time (the recogniser is CPU-bound; a queue keeps the box responsive), audio is never stored.
+	const STT_MAX_BYTES = 16000 * 2 * 8; // 8 s of 16 kHz mono 16-bit: an answer, not a conversation (the recogniser encodes 7.7 s)
+	let sttQueue: Promise<unknown> = Promise.resolve();
+	let sttWaiting = 0;
+	// Server-side voice: the sentence the hub wants spoken, as a WAV from the voice server. Signed-in clients only.
+	api.get("/tts", async (c) => {
+		if (!deps.tts) return fail(c, 404, "TTS_OFF", "this hub has no voice server (TTS_ENDPOINT)");
+		const text = (c.req.query("text") ?? "").trim();
+		const lang = c.req.query("lang") ?? "en";
+		if (!text || text.length > MAX_TTS_CHARS) return fail(c, 400, "BAD_REQUEST", `text is required, at most ${MAX_TTS_CHARS} characters`);
+		if (!deps.tts.supports(lang)) return fail(c, 404, "TTS_NO_VOICE", `no server voice for ${lang}`);
+		try {
+			const wav = await deps.tts.speak(text, lang);
+			return c.body(new Uint8Array(wav), 200, { "content-type": "audio/wav", "cache-control": "private, max-age=3600" });
+		} catch (err) {
+			log.warn(`voice server: ${err instanceof Error ? err.message : String(err)}`);
+			return fail(c, 502, "TTS_FAILED", "the voice server did not answer");
+		}
+	});
+
+	api.post("/stt", async (c) => {
+		const backup = deps.sttBackup;
+		if (!backup) return fail(c, 404, "STT_BACKUP_OFF", "no backup recogniser is configured on this hub");
+		if (sttWaiting >= 4) return fail(c, 429, "RATE_LIMITED", "the recogniser is busy");
+		const buf = Buffer.from(await c.req.arrayBuffer());
+		if (buf.length < 3200) return c.json({ text: "" }); // under 100 ms: nothing to hear
+		if (buf.length > STT_MAX_BYTES) return fail(c, 400, "BAD_REQUEST", "audio too long");
+		const language = str(c.req.query("language"))?.slice(0, 2).toLowerCase();
+		const bias = (str(c.req.query("prompt")) ?? "").split(",").map((x) => x.trim()).filter(Boolean).slice(0, 40);
+		sttWaiting++;
+		const job = sttQueue.then(() => backup.transcribe(buf, { language: language === "nb" ? "no" : language, bias }));
+		sttQueue = job.catch(() => undefined);
+		try {
+			const started = deps.now();
+			const r = await job;
+			log.info(`backup stt (${language ?? "?"}, ${(buf.length / 32000).toFixed(1)} s audio) → ${r.text ? `${r.text.split(/\s+/).length} word(s)` : "nothing"} in ${deps.now() - started} ms`);
+			return c.json({ text: r.text, confidence: r.confidence });
+		} catch (err) {
+			log.warn(`backup stt failed: ${err instanceof Error ? err.message : String(err)}`);
+			return fail(c, 502, "STT_BACKUP_FAILED", "the backup recogniser did not answer");
+		} finally {
+			sttWaiting--;
+		}
+	});
+
+	const models = new SpeechModels(env.dataDir, log);
+	// admin: fetch a model onto the hub ahead of time, so the first phone does not wait for it
+	api.post("/models/vosk/:lang", async (c) => {
+		const denied = requireAdmin(c);
+		if (denied) return denied;
+		const lang = c.req.param("lang");
+		if (!VOSK_MODELS[lang]) return fail(c, 404, "MODEL_UNKNOWN", "no such speech model");
+		void models.ensure(lang).catch((err) => log.warn(`speech model ${lang}: ${err instanceof Error ? err.message : String(err)}`));
+		return c.json(await models.list());
+	});
+	// ----- central checklist register (Admin → Checklist setup); template ids may contain "/" so they travel in the body / query
+	const libraryView = (): LibraryView => {
+		const d = store.get();
+		return { templates: Object.values(d.library ?? {}).sort((a, b) => a.name.localeCompare(b.name)).map((t) => ({ ...t, language: d.settings.templateLanguages?.[t.templateId], words: d.settings.itemAnswers?.[t.templateId] ?? {}, wordsOnly: !!d.settings.wordsOnly?.includes(t.templateId), wordMatch: d.settings.wordMatch?.[t.templateId] ?? "normal", step: d.settings.stepMode?.[t.templateId] ?? { mode: "auto" } })) };
+	};
+	api.get("/library", (c) => c.json(libraryView()));
+	api.get("/library/available", (c) => handle(c, async () => c.json({ templates: await engine.availableTemplates(c.get("sessionRow")) })));
+	api.post("/library", async (c) => {
+		const denied = requireAdmin(c);
+		if (denied) return denied;
+		const body = (await c.req.json().catch(() => ({}))) as { templateId?: unknown };
+		const id = str(body.templateId);
+		if (!id) return fail(c, 400, "BAD_REQUEST", "templateId is required");
+		return handle(c, async () => {
+			await engine.registerTemplate(c.get("sessionRow"), id);
+			return c.json(libraryView());
+		});
+	});
+	api.delete("/library", async (c) => {
+		const denied = requireAdmin(c);
+		if (denied) return denied;
+		const id = c.req.query("templateId") ?? "";
+		await store.update((d) => {
+			if (d.library) delete d.library[id];
+			for (const st of d.stations) {
+				if (st.templates) delete st.templates[id];
+				if (st.templates && !Object.keys(st.templates).length) delete st.templates;
+			}
+		});
+		return c.json(libraryView());
+	});
+	/** Language and trigger words of one registered checklist. `words`: item key → words. */
+	api.put("/library/entry", async (c) => {
+		const denied = requireAdmin(c);
+		if (denied) return denied;
+		const body = (await c.req.json().catch(() => ({}))) as { templateId?: unknown; language?: unknown; words?: unknown; wordsOnly?: unknown; wordMatch?: unknown; step?: unknown };
+		const id = str(body.templateId);
+		if (!id || !store.get().library?.[id]) return fail(c, 404, "NOT_FOUND", "checklist is not in the register");
+		await store.update((d) => {
+			if (body.step && typeof body.step === "object") {
+				const st = body.step as { mode?: unknown; delaySec?: unknown };
+				const modes = (d.settings.stepMode ??= {});
+				if (st.mode === "auto") delete modes[id];
+				else if (st.mode === "ask" || st.mode === "external") modes[id] = { mode: st.mode };
+				else if (st.mode === "timer") modes[id] = { mode: "timer", delaySec: Math.min(24 * 3600, Math.max(1, Math.round(Number(st.delaySec) || 30))) };
+			}
+			if (body.wordMatch === "exact" || body.wordMatch === "normal" || body.wordMatch === "loose") {
+				const m = (d.settings.wordMatch ??= {});
+				if (body.wordMatch === "normal") delete m[id];
+				else m[id] = body.wordMatch;
+			}
+			if (typeof body.wordsOnly === "boolean") {
+				const rest = (d.settings.wordsOnly ?? []).filter((x) => x !== id);
+				d.settings.wordsOnly = body.wordsOnly ? [...rest, id] : rest;
+			}
+			if (body.language !== undefined) {
+				const langs = (d.settings.templateLanguages ??= {});
+				if (typeof body.language === "string" && /^(en|sv|no|fr|de)$/.test(body.language)) langs[id] = body.language;
+				else delete langs[id];
+			}
+			if (isObj(body.words)) {
+				const per: Record<string, string[]> = {};
+				for (const [key, words] of Object.entries(body.words)) {
+					// "hivt+körbro" / "hivt  +  körbro" are stored the one way a combination is written: "hivt + körbro"
+					const list = Array.isArray(words) ? [...new Set(words.filter((w): w is string => typeof w === "string").map((w) => w.toLowerCase().replace(/\s*\+\s*/g, " + ").replace(/^\s*\+\s*|\s*\+\s*$/g, "").trim().slice(0, 60)).filter(Boolean))].slice(0, 12) : [];
+					if (/^[dn]:/.test(key) && list.length) per[key] = list;
+				}
+				const all = (d.settings.itemAnswers ??= {});
+				if (Object.keys(per).length) all[id] = per;
+				else delete all[id];
+			}
+		});
+		return c.json(libraryView());
+	});
+
 	api.put("/settings", async (c) => {
 		const denied = requireAdmin(c);
 		if (denied) return denied;
@@ -556,6 +759,25 @@ export function createApp(deps: AppDeps): Hono {
 			if (typeof body.readNotices === "boolean") d.settings.readNotices = body.readNotices;
 			if (body.tzMode === "utc" || body.tzMode === "local") d.settings.tzMode = body.tzMode;
 			if (body.confirmation === "required" || body.confirmation === "optional") d.settings.confirmation = body.confirmation;
+			if (isObj(body.templateLanguages)) {
+				const next: Record<string, string> = {};
+				for (const [id, lang] of Object.entries(body.templateLanguages)) if (typeof lang === "string" && /^(en|sv|no|fr|de)$/.test(lang)) next[id] = lang;
+				d.settings.templateLanguages = next;
+			}
+			if (isObj(body.itemAnswers)) {
+				const all: Record<string, Record<string, string[]>> = {};
+				for (const [tpl, items] of Object.entries(body.itemAnswers)) {
+					if (!isObj(items)) continue;
+					const per: Record<string, string[]> = {};
+					for (const [key, words] of Object.entries(items)) {
+						const list = Array.isArray(words) ? [...new Set(words.filter((w): w is string => typeof w === "string").map((w) => w.trim().slice(0, 60)).filter(Boolean))].slice(0, 12) : [];
+						if (/^[dn]:/.test(key) && list.length) per[key] = list;
+					}
+					if (Object.keys(per).length) all[tpl] = per;
+				}
+				d.settings.itemAnswers = all;
+			}
+			if (Array.isArray(body.startable)) d.settings.startable = [...new Set(body.startable.filter((x): x is string => typeof x === "string" && !!x.trim()))];
 		});
 		return c.json(store.get().settings);
 	});
@@ -785,7 +1007,63 @@ export function createApp(deps: AppDeps): Hono {
 		}),
 	);
 	v1.post("/runs/:id/next", (c) => withRun(c, async (runId) => c.json(await engine.next(runId).then(() => runItemView(runId)))));
-	v1.post("/runs/:id/skip", (c) => withRun(c, async (runId, body) => c.json(await engine.skip(runId, str(body.taskId) ?? str(body.dataId), str(body.reason) ?? "skipped by API").then(() => runItemView(runId)))));
+	// External trigger: release the item held back by the checklist's "next item" setting (mode external, or any mode).
+	// Body {item} (task id or DataId) reads that item instead of the held one.
+	v1.post("/runs/:id/proceed", (c) =>
+		withRun(c, async (runId, body) => {
+			const ref = str(body.item) ?? str(body.dataId) ?? str(body.taskId);
+			if (ref) {
+				const it = engine.resolveItem(runId, ref);
+				if (!it) return fail(c, 404, "ITEM_NOT_FOUND", "no such item (task id or DataId)");
+				await engine.jumpTo(runId, it.taskId);
+			} else await engine.proceed(runId, "external");
+			return c.json(runItemView(runId));
+		}),
+	);
+	v1.post("/stations/:id/proceed", (c) =>
+		handle(c, async () => {
+			const a = await integrationAuth(c);
+			if (!a.ok) return a.res;
+			let body: Record<string, unknown> = {};
+			if (a.raw.trim()) {
+				try {
+					body = JSON.parse(a.raw) as Record<string, unknown>;
+				} catch {
+					return fail(c, 400, "BAD_REQUEST", "body must be JSON");
+				}
+			}
+			const v = await engine.proceedStation(c.req.param("id"), str(body.item) ?? str(body.dataId) ?? str(body.taskId));
+			return v ? c.json(runItemView(v.runId)) : fail(c, 404, "NO_RUN", "no open run on that station");
+		}),
+	);
+	// External event: the moment for an item has passed. Body {item?, value?}: no item = the one asked now; value
+	// ("No", an option) is written as the signed-in user, without it the item stays open (skipped). The run goes on.
+	v1.post("/runs/:id/missed", (c) =>
+		withRun(c, async (runId, body) => {
+			const ref = str(body.item) ?? str(body.dataId) ?? str(body.taskId);
+			const it = ref ? engine.resolveItem(runId, ref) : undefined;
+			if (ref && !it) return fail(c, 404, "ITEM_NOT_FOUND", "no such item (task id or DataId)");
+			await engine.missed(runId, it?.taskId, body.value === undefined ? undefined : String(body.value));
+			return c.json(runItemView(runId));
+		}),
+	);
+	v1.post("/stations/:id/missed", (c) =>
+		handle(c, async () => {
+			const a = await integrationAuth(c);
+			if (!a.ok) return a.res;
+			let body: Record<string, unknown> = {};
+			if (a.raw.trim()) {
+				try {
+					body = JSON.parse(a.raw) as Record<string, unknown>;
+				} catch {
+					return fail(c, 400, "BAD_REQUEST", "body must be JSON");
+				}
+			}
+			const v = await engine.missedStation(c.req.param("id"), str(body.item) ?? str(body.dataId) ?? str(body.taskId), body.value === undefined ? undefined : String(body.value));
+			return v ? c.json(runItemView(v.runId)) : fail(c, 404, "NO_RUN", "no open run on that station");
+		}),
+	);
+	v1.post("/runs/:id/skip",(c) => withRun(c, async (runId, body) => c.json(await engine.skip(runId, str(body.taskId) ?? str(body.dataId), str(body.reason) ?? "skipped by API").then(() => runItemView(runId)))));
 	v1.post("/runs/:id/repeat", (c) => withRun(c, async (runId) => c.json(await engine.repeat(runId).then(() => runItemView(runId)))));
 	v1.post("/runs/:id/pause", (c) => withRun(c, async (runId) => c.json(await engine.pause(runId).then(() => runItemView(runId)))));
 	v1.post("/runs/:id/resume", (c) => withRun(c, async (runId) => c.json(await engine.resume(runId, engine.actingSession(runId)).then(() => runItemView(runId)))));
@@ -816,6 +1094,20 @@ export function createApp(deps: AppDeps): Hono {
 
 	// ============================================================ ops
 	app.get("/healthz", (c) => c.text("ok"));
+
+	// ----- speech models for the phones (public data, no sign-in: the Android agent downloads them outside the WebView)
+	app.get("/models/vosk", async (c) => c.json(await models.list()));
+	app.get("/models/vosk/:file", async (c) => {
+		const m = /^([a-z]{2})\.zip$/.exec(c.req.param("file"));
+		if (!m || !VOSK_MODELS[m[1]]) return fail(c, 404, "MODEL_UNKNOWN", "no such speech model");
+		try {
+			const { stream, bytes } = await models.open(m[1]);
+			return new Response(stream, { headers: { "content-type": "application/zip", "content-length": String(bytes), "cache-control": "public, max-age=86400" } });
+		} catch (err) {
+			log.warn(`speech model ${m[1]} unavailable: ${err instanceof Error ? err.message : String(err)}`);
+			return fail(c, 502, "MODEL_UNAVAILABLE", `the hub has no copy of this model and could not fetch it (${err instanceof Error ? err.message : String(err)})`);
+		}
+	});
 	app.get("/readyz", (c) => c.text(env.maranics ? "ready" : "degraded: Maranics not configured", env.maranics ? 200 : 503));
 	app.get("/metrics", (c) => {
 		const d = store.get();

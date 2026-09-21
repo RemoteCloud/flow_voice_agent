@@ -76,8 +76,11 @@ export class HttpStt implements SttAdapter {
 			const res = await this.fetchImpl(this.endpoint(), { method: "POST", body: form, headers: this.cfg.apiKey ? { Authorization: `Bearer ${this.cfg.apiKey}` } : {}, signal: ctrl.signal });
 			if (!res.ok) throw new Error(`STT HTTP ${res.status}`);
 			const body = (await res.json()) as { text?: string; language?: string; segments?: { avg_logprob?: number; no_speech_prob?: number }[] };
-			const text = (body.text ?? "").trim();
+			let text = (body.text ?? "").trim();
 			let confidence: number | undefined;
+			// Whisper invents sentences on silence / engine noise: trust its own no-speech estimate, and drop bracketed non-speech tags
+			if (Array.isArray(body.segments) && body.segments.length && body.segments.every((s) => typeof s.no_speech_prob === "number" && s.no_speech_prob > 0.6)) text = "";
+			text = text.replace(/[\[(][^\])]*[\])]/g, " ").replace(/\s+/g, " ").trim();
 			if (Array.isArray(body.segments) && body.segments.length) {
 				const lp = body.segments.reduce((a, s) => a + (typeof s.avg_logprob === "number" ? s.avg_logprob : -0.5), 0) / body.segments.length;
 				confidence = Math.max(0, Math.min(1, Math.exp(lp)));
