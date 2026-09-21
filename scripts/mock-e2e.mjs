@@ -635,6 +635,30 @@ try {
 	await api("POST", `runs/${extRun.runId}/abandon`);
 	assert.equal((await api("PUT", "library/entry", { templateId: "tpl-engine", step: { mode: "auto" } })).body.templates[0].step.mode, "auto");
 
+	// answer words that must come together ("a + b"): every part heard, in any order — and they say which item was answered
+	step = "words together";
+	const comboWords = (await api("PUT", "library/entry", { templateId: "tpl-engine", words: { "d:ER/Main/LubeOil": ["normal"], "d:ER/Aux/Gen1": ["running+generator"] } })).body.templates[0].words;
+	assert.deepEqual(comboWords["d:ER/Aux/Gen1"], ["running + generator"], "stored the one way a combination is written");
+	assert.equal((await api("POST", "interpret", { type: "Checkbox", text: "generator one is running", answers: ["running + generator"] })).body.valueText, "running generator", "either order, words apart");
+	assert.equal((await api("POST", "interpret", { type: "Checkbox", text: "the generator is off", answers: ["running + generator"] })).body.ok, false, "one part missing is no answer");
+	assert.equal((await api("POST", "interpret", { type: "Checkbox", text: "not running the generator", answers: ["running + generator"] })).body.ok, false, "a negation is never the answer");
+	await api("PUT", "library/entry", { templateId: "tpl-engine", step: { mode: "ask" } });
+	mark = spoken.length;
+	listenOpen = undefined;
+	const comboRun = (await api("POST", "runs", { templateId: "tpl-engine", stationId: "bridge-01" })).body;
+	const genTask = comboRun.items.find((i) => i.dataId === "ER/Aux/Gen1").taskId;
+	await waitFor(() => spoken.slice(mark).some((s) => s.includes("Check lube oil pressure")), "first item read");
+	await say("pressure is normal");
+	await waitFor(async () => (await api("GET", `runs/${comboRun.runId}`)).body.exchange === "waiting", "hub waits after the answer");
+	// nothing was asked, and the words are not the item name: the combination alone finds "Check generator 1"
+	send({ type: "transcript", text: "the generator is running", confidence: 0.9, final: true });
+	await waitFor(() => fake.values.some((v) => v.task === genTask), "the item the words belong to was answered");
+	const comboAfter = (await api("GET", `runs/${comboRun.runId}`)).body;
+	assert.equal(comboAfter.items.find((i) => i.dataId === "ER/Aux/Gen1").state, "answered");
+	assert.equal(comboAfter.items.find((i) => i.dataId === "ER/Main/CoolingTemp").state, "unanswered", "the items in between are left alone");
+	await api("POST", `runs/${comboRun.runId}/abandon`);
+	await api("PUT", "library/entry", { templateId: "tpl-engine", step: { mode: "auto" } });
+
 	assert.equal((await api("DELETE", `library?templateId=${encodeURIComponent("tpl-engine")}`)).body.templates.length, 0);
 	await api("PUT", "settings", { itemAnswers: {}, templateLanguages: {} });
 	assert.ok((await api("GET", "checklists")).body.every((p) => p.access === "start"), "empty register → everything again");

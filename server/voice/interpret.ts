@@ -587,24 +587,62 @@ function similarity(a: string, b: string): number {
 	return 1 - prev[n]! / Math.max(m, n);
 }
 
+/** An answer word may be a combination: every part must be heard, in any order ("hivt + körbro" ⊇ "körbro er hivt"). */
+export const answerParts = (a: string) => a.split("+").map((p) => p.trim()).filter(Boolean);
+/** What the crew reads and hears for an answer word: the parts without the "+". */
+export const answerLabel = (a: string) => answerParts(a).join(" ");
+
+/** The word itself, whole or as part of a compound ("körbroen", "hovedkörbro"). Short words stay whole-word only. */
+function containsWord(normalized: string, hay: string, n: string): boolean {
+	if (!n) return false;
+	if (hay.includes(` ${n} `)) return true;
+	// anywhere in a longer sentence, also inflected or compounded: "körbron er hivt", "körbroen", "hovedkörbro".
+	// Short words ("up", "on") stay whole-word only, or "supper" would count as "up".
+	if (n.length < 5) return false;
+	if (!n.includes(" ")) return normalized.split(" ").some((w) => w.startsWith(n) || (w.endsWith(n) && w.length <= n.length + 8));
+	return hay.includes(` ${n}`);
+}
+
 /**
  * The answer word the transcript contains ("the ramp is up now" ⊇ "up"); never inside a negation. `match` < 1 also takes
  * a word the recogniser got nearly right ("kjørebro" for "körbro", "kjøre bro" split in two). Short words stay exact.
+ * A word written with "+" is a combination: each part is looked up on its own, so order and distance do not matter.
  */
 export function heardAnswer(normalized: string, answers: string[] | undefined, match: number = ANSWER_MATCH.normal): string | undefined {
 	if (!answers?.length || NEGATION.test(normalized)) return undefined;
 	const hay = ` ${normalized} `;
-	return answers.find((a) => {
-		const n = normalizeTranscript(a);
-		if (!n) return false;
-		if (hay.includes(` ${n} `)) return true;
-		// anywhere in a longer sentence, also inflected or compounded: "körbron er hivt", "körbroen", "hovedkörbro".
-		// Short words ("up", "on") stay whole-word only, or "supper" would count as "up".
-		if (n.length < 5) return false;
-		if (!n.includes(" ")) return normalized.split(" ").some((w) => w.startsWith(n) || (w.endsWith(n) && w.length <= n.length + 8));
-		if (hay.includes(` ${n}`)) return true;
-		return false;
-	}) ?? nearAnswer(normalized, answers, match);
+	const words = normalized.split(" ").filter(Boolean);
+	// score = the weakest part (1 = heard as written), so an answer heard exactly beats one the recogniser nearly got
+	let best: { answer: string; score: number } | undefined;
+	for (const a of answers) {
+		let worst = 1;
+		let ok = true;
+		for (const p of answerParts(a)) {
+			const n = normalizeTranscript(p);
+			if (containsWord(normalized, hay, n)) continue;
+			const near = nearWord(words, n, match);
+			if (near === undefined) {
+				ok = false;
+				break;
+			}
+			worst = Math.min(worst, near);
+		}
+		if (ok && (!best || worst > best.score)) best = { answer: a, score: worst };
+	}
+	return best?.answer;
+}
+
+/**
+ * Every word of a phrase somewhere in the transcript, in any order and any distance apart ("körbro er hivt" ⊇
+ * "hivt körbro"): how an unprompted answer finds its item when the crew says the name its own way.
+ */
+export function containsAllWords(normalized: string, phrase: string, match: number = ANSWER_MATCH.normal): boolean {
+	const all = normalizeTranscript(phrase).split(" ").filter(Boolean);
+	const parts = all.filter((w) => w.length > 2);
+	if (!parts.length || !all.length) return false;
+	const hay = ` ${normalized} `;
+	const words = normalized.split(" ").filter(Boolean);
+	return parts.every((p) => containsWord(normalized, hay, p) || nearWord(words, p, match) !== undefined);
 }
 
 /**
@@ -621,36 +659,33 @@ const skeleton = (s: string) => fold(s).replace(/[aeiouy ]/g, "");
 /** "vts", "vhf", "gps": letters only, no vowel. A recogniser writes the spoken letters as words ("vet tes", "ved TS"). */
 const isAcronym = (n: string) => /^[a-z]{2,5}$/.test(n) && !/[aeiouy]/.test(n);
 
-function nearAnswer(normalized: string, answers: string[], match: number): string | undefined {
-	if (match >= 1) return undefined;
-	const words = normalized.split(" ").filter(Boolean);
-	let best: { answer: string; score: number } | undefined;
-	for (const a of answers) {
-		const n = normalizeTranscript(a);
-		if (isAcronym(n)) {
-			// spelled-out letters keep their consonants: "vet tes" → vtts, "ved ts" → vdts, "vet s" → vts
-			for (let size = 1; size <= 3; size++) {
-				for (let i = 0; i + size <= words.length; i++) {
-					const win = words.slice(i, i + size).join("");
-					if (win[0] !== n[0] || win.length > n.length * 3) continue;
-					const score = similarity(skeleton(win), n);
-					if (score >= 0.74 && (!best || score > best.score)) best = { answer: a, score };
-				}
-			}
-			continue;
-		}
-		if (n.length < 4) continue; // "up", "on", "av": one wrong letter is another word
-		const target = fold(n.replace(/ /g, ""));
-		const span = n.split(" ").length;
-		// the recogniser may split a compound ("kjøre bro") or join two words: try windows of span-1 … span+1 words
-		for (let size = Math.max(1, span - 1); size <= span + 1; size++) {
+/** How well one answer word (or one part of a combination) is heard, or undefined when it is not there at all. */
+function nearWord(words: string[], n: string, match: number): number | undefined {
+	if (match >= 1 || !n) return undefined;
+	let best: number | undefined;
+	if (isAcronym(n)) {
+		// spelled-out letters keep their consonants: "vet tes" → vtts, "ved ts" → vdts, "vet s" → vts
+		for (let size = 1; size <= 3; size++) {
 			for (let i = 0; i + size <= words.length; i++) {
-				const score = similarity(fold(words.slice(i, i + size).join("")), target);
-				if (score >= match && (!best || score > best.score)) best = { answer: a, score };
+				const win = words.slice(i, i + size).join("");
+				if (win[0] !== n[0] || win.length > n.length * 3) continue;
+				const score = similarity(skeleton(win), n);
+				if (score >= 0.74 && (best === undefined || score > best)) best = score;
 			}
+		}
+		return best;
+	}
+	if (n.length < 4) return undefined; // "up", "on", "av": one wrong letter is another word
+	const target = fold(n.replace(/ /g, ""));
+	const span = n.split(" ").length;
+	// the recogniser may split a compound ("kjøre bro") or join two words: try windows of span-1 … span+1 words
+	for (let size = Math.max(1, span - 1); size <= span + 1; size++) {
+		for (let i = 0; i + size <= words.length; i++) {
+			const score = similarity(fold(words.slice(i, i + size).join("")), target);
+			if (score >= match && (best === undefined || score > best)) best = score;
 		}
 	}
-	return best?.answer;
+	return best;
 }
 
 export function interpret(type: string, transcript: string, ctx: InterpretContext, phrases?: string[]): Interpretation {
@@ -661,18 +696,19 @@ export function interpret(type: string, transcript: string, ctx: InterpretContex
 	if (!normalized) return { ok: false, reason: "empty", message: msg("m_empty"), confidence: 0 };
 	const heard = heardAnswer(normalized, ctx.answers, ctx.answerMatch);
 	if (heard) {
-		const said = heard.trim();
+		const said = answerLabel(heard); // a combination is read back as its parts, without the "+"
+
 		const opts = ctx.options ?? [];
 		if (type === "Checkbox" && opts.length <= 1) return { ok: true, value: checkboxCheckedValue(opts).value, valueText: said, confidence: 0.92, kind: "bool", byWord: true };
 		if (type === "RadioButtons" && !opts.length) return { ok: true, value: "Yes", valueText: said, confidence: 0.92, kind: "bool", byWord: true };
 		if (type === "DateAndTime") return { ok: true, value: flowDateTime(ctx.utteredAt), valueText: `${said}, ${formatClock(ctx.utteredAt, ctx)}`, confidence: 0.85, kind: "now", byWord: true };
 		if (type === "Text" || type === "LongText") return { ok: true, value: said, valueText: said, confidence: 0.9, kind: "text", byWord: true };
 		const n = normalizeTranscript(said);
-		const opt = opts.find((o) => ` ${normalizeTranscript(o.title)} `.includes(` ${n} `) || normalizeTranscript(o.value) === n);
+		const opt = opts.find((o) => ` ${normalizeTranscript(o.title)} `.includes(` ${n} `) || normalizeTranscript(o.value) === n) ?? opts.find((o) => containsAllWords(normalizeTranscript(o.title), said));
 		if (opt) return { ok: true, value: opt.value, valueText: opt.title, confidence: 0.92, kind: "option", byWord: true };
 	}
 	// strict checklist: the crew must say the word itself ("hivt körbro"), a bare "yes" proves nothing
-	if (ctx.answersOnly && ctx.answers?.length) return { ok: false, reason: "no_match", message: msg("m_say_word", { words: ctx.answers.join(", ") }), confidence: 0.1 };
+	if (ctx.answersOnly && ctx.answers?.length) return { ok: false, reason: "no_match", message: msg("m_say_word", { words: ctx.answers.map(answerLabel).join(", ") }), confidence: 0.1 };
 	const stripped = stripPhrase(normalized, phrases);
 	/** The user said only the bound phrase ("engine started"): the event itself, with no value attached. */
 	const phraseOnly = !stripped;

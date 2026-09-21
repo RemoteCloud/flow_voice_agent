@@ -87,7 +87,7 @@ export function ChecklistsTab({ canEdit }: { canEdit: boolean }) {
 
 			<div>
 				<h2 className="px-1 text-sm font-semibold">2 · Language and answer words</h2>
-				<p className="px-1 text-xs text-fg-muted">Open a checklist and tap the words that count as the answer. "Ramp up" with UP marked: any answer that contains "up" checks the item. Saved at once, for every station.</p>
+				<p className="px-1 text-xs text-fg-muted">Open a checklist and tap the words that count as the answer. "Ramp up" with UP marked: any answer that contains "up" checks the item. Mark two words and press "any one word" to turn it into "all words together": both must be said, in any order ("körbro er hivt"). Saved at once, for every station.</p>
 			</div>
 			{!lib ? (
 				<p className="text-sm text-fg-muted">Loading…</p>
@@ -187,11 +187,15 @@ function ItemWords({ entry, canEdit, onChange }: { entry: Entry; canEdit: boolea
 	return (
 		<ul className="border-t border-line">
 			{entry.items.map((it, i) => {
-				const words = entry.words[it.key] ?? [];
+				const list = entry.words[it.key] ?? [];
+				/** One entry written "a + b": every word must be heard, in any order. Otherwise any one word answers. */
+				const together = list.length === 1 && list[0].includes("+");
+				const words = together ? list[0].split("+").map(norm).filter(Boolean) : list;
 				const tokens = it.name.split(/\s+/).filter(Boolean);
 				const inName = new Set(tokens.map(norm));
 				const custom = words.filter((w) => !inName.has(w));
-				const toggle = (w: string) => set(it.key, words.includes(w) ? words.filter((x) => x !== w) : [...words, w]);
+				const setWords = (next: string[]) => set(it.key, together && next.length > 1 ? [next.join(" + ")] : next);
+				const toggle = (w: string) => setWords(words.includes(w) ? words.filter((x) => x !== w) : [...words, w]);
 				const head = it.section !== section ? (section = it.section) : undefined;
 				return (
 					<li key={`${it.key}-${i}`}>
@@ -223,10 +227,22 @@ function ItemWords({ entry, canEdit, onChange }: { entry: Entry; canEdit: boolea
 									onKeyDown={(e) => {
 										const w = norm(extra[it.key] ?? "");
 										if (e.key !== "Enter" || !w) return;
-										if (!words.includes(w)) set(it.key, [...words, w]);
+										if (!words.includes(w)) setWords([...words, w]);
 										setExtra((x) => ({ ...x, [it.key]: "" }));
 									}}
 								/>
+								{words.length > 1 && (
+									<button
+										type="button"
+										disabled={!canEdit}
+										aria-pressed={together}
+										title={together ? "The crew must say every marked word, in any order." : "Any one of the marked words answers the item."}
+										onClick={() => set(it.key, together ? words : [words.join(" + ")])}
+										className={`rounded-md border px-1.5 py-0.5 text-xs ${together ? "border-info bg-info/15 font-semibold text-info" : "border-line-strong text-fg-muted hover:border-info"}`}
+									>
+										{together ? "all words together" : "any one word"}
+									</button>
+								)}
 							</div>
 						</div>
 					</li>

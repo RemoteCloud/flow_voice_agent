@@ -59,7 +59,8 @@ export interface RunItem {
 	committedAt?: string;
 	outboxId?: string;
 	skipReason?: string;
-	/** Words set in Admin → Answers: an answer that contains one of them counts as the answer for this item. */
+	/** Words set in Admin → Answers: an answer that contains one of them counts as the answer for this item. A word
+	 * written "a + b" is a combination: every part must be heard, in any order. */
 	expected?: string[];
 }
 

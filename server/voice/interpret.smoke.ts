@@ -1,5 +1,5 @@
 import assert from "node:assert/strict";
-import { bestTranscript, controlWord, itemNumber, interpret, parseClock, parseRelative, wordsToNumber, type InterpretContext } from "./interpret.js";
+import { bestTranscript, containsAllWords, controlWord, itemNumber, interpret, normalizeTranscript, parseClock, parseRelative, wordsToNumber, type InterpretContext } from "./interpret.js";
 
 const ctx: InterpretContext = { utteredAt: new Date("2026-09-09T07:47:03Z"), tzMode: "utc", maxPastHours: 12 };
 const ok = (r: ReturnType<typeof interpret>) => {
@@ -39,6 +39,32 @@ export async function run(): Promise<void> {
 	assert.equal(ok(interpret("Checkbox", "kjøre bro hivt", { ...strict, answerMatch: 0.6 })).valueText, "körbro", "loose, and split in two words");
 	assert.equal(interpret("Checkbox", "kjørbro hivt", { ...strict, answerMatch: 1 }).ok, false, "exact");
 	assert.equal(interpret("Checkbox", "us", { ...ctx, answers: ["up"], answersOnly: true, answerMatch: 0.6 }).ok, false, "short words stay exact");
+
+	// a combination: every part must be heard, in any order and any distance apart
+	const combo: InterpretContext = { ...ctx, answers: ["hivt + körbro"], answersOnly: true };
+	assert.equal(ok(interpret("Checkbox", "hivt körbro", combo)).valueText, "hivt körbro", "as written");
+	assert.equal(ok(interpret("Checkbox", "körbro er hivt", combo)).valueText, "hivt körbro", "the other order");
+	assert.equal(ok(interpret("Checkbox", "ja nå er körbron hivt og sikret", combo)).valueText, "hivt körbro", "words apart, inflected");
+	assert.equal(interpret("Checkbox", "körbro er nede", combo).ok, false, "one part missing");
+	assert.equal(interpret("Checkbox", "hivt", combo).ok, false, "the other part missing");
+	assert.equal(interpret("Checkbox", "ikke hivt körbro", combo).ok, false, "a negation is never the answer");
+	assert.equal(ok(interpret("Checkbox", "kjørebro er hivd", combo)).valueText, "hivt körbro", "each part may be a near miss");
+	assert.equal(interpret("Checkbox", "kjørebro er hivd", { ...combo, answerMatch: 1 }).ok, false, "exact wants both as written");
+	assert.equal(ok(interpret("Checkbox", "hivt körbro", { ...combo, answers: ["hivt + körbro", "sikret"] })).valueText, "hivt körbro", "beside plain words");
+	assert.equal(ok(interpret("Checkbox", "sikret", { ...combo, answers: ["hivt + körbro", "sikret"] })).valueText, "sikret");
+	assert.equal(
+		ok(interpret("QuickSelect", "styrbord körbro er hivt", { ...ctx, answers: ["hivt + styrbord"], options: [{ title: "Babord hivt", value: "P" }, { title: "Styrbord hivt", value: "S" }] })).value,
+		"S",
+		"a combination picks the option that holds both words",
+	);
+
+	// every word of an item name somewhere in the sentence: how an unprompted answer finds its item
+	assert.equal(containsAllWords(normalizeTranscript("körbro er hivt"), "Hivt körbro"), true);
+	assert.equal(containsAllWords(normalizeTranscript("ja körbron er hivt og sikret"), "Hivt körbro"), true, "inflected, words apart");
+	assert.equal(containsAllWords(normalizeTranscript("kjørebro er hivd"), "Hivt körbro"), true, "near misses count");
+	assert.equal(containsAllWords(normalizeTranscript("kjørebro er hivd"), "Hivt körbro", 1), false, "exact tolerance");
+	assert.equal(containsAllWords(normalizeTranscript("körbro er nede"), "Hivt körbro"), false, "one word missing");
+	assert.equal(containsAllWords(normalizeTranscript("pilot on board five minutes ago"), "Pilot on board"), true, "short filler words are not required");
 
 	// acronyms spoken as letters come back as words
 	const vts: InterpretContext = { ...ctx, answers: ["vts"], answersOnly: true };

@@ -739,7 +739,8 @@ export function createApp(deps: AppDeps): Hono {
 			if (isObj(body.words)) {
 				const per: Record<string, string[]> = {};
 				for (const [key, words] of Object.entries(body.words)) {
-					const list = Array.isArray(words) ? [...new Set(words.filter((w): w is string => typeof w === "string").map((w) => w.trim().toLowerCase().slice(0, 60)).filter(Boolean))].slice(0, 12) : [];
+					// "hivt+körbro" / "hivt  +  körbro" are stored the one way a combination is written: "hivt + körbro"
+					const list = Array.isArray(words) ? [...new Set(words.filter((w): w is string => typeof w === "string").map((w) => w.toLowerCase().replace(/\s*\+\s*/g, " + ").replace(/^\s*\+\s*|\s*\+\s*$/g, "").trim().slice(0, 60)).filter(Boolean))].slice(0, 12) : [];
 					if (/^[dn]:/.test(key) && list.length) per[key] = list;
 				}
 				const all = (d.settings.itemAnswers ??= {});

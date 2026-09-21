@@ -19,7 +19,7 @@ import { CHECKBOX_CHECKED, CHECKBOX_NOT_DONE, checkboxCheckedValue, controlWord,
 import type { Outbox } from "./Outbox.js";
 import { normLang, t as tr } from "./i18n.js";
 import { grammarFor } from "./grammar.js";
-import { ANSWER_MATCH, bestTranscript, normalizeTranscript, wordsToNumber } from "./interpret.js";
+import { ANSWER_MATCH, answerLabel, answerParts, bestTranscript, containsAllWords, heardAnswer, normalizeTranscript, wordsToNumber } from "./interpret.js";
 
 /** What the screen and the voice menu offer: `code` is the Flow reason name (the status body sends it as `reason`). */
 export interface DiscardOption {
@@ -168,12 +168,20 @@ export class RunEngine {
 		return this.deps.store.get().runs.find((r) => r.stationId === stationId && (r.state === "active" || r.state === "paused" || r.state === "pending"));
 	}
 
-	private interpretCtx(r: RunRecord, item: RunItem, utteredAt: Date): InterpretContext {
-		// words edited in Checklist setup while the run is open count at once, not only from the next run
+	/** The item's answer words as they stand now: words edited in Checklist setup count in an open run, not only in the next. */
+	private answersOf(r: RunRecord, item: RunItem): string[] | undefined {
 		const words = this.deps.store.get().settings.itemAnswers?.[r.templateId ?? ""];
 		const live = words?.[answerKey({ dataId: item.dataId, name: item.name })] ?? words?.[answerKey({ name: item.name })];
-		if (live?.length) item = { ...item, expected: live };
-		return { utteredAt, tzMode: this.deps.store.get().settings.tzMode, timeZone: this.deps.policy.timeZone, maxPastHours: this.deps.policy.maxPastHours, options: item.options, language: normLang(r.language), answers: item.expected, answersOnly: !!r.templateId && !!this.deps.store.get().settings.wordsOnly?.includes(r.templateId), answerMatch: ANSWER_MATCH[this.deps.store.get().settings.wordMatch?.[r.templateId ?? ""] ?? "normal"] };
+		return live?.length ? live : item.expected;
+	}
+
+	/** How close a heard word must be to a marked one (Checklist setup → word tolerance). */
+	private matchLevel(r: RunRecord): number {
+		return ANSWER_MATCH[this.deps.store.get().settings.wordMatch?.[r.templateId ?? ""] ?? "normal"];
+	}
+
+	private interpretCtx(r: RunRecord, item: RunItem, utteredAt: Date): InterpretContext {
+		return { utteredAt, tzMode: this.deps.store.get().settings.tzMode, timeZone: this.deps.policy.timeZone, maxPastHours: this.deps.policy.maxPastHours, options: item.options, language: normLang(r.language), answers: this.answersOf(r, item), answersOnly: !!r.templateId && !!this.deps.store.get().settings.wordsOnly?.includes(r.templateId), answerMatch: this.matchLevel(r) };
 	}
 
 	runsForUser(sub: string): RunRecord[] {
@@ -742,7 +750,8 @@ export class RunEngine {
 		const profile = this.profileFor(r.templateId, station ?? ({} as Station));
 		const b = profile?.bindings.find((x) => x.dataId === item.dataId);
 		if (b?.phrases) out.push(...b.phrases);
-		if (item.expected) out.push(...item.expected);
+		// a combination ("hivt + körbro") biases the recogniser towards each part and towards the whole phrase
+		for (const a of item.expected ?? []) out.push(answerLabel(a), ...answerParts(a));
 		return out;
 	}
 
@@ -1063,7 +1072,8 @@ export class RunEngine {
 
 	/** Bound phrases plus the item's answer words: what the on-device grammar recogniser must be able to hear. */
 	private grammarWords(r: RunRecord, item: RunItem): string[] {
-		return [...(this.phrasesFor(r, item) ?? []), ...(item.expected ?? [])];
+		const answers = (item.expected ?? []).flatMap((a) => [answerLabel(a), ...answerParts(a)]);
+		return [...(this.phrasesFor(r, item) ?? []), ...answers];
 	}
 
 	/**
@@ -1084,15 +1094,22 @@ export class RunEngine {
 
 	/** "Pilot on board five minutes ago" said while nothing was asked: bind by phrase to an unanswered item. */
 	private async unpromptedAnswer(r: RunRecord, text: string, confidence: number | undefined, session?: HubSession): Promise<void> {
-		const t = text.toLowerCase();
+		const t = normalizeTranscript(text);
 		const station = this.deps.store.get().stations.find((s) => s.stationId === r.stationId);
 		const profile = station ? this.profileFor(r.templateId, station) : undefined;
+		const match = this.matchLevel(r);
 		const candidates = r.items.filter((i) => i.voice && (i.state === "unanswered" || i.state === "skipped"));
-		const hit = candidates.find((i) => {
-			const b = profile?.bindings.find((x) => x.dataId === i.dataId);
-			const phrases = [...(b?.phrases ?? []), i.name].map((p) => p.toLowerCase());
-			return phrases.some((p) => p.length > 3 && t.startsWith(p));
-		});
+		const phrasesOf = (i: RunItem) => [...(profile?.bindings.find((x) => x.dataId === i.dataId)?.phrases ?? []), i.name].map((p) => normalizeTranscript(p)).filter((p) => p.length > 3);
+		// the name or a bound phrase as spoken ("pilot on board five minutes ago") wins over the looser matches below
+		const hit =
+			candidates.find((i) => phrasesOf(i).some((p) => t.startsWith(p))) ??
+			// the same words in the crew's own order and wording: "körbro er hivt" answers "Hivt körbro"
+			candidates.find((i) => phrasesOf(i).some((p) => p.includes(" ") && containsAllWords(t, p, match))) ??
+			// a combination answer word ("hivt + körbro") names its item on its own; one plain word ("up") never does
+			candidates.find((i) => {
+				const combos = (this.answersOf(r, i) ?? []).filter((a) => answerParts(a).length > 1);
+				return !!combos.length && !!heardAnswer(t, combos, match);
+			});
 		if (!hit) return;
 		for (const i of r.items) if (i.state === "current") i.state = "unanswered";
 		hit.state = "current";

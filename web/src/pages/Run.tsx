@@ -377,7 +377,7 @@ function ecamValue(i: RunItem): string {
 	if (i.state === "skipped") return "Skipped";
 	if (i.state === "needs_screen") return "On screen";
 	if (i.state === "current" && i.valueText) return i.valueText;
-	if (i.expected?.length) return i.expected[0]!;
+	if (i.expected?.length) return i.expected[0]!.replace(/\s*\+\s*/g, " "); // a combination ("hivt + körbro") reads as its words
 	switch (i.type) {
 		case "Checkbox":
 			return i.options && i.options.length > 1 ? "Select" : "Check";
