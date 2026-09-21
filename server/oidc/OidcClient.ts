@@ -53,6 +53,8 @@ export interface AuthorizeParams {
 	state: string;
 	nonce: string;
 	codeChallenge: string;
+	/** Overrides the configured `prompt` for this one sign-in ("login" after a sign-out). */
+	prompt?: string;
 }
 
 /** What the sign-in flow needs from the identity provider. */
@@ -64,6 +66,8 @@ export interface OidcProvider {
 	refresh(refreshToken: string): Promise<TokenSet>;
 	/** `undefined` when logout must stay local (no post-logout URI or no end_session_endpoint). */
 	endSessionUrl(idTokenHint?: string): Promise<string | undefined>;
+	/** Sign-out: make the token useless at the provider too (RFC 7009). Best effort, never throws. */
+	revoke?(token: string, hint: "refresh_token" | "access_token"): Promise<boolean>;
 }
 
 export interface DiscoveryDocument {
@@ -73,6 +77,7 @@ export interface DiscoveryDocument {
 	userinfo_endpoint: string;
 	jwks_uri: string;
 	end_session_endpoint?: string;
+	revocation_endpoint?: string;
 }
 
 export interface OidcClientDeps {
@@ -192,6 +197,7 @@ export class OidcClient implements OidcProvider {
 			jwks_uri: body.jwks_uri as string,
 		};
 		if (isHttpUrl(body.end_session_endpoint)) doc.end_session_endpoint = body.end_session_endpoint;
+		if (isHttpUrl(body.revocation_endpoint)) doc.revocation_endpoint = body.revocation_endpoint;
 		return doc;
 	}
 
@@ -207,7 +213,8 @@ export class OidcClient implements OidcProvider {
 		u.searchParams.set("nonce", p.nonce);
 		u.searchParams.set("code_challenge", p.codeChallenge);
 		u.searchParams.set("code_challenge_method", "S256");
-		if (this.cfg.prompt) u.searchParams.set("prompt", this.cfg.prompt);
+		const prompt = p.prompt ?? this.cfg.prompt;
+		if (prompt) u.searchParams.set("prompt", prompt);
 		return u.toString();
 	}
 
@@ -319,6 +326,20 @@ export class OidcClient implements OidcProvider {
 	}
 
 	// ----- logout -----
+	async revoke(token: string, hint: "refresh_token" | "access_token"): Promise<boolean> {
+		try {
+			const doc = await this.discover();
+			if (!doc.revocation_endpoint) return false;
+			const params = new URLSearchParams({ token, token_type_hint: hint, client_id: this.cfg.clientId, client_secret: this.cfg.clientSecret });
+			const res = await (this.deps.fetchImpl ?? fetch)(doc.revocation_endpoint, { method: "POST", headers: { "Content-Type": "application/x-www-form-urlencoded" }, body: params.toString(), signal: AbortSignal.timeout(this.cfg.httpTimeoutMs) });
+			if (!res.ok) this.deps.log.warn(`OIDC revocation (${hint}) HTTP ${res.status}`);
+			return res.ok;
+		} catch (err) {
+			this.deps.log.warn(`OIDC revocation (${hint}) failed: ${err instanceof Error ? err.message : String(err)}`);
+			return false;
+		}
+	}
+
 	async endSessionUrl(idTokenHint?: string): Promise<string | undefined> {
 		if (!this.cfg.postLogoutRedirectUri) return undefined;
 		let doc: DiscoveryDocument;

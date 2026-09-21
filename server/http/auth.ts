@@ -115,7 +115,7 @@ export class OidcAuth {
 		}
 	}
 
-	async startLogin(returnTo?: string): Promise<LoginStart> {
+	async startLogin(returnTo?: string, fresh = false): Promise<LoginStart> {
 		if (!this.deps.provider || !this.deps.oidc) return { ok: false, code: "not_configured", detail: "HUB_OIDC_* is not set" };
 		this.sweepFlows();
 		const state = randomToken(32, this.rand);
@@ -123,7 +123,7 @@ export class OidcAuth {
 		const { verifier, challenge } = pkcePair(this.rand);
 		let redirectUrl: string;
 		try {
-			redirectUrl = await this.deps.provider.authorizeUrl({ state, nonce, codeChallenge: challenge });
+			redirectUrl = await this.deps.provider.authorizeUrl({ state, nonce, codeChallenge: challenge, prompt: fresh ? "login" : undefined });
 		} catch (err) {
 			this.deps.log.warn(`login cannot start: ${err instanceof Error ? err.message : String(err)}`);
 			return { ok: false, code: "provider_unavailable", detail: err instanceof Error ? err.message : String(err) };
@@ -239,13 +239,22 @@ export class OidcAuth {
 		return { ok: true, sid, session: row, user: user as HubUser };
 	}
 
-	async logout(row: HubSession | undefined, idTokenHint?: string): Promise<{ endSessionUrl: string }> {
+	/**
+	 * Sign-out clears everything the hub holds for the person: the session row (with its sealed tokens) goes, and the
+	 * tokens are revoked at Maranics so a copy is worth nothing. The next sign-in starts at the Maranics sign-in page.
+	 */
+	async logout(row: HubSession | undefined, idTokenHint?: string, tokens: { refreshToken?: string; accessToken?: string } = {}): Promise<{ endSessionUrl: string }> {
 		if (row) {
 			await this.deps.store.update((d) => {
 				d.sessions = d.sessions.filter((s) => s.id !== row.id);
 			});
 		}
 		let endSessionUrl: string | undefined;
+		if (this.deps.provider?.revoke && row) {
+			// the refresh token first: with most providers that takes its access tokens along
+			if (tokens.refreshToken) await this.deps.provider.revoke(tokens.refreshToken, "refresh_token");
+			if (tokens.accessToken) await this.deps.provider.revoke(tokens.accessToken, "access_token");
+		}
 		if (this.deps.provider && row) {
 			try {
 				endSessionUrl = await this.deps.provider.endSessionUrl(idTokenHint);

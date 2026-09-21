@@ -273,6 +273,8 @@ export async function startFakeMaranics({ token = "t0k3n", tenant = "demo", port
 		/** Every access / refresh / id token ever issued (so a test can assert they never leak). */
 		tokens: [],
 		refreshTokens: [],
+		/** Every token handed to /connect/revocation. */
+		revoked: [],
 		idTokens: [],
 		/** Successful refresh_token grants. */
 		refreshCount: 0,
@@ -362,6 +364,7 @@ export async function startFakeMaranics({ token = "t0k3n", tenant = "demo", port
 		userinfo_endpoint: `${oidc.issuer}/connect/userinfo`,
 		jwks_uri: `${oidc.issuer}/.well-known/jwks`,
 		end_session_endpoint: `${oidc.issuer}/connect/logout`,
+		revocation_endpoint: `${oidc.issuer}/connect/revocation`,
 		response_types_supported: ["code"],
 		grant_types_supported: ["authorization_code", "refresh_token"],
 		subject_types_supported: ["public"],
@@ -425,6 +428,16 @@ export async function startFakeMaranics({ token = "t0k3n", tenant = "demo", port
 		return json(res, 400, { error: "unsupported_grant_type", error_description: `grant_type ${grant || "(missing)"} is not supported` }, noStore);
 	}
 
+	async function revocation(req, res) {
+		const form = new URLSearchParams(await readText(req));
+		if (form.get("client_id") !== oidc.clientId || form.get("client_secret") !== oidc.clientSecret) return json(res, 401, { error: "invalid_client" });
+		const token = form.get("token") ?? "";
+		oidc.revoked.push(token);
+		const r = refreshTokens.get(token);
+		if (r) r.current = false;
+		return json(res, 200, {}); // RFC 7009: 200 also for a token nobody knows
+	}
+
 	function userinfo(req, res) {
 		oidc.userinfoCalls += 1;
 		const t = issuedAccess(bearerOf(req));
@@ -467,6 +480,7 @@ export async function startFakeMaranics({ token = "t0k3n", tenant = "demo", port
 			if (method === "GET" && sub === "/.well-known/jwks") return json(res, 200, jwks);
 			if (method === "GET" && sub === "/connect/authorize") return authorize(url, res);
 			if (method === "POST" && sub === "/connect/token") return tokenEndpoint(req, res);
+			if (method === "POST" && sub === "/connect/revocation") return revocation(req, res);
 			if (method === "GET" && sub === "/connect/userinfo") return userinfo(req, res);
 			if (method === "GET" && sub === "/connect/logout") return logout(url, res);
 			return problem(res, 404, "NOT_FOUND", `no route for ${method} ${url.pathname}`);

@@ -6,7 +6,7 @@ import { readFileSync, existsSync } from "node:fs";
 import { createHmac, timingSafeEqual } from "node:crypto";
 import { Hono, type Context } from "hono";
 import QRCode from "qrcode";
-import { getCookie } from "hono/cookie";
+import { deleteCookie, getCookie, setCookie } from "hono/cookie";
 import type { ApiError, EnrollPollResponse, EnrollRequest, EnrollResponse, HealthResponse, JoinRequest, JoinResponse, JoinTokenResponse, LibraryView, LogoutResponse, MeResponse, SessionProbeResponse, StationView, StatusResponse } from "../api.js";
 import { isJoinToken } from "../protocol.js";
 import type { HubEnv } from "../env.js";
@@ -217,7 +217,11 @@ export function createApp(deps: AppDeps): Hono {
 		const lim = loginLimiter.check(ip);
 		if (!lim.ok) return c.redirect(`/?auth_error=rate_limited`);
 		const returnTo = str(c.req.query("returnTo"));
-		const start = await auth.startLogin(returnTo);
+		// after a sign-out the Maranics session is often still alive: ask for its sign-in page again, so the person
+		// can sign in as someone else or pick another location instead of landing straight back where they were
+		const fresh = getCookie(c, "fv_fresh") === "1";
+		if (fresh) deleteCookie(c, "fv_fresh", { path: "/api/auth" });
+		const start = await auth.startLogin(returnTo, fresh);
 		if (!start.ok) return c.redirect(`/?auth_error=${start.code}`);
 		await writeLoginCookie(c, start.cookie, env.sessionSecret, secure, env.oidc?.flowMaxAgeSec ?? 600);
 		return c.redirect(start.redirectUrl);
@@ -280,9 +284,10 @@ export function createApp(deps: AppDeps): Hono {
 	api.post("/auth/logout", async (c) => {
 		const row = await sessionFromRequest(c);
 		const hint = row ? deps.credentials.idToken(row) : undefined;
-		const res = await auth.logout(row, hint);
+		const res = await auth.logout(row, hint, row ? deps.credentials.tokensOf(row) : undefined);
 		if (row) deps.gateway.dropSession(row.id);
 		clearSession(c, secure);
+		if (row) setCookie(c, "fv_fresh", "1", { path: "/api/auth", httpOnly: true, secure, sameSite: "Lax", maxAge: 3600 });
 		return c.json<LogoutResponse>(res);
 	});
 

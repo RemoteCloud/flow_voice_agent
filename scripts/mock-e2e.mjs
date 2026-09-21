@@ -732,6 +732,17 @@ try {
 	assert.equal((await api("GET", "tenants", undefined, ssoJar)).body.current?.id, "sso-co");
 	assert.ok((await api("GET", "checklists", undefined, ssoJar)).body.length > 0, "the user's own token reads Maranics");
 	assert.equal((await api("PUT", "tenants/sso-co/client", { clientId: fake.oidc.clientId, clientSecret: fake.oidc.clientSecret }, ssoJar)).status, 403, "a tenant admin is not the central admin");
+	// sign-out, then sign-in: Maranics is asked for its sign-in page again (other person, other location); once only
+	assert.ok(!new URL(toIdp.headers.get("location")).searchParams.has("prompt"), "a normal sign-in does not force the login page");
+	assert.equal((await api("POST", "auth/logout", {}, ssoJar)).status, 200);
+	assert.equal(ssoJar.get("fv_fresh"), "1");
+	assert.ok(fake.oidc.revoked.includes(fake.oidc.refreshTokens.at(-1)), "sign-out revokes the refresh token at Maranics");
+	assert.ok(fake.oidc.revoked.includes(fake.oidc.tokens.at(-1)), "and the access token");
+	assert.equal((await api("GET", "auth/me", undefined, ssoJar)).status, 401, "the hub session is gone");
+	const reLogin = await hop(`${base}/api/auth/login`);
+	assert.equal(new URL(reLogin.headers.get("location")).searchParams.get("prompt"), "login", "after a sign-out the login page is forced");
+	assert.ok(!ssoJar.has("fv_fresh"), "only the next sign-in");
+	assert.ok(!new URL((await hop(`${base}/api/auth/login`)).headers.get("location")).searchParams.has("prompt"));
 	assert.equal((await api("DELETE", "tenants/sso-co", undefined, adminJar)).status, 200);
 	// a tenant on its own Maranics server: the sign-in address is worked out from the server address
 	assert.ok((await api("GET", "tenants", undefined, adminJar)).body.mainHost, "the form knows the main hub's server");
