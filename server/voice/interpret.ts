@@ -66,7 +66,7 @@ const CONTROL: [RegExp, ControlWord][] = [
 	[/^(cancel|abort|avbryt|abbrechen|annuler)$/i, "cancel"],
 	[/^(louder|høyere|högre|lauter|plus fort)$/i, "louder"],
 	[/^(slower|saktere|långsammare|langsamer|plus lentement|moins vite)$/i, "slower"],
-	[/^(next|next item|next one|move on|neste|neste punkt|nästa|nästa punkt|gå vidare|weiter|nächster|nächster punkt|suivant|point suivant|continuer)$/i, "next"],
+	[/^(next|next item|next one|next step|move on|go on|proceed|carry on|neste|neste punkt|neste punktet|neste steg|videre|gå videre|nästa|nästa punkt|nästa steg|gå vidare|weiter|nächster|nächster punkt|nächster schritt|suivant|point suivant|continuer)$/i, "next"],
 	[/^(back|go back|previous|tilbake|forrige|tillbaka|föregående|zurück|vorheriger|retour|précédent)$/i, "back"],
 	[/^(pause|hold on|pause the run|vent|paus|pausiere|attends|attendez)$/i, "pause"],
 	[/^(resume|continue|fortsett|fortsätt|weitermachen|fortfahren|reprendre|continuer|reprends)$/i, "resume"],
@@ -100,11 +100,59 @@ export function itemNumber(transcript: string): number | undefined {
 	return n !== undefined && Number.isInteger(n) && n > 0 ? n : undefined;
 }
 
-export function controlWord(transcript: string): ControlWord | undefined {
-	const t = normalizeTranscript(transcript);
-	if (!t) return undefined;
+/** What a recogniser adds around a short command: "ok neste", "neste takk", "ja, neste punkt". */
+const FILLER = new Set(["ok", "okay", "okej", "ja", "jo", "yes", "yeah", "takk", "tack", "thanks", "please", "og", "and", "så", "da", "då", "then", "ehm", "eh", "uh", "um", "hm", "also", "alors", "et", "und", "dann", "bitte", "nå", "now"]);
+
+/** The plain phrases of the control table (regex alternatives without groups or quantifiers), for near-miss matching. */
+const CONTROL_PHRASES: [string, ControlWord][] = CONTROL.flatMap(([re, w]) =>
+	re.source
+		.replace(/^\^\(/, "")
+		.replace(/\)(\\\?\?)?\$$/, "")
+		.split("|")
+		.filter((p) => p.length >= 5 && !/[()[\]?\\]/.test(p))
+		.map((p) => [p, w] as [string, ControlWord]),
+);
+
+function exactControl(t: string): ControlWord | undefined {
 	for (const [re, w] of CONTROL) if (re.test(t)) return w;
 	return undefined;
+}
+
+/**
+ * The spoken command in a transcript. Exact by default. With `loose` (the hub asked for a command: a held item waiting
+ * for "next", the menu, a paused run) it also takes the command with filler around it ("ok neste", "neste takk"), said
+ * twice ("neste neste") and as a near miss by folded-letter edit similarity ("nesta", "næste punkt"). Never loose
+ * while an item is being answered: there "høyre" must stay an answer, not become "høyere".
+ */
+export function controlWord(transcript: string, loose = false): ControlWord | undefined {
+	const t = normalizeTranscript(transcript);
+	if (!t) return undefined;
+	const hit = exactControl(t);
+	if (hit || !loose) return hit;
+	let ws = t.split(" ");
+	if (ws.length > 4) return undefined; // a sentence is an answer, not a command
+	while (ws.length > 1 && FILLER.has(ws[0]!)) ws = ws.slice(1);
+	while (ws.length > 1 && FILLER.has(ws[ws.length - 1]!)) ws = ws.slice(0, -1);
+	if (ws.length === 2 && ws[0] === ws[1]) ws = [ws[0]!];
+	const stripped = ws.join(" ");
+	const h = stripped !== t ? exactControl(stripped) : undefined;
+	return h ?? nearControl(stripped);
+}
+
+/** Commands worth a near miss. Volume / speed / "where am I" are left exact: "høyre" (starboard) is an answer, not "høyere". */
+const NEAR_OK = new Set<ControlWord>(["next", "resume", "confirm", "repeat", "skip", "back", "pause", "stop", "start", "complete", "discard", "cancel", "correction"]);
+
+/** A near miss on a control phrase of five letters or more: one letter off in five, two in ten. */
+function nearControl(t: string): ControlWord | undefined {
+	const a = fold(t);
+	if (a.length < 5) return undefined;
+	let best: { w: ControlWord; s: number } | undefined;
+	for (const [p, w] of CONTROL_PHRASES) {
+		if (!NEAR_OK.has(w)) continue;
+		const s = similarity(a, fold(p));
+		if (s >= 0.8 && (!best || s > best.s)) best = { w, s };
+	}
+	return best?.w;
 }
 
 // ---------------------------------------------------------------- numbers in words

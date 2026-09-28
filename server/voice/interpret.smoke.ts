@@ -203,6 +203,15 @@ export async function run(): Promise<void> {
 	assert.equal(controlWord("where am I?"), "where");
 	assert.equal(controlWord("how many left"), "remaining");
 	assert.equal(controlWord("pilot on board five minutes ago"), undefined);
+	// a command the hub asked for is taken loosely: filler, repeats and near misses (Norwegian Chrome hears "Nesta")
+	for (const w of ["Nesta.", "ja neste", "Neste, takk", "neste neste", "ok neste punkt", "næste punktet", "neste steg", "videre", "gå videre", "next step", "go on"]) assert.equal(controlWord(w, true), "next", w);
+	assert.equal(controlWord("Nesta.", false), undefined);
+	assert.equal(controlWord("fortsett", true), "resume");
+	assert.equal(controlWord("høyre", true), undefined); // an answer word never becomes "høyere"
+	assert.equal(controlWord("ferdig", true), "complete");
+	assert.equal(controlWord("kan man innføre", true), undefined);
+	assert.equal(controlWord("hive opp kjørebro nå", true), undefined);
+	assert.equal(controlWord("nei", true), "no");
 
 	// item jumps
 	assert.equal(itemNumber("item four"), 4);

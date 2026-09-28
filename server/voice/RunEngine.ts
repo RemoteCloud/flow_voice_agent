@@ -1048,7 +1048,7 @@ export class RunEngine {
 			return;
 		}
 		if (r.state === "pending") {
-			const w = controlWord(text);
+			const w = controlWord(text, true);
 			if (w === "start" || w === "confirm") {
 				const s = session ?? this.sessionOnStation(stationId);
 				if (s) await this.start(s, { runId: r.runId, stationId, templateId: r.templateId });
@@ -1057,12 +1057,14 @@ export class RunEngine {
 			return;
 		}
 		if (r.state === "paused") {
-			if (controlWord(text) === "resume") await this.resume(r.runId);
+			if (controlWord(text, true) === "resume") await this.resume(r.runId);
 			return;
 		}
 		if (await this.tryItemJump(r, text)) return;
 		if (r.exchange === "waiting") {
-			const w = controlWord(text);
+			// the hub asked for a command ("say next when you are ready"): take it loosely, and leave a trace of what was heard
+			const w = controlWord(text, true);
+			await this.audit(r, "command.heard", { taskId: r.waiting?.taskId, transcript: text, confidence, command: w ?? null, sub: (session ?? this.sessionOnStation(stationId))?.sub });
 			if (w === "next" || w === "resume" || w === "start" || w === "confirm") {
 				await this.proceed(r.runId, "voice");
 				return;
@@ -1890,7 +1892,7 @@ export class RunEngine {
 		const lang = this.stationLang(stationId);
 		const t = normalizeTranscript(text);
 		if (!t) return;
-		const w = controlWord(t);
+		const w = controlWord(t, true);
 		if (w === "list" || w === "help" || w === "repeat") {
 			await this.speakMenu(stationId, session);
 			return;
