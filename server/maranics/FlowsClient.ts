@@ -97,8 +97,16 @@ export interface TemplateTask {
 	spokenPrompt?: string;
 }
 
+/** A discard reason as configured in Flow (per template, or the tenant-wide list). `POST /flows/{id}/status {action:"discard", reason}` matches on `name`. */
+export interface DiscardReason {
+	name: string;
+	requireComment: boolean;
+}
+
 export interface TemplateDetail extends TemplateInfo {
 	sections: { id: string; name: string; order: number; tasks: TemplateTask[] }[];
+	/** The template's own discard reasons; empty → the tenant-wide list applies. */
+	discardReasons: DiscardReason[];
 }
 
 export interface PageEnvelope<T> {
@@ -106,6 +114,29 @@ export interface PageEnvelope<T> {
 	page: number;
 	pageSize: number;
 	items: T[];
+}
+
+/**
+ * One row of the flat value query (`GET /flows/{flowId}/values`): one row per control, a form control
+ * expands to one row per input. Only the columns asked for in `fields` are serialized.
+ */
+export interface FlowValueRow {
+	taskId: string;
+	dataId?: string;
+	/** `Open` | `Done` | `Overridden`; unknown names must be tolerated. */
+	status?: string;
+	value?: string;
+	/** The user-facing label (a dropdown stores "3" and displays "Severe"). */
+	displayValue?: string;
+	time?: string;
+	type?: string;
+}
+
+/** `stats` of the same query. With `pageSize=0` nothing but this is transferred. */
+export interface FlowValueStats {
+	matched: number;
+	withValue: number;
+	overridden: number;
 }
 
 export function flowsRoot(baseUrl: string): string | undefined {
@@ -125,6 +156,12 @@ export function templatesRoots(base: string): string[] | undefined {
 
 const isObj = (v: unknown): v is Record<string, unknown> => typeof v === "object" && v !== null && !Array.isArray(v);
 const str = (v: unknown): string | undefined => (typeof v === "string" && v ? v : typeof v === "number" ? String(v) : undefined);
+/** `Maranics.Checklist.DTO.Enums.TaskType`: the Templates API sends the number, the Checklist API the name. */
+const TASK_TYPES = ["Text", "Number", "Dropdown", "Date", "DateAndTime", "Time", "Checkbox", "RadioButtons", "LongText", "PersonsOnBoard", "List", "Picture", "Information", "GPS", "ScanLabel", "RichText", "File", "DataRegister", "SystemLists", "Email", "Sign", "PhoneNumber", "Form", "QuickSelect", "DataList", "AudioRecording", "Drawing"];
+export const taskTypeName = (v: unknown): string | undefined => {
+	const raw = str(v);
+	return raw && /^\d+$/.test(raw) ? TASK_TYPES[Number(raw)] ?? raw : raw;
+};
 const num = (v: unknown, fallback: number): number => (typeof v === "number" && Number.isFinite(v) ? v : fallback);
 
 function query(q: Record<string, string | number | boolean | undefined>): string {
@@ -178,7 +215,15 @@ export function parseOptions(raw: unknown): { title: string; value: string }[] |
 			.split(/\r?\n|;/)
 			.map((x) => x.trim())
 			.filter(Boolean);
-		return parts.length ? parts.map((p) => ({ title: p, value: p })) : undefined;
+		// Flow's list controls store "Title::key" per line and validate the key (DataValidation.IsListValid:
+		// the part after "::" when present, else the whole line), so the key is the value we write back.
+		return parts.length
+			? parts.map((p) => {
+					const arr = p.split("::");
+					const key = arr.length > 1 && arr[1].trim() ? arr[1].trim() : arr[0].trim();
+					return { title: arr[0].trim() || key, value: key };
+				})
+			: undefined;
 	}
 	return undefined;
 }
@@ -189,7 +234,7 @@ function toTask(raw: unknown, i: number): TaskDetail | undefined {
 	if (!taskId) return undefined;
 	const controlsRaw = Array.isArray(raw.controls) ? raw.controls : isObj(raw.control) ? [raw.control] : [];
 	const controls = controlsRaw
-		.map((c): TaskControl | undefined => (isObj(c) ? { controlId: str(c.controlId) ?? str(c.id), dataId: str(c.dataId), type: str(c.type) ?? "Text" } : undefined))
+		.map((c): TaskControl | undefined => (isObj(c) ? { controlId: str(c.controlId) ?? str(c.id), dataId: str(c.dataId), type: taskTypeName(c.type) ?? "Text" } : undefined))
 		.filter((c): c is TaskControl => !!c);
 	const valuesRaw = Array.isArray(raw.values) ? raw.values : [];
 	const values = valuesRaw.map((v): TaskValue | undefined => (isObj(v) ? { controlId: str(v.controlId), dataId: str(v.dataId), value: str(v.value), time: str(v.time), source: str(v.source) } : undefined)).filter((v): v is TaskValue => !!v);
@@ -201,6 +246,21 @@ function toTask(raw: unknown, i: number): TaskDetail | undefined {
 	options = options ?? parseOptions(raw.options) ?? parseOptions(raw.quickSelectValues);
 	const state = isObj(raw.state) ? { status: str(raw.state.status), processingState: str(raw.state.processingState), confirmed: raw.state.confirmed === true, overridden: raw.state.overridden === true } : undefined;
 	return { taskId, name: str(raw.name), status: str(raw.status) ?? state?.status, sectionId: str(raw.sectionId), controls, state, values, options, order: num(raw.order, i) };
+}
+
+/** One row of `GET /flows/{flowId}/values`. `str` keeps "false" and "0" — both are answers. */
+function toValueRow(raw: Record<string, unknown>): FlowValueRow | undefined {
+	const taskId = str(raw.taskId) ?? str(raw.id);
+	if (!taskId) return undefined;
+	return {
+		taskId,
+		dataId: str(raw.dataId),
+		status: str(raw.status),
+		value: typeof raw.value === "boolean" ? String(raw.value) : str(raw.value),
+		displayValue: typeof raw.displayValue === "boolean" ? String(raw.displayValue) : str(raw.displayValue),
+		time: str(raw.time),
+		type: taskTypeName(raw.type),
+	};
 }
 
 export function toFlowDetail(raw: unknown): FlowDetail | undefined {
@@ -257,7 +317,7 @@ export function toTemplateDetail(raw: unknown): TemplateDetail | undefined {
 					const tid = str(t.id);
 					if (!tid) return undefined;
 					const control = isObj(t.control) ? t.control : isObj(t.taskTemplateControl) ? t.taskTemplateControl : undefined;
-					const type = str(control?.type) ?? str(t.type) ?? str(t.controlType);
+					const type = taskTypeName(control?.type) ?? taskTypeName(t.type) ?? taskTypeName(t.controlType);
 					return { id: tid, name: str(t.name) ?? tid, order: num(t.order, j), type, dataId: str(control?.dataId) ?? str(t.dataId), options: parseOptions(control?.quickSelectValues) ?? parseOptions(control?.values), spokenPrompt: str(t.spokenPrompt) };
 				})
 				.filter((t): t is TemplateTask => !!t)
@@ -266,7 +326,18 @@ export function toTemplateDetail(raw: unknown): TemplateDetail | undefined {
 		})
 		.filter((s): s is TemplateDetail["sections"][number] => !!s)
 		.sort((a, b) => a.order - b.order);
-	return { ...info, sections };
+	return { ...info, sections, discardReasons: parseDiscardReasons(raw.discardReasons) };
+}
+
+export function parseDiscardReasons(raw: unknown): DiscardReason[] {
+	if (!Array.isArray(raw)) return [];
+	return raw
+		.map((x): DiscardReason | undefined => {
+			if (!isObj(x)) return undefined;
+			const name = str(x.name) ?? str(x.title);
+			return name ? { name, requireComment: x.requireComment === true } : undefined;
+		})
+		.filter((x): x is DiscardReason => !!x);
 }
 
 function envelope<T>(body: unknown, mapItem: (x: unknown, i: number) => T | undefined, page: number, pageSize: number): PageEnvelope<T> {
@@ -335,6 +406,34 @@ export class FlowsClient {
 		return { ok: true, data: out };
 	}
 
+	/**
+	 * Flat value query — the cheap way to ask "did anything change?" while a run is open.
+	 * `statsOnly` sends `pageSize=0`: the answer is a few hundred bytes with no rows at all, so the hub can
+	 * tick often and only pull rows once the counts move. Rows come back over at most 5 pages of 500.
+	 */
+	async queryValues(s: ApiSettings, flowId: string, opts: { statsOnly?: boolean } = {}): Promise<ClientResult<{ rows: FlowValueRow[]; stats: FlowValueStats; total: number }>> {
+		const root = flowsRoot(s.flowsBaseUrl);
+		if (!root) return { ok: false, kind: "invalidConfig", message: "invalid flows base URL" };
+		const url = (page: number, pageSize: number) =>
+			`${root}/flows/${encodeURIComponent(flowId)}/values${query({ fields: "taskId,dataId,status,value,displayValue,time,type", includeHidden: false, page, pageSize })}`;
+		const map = (b: unknown) => {
+			const o = isObj(b) ? b : {};
+			const st = isObj(o.stats) ? o.stats : {};
+			const rows = (Array.isArray(o.items) ? o.items : []).filter(isObj).map(toValueRow).filter((r): r is FlowValueRow => !!r);
+			return { rows, stats: { matched: num(st.matched, 0), withValue: num(st.withValue, 0), overridden: num(st.overridden, 0) }, total: num(o.total, rows.length) };
+		};
+		if (opts.statsOnly) return this.call(url(1, 0), { headers: this.headers(s) }, map);
+
+		const first = await this.call(url(1, 500), { headers: this.headers(s) }, map);
+		if (!first.ok || first.data.total <= first.data.rows.length) return first;
+		for (let page = 2; page <= 5 && first.data.rows.length < first.data.total; page++) {
+			const more = await this.call(url(page, 500), { headers: this.headers(s) }, map);
+			if (!more.ok || !more.data.rows.length) break;
+			first.data.rows.push(...more.data.rows);
+		}
+		return first;
+	}
+
 	createFlow(s: ApiSettings, templateId: string, name?: string): Promise<ClientResult<{ flowId: string }>> {
 		const root = flowsRoot(s.flowsBaseUrl);
 		if (!root) return Promise.resolve({ ok: false, kind: "invalidConfig", message: "invalid flows base URL" });
@@ -364,7 +463,10 @@ export class FlowsClient {
 			const status = num(first.status, 200);
 			const code = str(first.code) ?? (isObj(first.error) ? str(first.error.code) : undefined);
 			const ok = status >= 200 && status < 300 && !code;
-			return { ok, code, message: str(first.message) ?? str(first.title) ?? (isObj(first.error) ? str(first.error.title) : undefined), raw: b };
+			const err = isObj(first.error) ? first.error : undefined;
+			// the real reason lives in error.detail ("The submitted value was rejected: …"); title is just the status text
+			const message = str(first.message) ?? str(first.detail) ?? (err ? (str(err.detail) ?? str(err.title)) : undefined) ?? str(first.title);
+			return { ok, code, message, raw: b };
 		});
 	}
 
@@ -405,7 +507,8 @@ export class FlowsClient {
 	}
 
 	listTemplates(s: ApiSettings, search?: string, page = 1, pageSize = 200): Promise<ClientResult<{ items: TemplateInfo[]; total: number }>> {
-		const q = query({ ActiveAndDraft: false, page, pageSize, SearchString: search, SearchInTitle: search ? true : undefined });
+		// the Templates API wants at least one status group (ActiveAndDraft / Deactivated / Archived), else 400 "You need to define at least one status"
+		const q = query({ ActiveAndDraft: true, page, pageSize, SearchString: search, SearchInTitle: search ? true : undefined });
 		return this.templatesRequest(s, `/templates${q}`, (b, h) => {
 			const rows = Array.isArray(b) ? b : isObj(b) && Array.isArray(b.items) ? b.items : isObj(b) && Array.isArray(b.data) ? b.data : [];
 			const items = rows.map(toTemplateInfo).filter((t): t is TemplateInfo => !!t);
@@ -420,5 +523,10 @@ export class FlowsClient {
 			if (!d) throw new Error("unexpected template payload");
 			return d;
 		});
+	}
+
+	/** Tenant-wide discard reasons (`GET /discardReasons` on the Templates API); used when a template has none of its own. */
+	getDiscardReasons(s: ApiSettings): Promise<ClientResult<DiscardReason[]>> {
+		return this.templatesRequest(s, "/discardReasons", (b) => parseDiscardReasons(isObj(b) && Array.isArray(b.items) ? b.items : b));
 	}
 }

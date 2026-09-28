@@ -33,6 +33,14 @@ const T1 = "tpl-engine";
 const T2 = "tpl-departure";
 const T3 = "NauticAI/ArrivalChecklist";
 
+/** Tenant-wide discard reasons (Templates API `GET /discardReasons`); the fixtures carry no template-level list. */
+export const DISCARD_REASONS = [
+	{ id: "dr-1", name: "Created by mistake or duplicate", requireComment: false, requirePicture: false, default: false },
+	{ id: "dr-2", name: "No longer needed", requireComment: false, requirePicture: false, default: false },
+	{ id: "dr-3", name: "Wrong checklist", requireComment: false, requirePicture: false, default: false },
+	{ id: "dr-4", name: "Other", requireComment: true, requirePicture: false, default: false },
+];
+
 const NA_OPTIONS = [
 	{ title: "Yes", value: "Yes" },
 	{ title: "No", value: "No" },
@@ -65,8 +73,9 @@ function templateFixtures() {
 					name: "Auxiliaries",
 					order: 2,
 					taskTemplates: [
-						{ id: "tt-er-2a", name: "Check generator 1", order: 1, control: { type: "Checkbox", dataId: "ER/Aux/Gen1" } },
-						{ id: "tt-er-2b", name: "Check generator 2", order: 2, control: { type: "Checkbox", dataId: "ER/Aux/Gen2" } },
+						{ id: "tt-er-2a", name: "Check generator 1", order: 1, control: { type: 6, dataId: "ER/Aux/Gen1" } }, // the real Templates API sends the TaskType number
+						// a checkbox authored with an option ("Title::key"): Flow stores the key, and the v3 flow read hides the list
+						{ id: "tt-er-2b", name: "Check generator 2", order: 2, control: { type: "Checkbox", dataId: "ER/Aux/Gen2", values: "Done::completed" } },
 						{ id: "tt-er-2c", name: "Check bilge level", order: 3, control: { type: "QuickSelect", dataId: "ER/Aux/Bilge", quickSelectValues: [{ title: "Normal", value: "Normal" }, { title: "High", value: "High" }, { title: "Alarm", value: "Alarm" }] } },
 					],
 				},
@@ -155,8 +164,8 @@ function tasksFromTemplate(template, flowId, done = []) {
 				sectionId: s.id,
 				requiresValue: !!t.requiresValue,
 				order: t.order,
-				controls: [{ controlId, dataId: control.dataId, type: control.type, quickSelectValues: control.quickSelectValues }],
-				values: isDone ? [{ controlId, dataId: control.dataId, value: control.type === "Checkbox" ? "true" : control.type === "Number" ? "42" : "done", time: "2026-09-09T05:50:00Z", source: "fixture" }] : [],
+				controls: [{ controlId, dataId: control.dataId, type: control.type, quickSelectValues: control.quickSelectValues, values: control.values }],
+				values: isDone ? [{ controlId, dataId: control.dataId, value: control.type === "Checkbox" ? "OK" : control.type === "Number" ? "42" : "done", time: "2026-09-09T05:50:00Z", source: "fixture" }] : [],
 			});
 		}
 	}
@@ -169,12 +178,40 @@ function tasksFromTemplate(template, flowId, done = []) {
 /** Wire shape of a task in the v3 detail responses (`FlowDto.sections[].tasks[]`, `/tasks`). */
 function taskDto(t) {
 	const { requiresValue: _rv, ...rest } = t;
+	// like the real v3 read: a checkbox's "Title::key" list stays in the template, the flow shows only type + dataId
+	rest.controls = rest.controls?.map(({ values: _v, ...c }) => c);
 	return { ...rest, state: { status: t.status, processingState: t.status === "Done" ? "Finished" : "Pending", confirmed: t.status === "Done", overridden: false } };
 }
 
 function flowDetail(f, template) {
 	const sections = (template?.sectionTemplates ?? []).map((s) => ({ sectionId: s.id, name: s.name, order: s.order, status: "Open", tasks: f.tasks.filter((t) => t.sectionId === s.id).map(taskDto), progress: { done: f.tasks.filter((t) => t.sectionId === s.id && t.status === "Done").length, total: f.tasks.filter((t) => t.sectionId === s.id).length } }));
 	return { ...flowSummary(f), sections, tasks: f.tasks.map(taskDto) };
+}
+
+/** Rows of `GET /flows/{flowId}/values`: one per control, in section + task order like the real API. */
+function valueRows(f) {
+	return [...f.tasks]
+		.sort((a, b) => (a.sectionId ?? "").localeCompare(b.sectionId ?? "") || (a.order ?? 0) - (b.order ?? 0))
+		.flatMap((t) =>
+			(t.controls ?? []).map((c) => {
+				const v = t.values?.find((x) => x.controlId === c.controlId) ?? t.values?.[0];
+				return {
+					taskId: t.taskId,
+					controlId: c.controlId,
+					dataId: c.dataId,
+					sectionId: t.sectionId,
+					name: t.name,
+					type: c.type,
+					status: t.status === "Done" ? "Done" : "Open",
+					value: v?.value,
+					displayValue: c.quickSelectValues?.find((o) => o.value === v?.value)?.title ?? v?.value,
+					time: v?.time,
+					source: v?.source,
+					confirmed: t.status === "Done",
+					overridden: false,
+				};
+			}),
+		);
 }
 
 function flowFixtures(templates) {
@@ -262,6 +299,8 @@ export async function startFakeMaranics({ token = "t0k3n", tenant = "demo", port
 		/** Every access / refresh / id token ever issued (so a test can assert they never leak). */
 		tokens: [],
 		refreshTokens: [],
+		/** Every token handed to /connect/revocation. */
+		revoked: [],
 		idTokens: [],
 		/** Successful refresh_token grants. */
 		refreshCount: 0,
@@ -321,7 +360,7 @@ export async function startFakeMaranics({ token = "t0k3n", tenant = "demo", port
 		res.writeHead(status, { "content-type": "application/json", "content-length": Buffer.byteLength(text), ...headers });
 		res.end(text);
 	};
-	const problem = (res, status, code, title) => json(res, status, { type: "about:blank", title: title ?? code, status, code });
+	const problem = (res, status, code, detail) => json(res, status, { type: "about:blank", title: code, status, code, ...(detail ? { detail } : {}) });
 	const redirect = (res, base, params) => {
 		const u = new URL(base);
 		for (const [k, v] of Object.entries(params)) if (v !== undefined) u.searchParams.set(k, v);
@@ -351,6 +390,7 @@ export async function startFakeMaranics({ token = "t0k3n", tenant = "demo", port
 		userinfo_endpoint: `${oidc.issuer}/connect/userinfo`,
 		jwks_uri: `${oidc.issuer}/.well-known/jwks`,
 		end_session_endpoint: `${oidc.issuer}/connect/logout`,
+		revocation_endpoint: `${oidc.issuer}/connect/revocation`,
 		response_types_supported: ["code"],
 		grant_types_supported: ["authorization_code", "refresh_token"],
 		subject_types_supported: ["public"],
@@ -414,6 +454,16 @@ export async function startFakeMaranics({ token = "t0k3n", tenant = "demo", port
 		return json(res, 400, { error: "unsupported_grant_type", error_description: `grant_type ${grant || "(missing)"} is not supported` }, noStore);
 	}
 
+	async function revocation(req, res) {
+		const form = new URLSearchParams(await readText(req));
+		if (form.get("client_id") !== oidc.clientId || form.get("client_secret") !== oidc.clientSecret) return json(res, 401, { error: "invalid_client" });
+		const token = form.get("token") ?? "";
+		oidc.revoked.push(token);
+		const r = refreshTokens.get(token);
+		if (r) r.current = false;
+		return json(res, 200, {}); // RFC 7009: 200 also for a token nobody knows
+	}
+
 	function userinfo(req, res) {
 		oidc.userinfoCalls += 1;
 		const t = issuedAccess(bearerOf(req));
@@ -456,6 +506,7 @@ export async function startFakeMaranics({ token = "t0k3n", tenant = "demo", port
 			if (method === "GET" && sub === "/.well-known/jwks") return json(res, 200, jwks);
 			if (method === "GET" && sub === "/connect/authorize") return authorize(url, res);
 			if (method === "POST" && sub === "/connect/token") return tokenEndpoint(req, res);
+			if (method === "POST" && sub === "/connect/revocation") return revocation(req, res);
 			if (method === "GET" && sub === "/connect/userinfo") return userinfo(req, res);
 			if (method === "GET" && sub === "/connect/logout") return logout(url, res);
 			return problem(res, 404, "NOT_FOUND", `no route for ${method} ${url.pathname}`);
@@ -492,6 +543,19 @@ export async function startFakeMaranics({ token = "t0k3n", tenant = "demo", port
 			if (!f) return problem(res, 404, "FLOW_NOT_FOUND");
 			return json(res, 200, page(f.tasks.map(taskDto), url.searchParams));
 		}
+		// flat value query: one row per control, `fields` picks the columns, pageSize=0 = stats only (the hub's live-sync tick)
+		if ((m = /^\/app\/flows\/v3\/flows\/([^/]+)\/values$/.exec(url.pathname)) && method === "GET") {
+			const f = flows.find((x) => x.flowId === decodeURIComponent(m[1]));
+			if (!f) return problem(res, 404, "FLOW_NOT_FOUND");
+			const rows = valueRows(f);
+			const stats = { matched: rows.length, withValue: rows.filter((r) => r.value !== undefined && r.value !== "").length, overridden: rows.filter((r) => r.overridden).length };
+			const size = Math.min(500, Math.max(0, Number(url.searchParams.get("pageSize") ?? 50)));
+			if (size === 0) return json(res, 200, { total: rows.length, page: 1, pageSize: 0, items: [], stats });
+			const fields = (url.searchParams.get("fields") ?? "").split(",").map((s) => s.trim()).filter(Boolean);
+			const pick = (r) => (fields.length ? Object.fromEntries(Object.entries(r).filter(([k]) => fields.includes(k))) : r);
+			const p = Math.max(1, Number(url.searchParams.get("page") ?? 1));
+			return json(res, 200, { total: rows.length, page: p, pageSize: size, items: rows.slice((p - 1) * size, p * size).map(pick), stats });
+		}
 		if ((m = /^\/app\/flows\/v3\/flows\/([^/]+)\/tasks\/values$/.exec(url.pathname)) && method === "PUT") {
 			const body = await readBody(req);
 			const f = flows.find((x) => x.flowId === decodeURIComponent(m[1]));
@@ -504,7 +568,12 @@ export async function startFakeMaranics({ token = "t0k3n", tenant = "demo", port
 				if (!t) return { task: it.task, status: 404, code: "TASK_NOT_FOUND" };
 				const c = t.controls[0];
 				if (c.type === "Sign" || c.type === "Drawing") return { task: it.task, status: 422, code: "CONTROL_NOT_VALUE_BEARING" };
-				if (c.type === "Checkbox" && !/^(true|false)$/.test(String(it.value))) return { task: it.task, status: 422, code: "VALUE_INVALID", message: "Checkbox expects true/false" };
+				// real rule (TaskValueValidation.cs): a plain checkbox is "OK" or empty; one with `values` takes the keys of its
+				// "Title::key" lines (newline-joined for multi-select); RadioButtons without options is "Yes"/"No"
+				const listKeys = c.values ? String(c.values).split("\n").filter(Boolean).map((l) => { const a = l.split("::"); return (a.length > 1 && a[1].trim() ? a[1] : a[0]).trim(); }) : undefined;
+				if (c.type === "Checkbox" && !listKeys && String(it.value) !== "OK") return { task: it.task, status: 422, code: "VALUE_INVALID", message: "The submitted value was rejected: it is invalid for this control" };
+				if (c.type === "Checkbox" && listKeys && !String(it.value).split("\n").filter(Boolean).every((v) => listKeys.includes(v.trim()))) return { task: it.task, status: 422, code: "VALUE_INVALID", message: "The submitted value was rejected: it is invalid for this control" };
+				if (c.type === "RadioButtons" && !c.quickSelectValues && !/^(Yes|No)$/.test(String(it.value))) return { task: it.task, status: 422, code: "VALUE_INVALID", message: "The submitted value was rejected: it is invalid for this control" };
 				if (c.type === "Number" && Number.isNaN(Number(it.value))) return { task: it.task, status: 422, code: "VALUE_INVALID", message: "Number expected" };
 				if (c.type === "QuickSelect" && c.quickSelectValues && !c.quickSelectValues.some((o) => o.value === String(it.value))) return { task: it.task, status: 422, code: "VALUE_INVALID", message: "value not in the option set" };
 				if (t.values.length && !it.overrideExistingValue) return { task: it.task, status: 409, code: "VALUE_OVERWRITE_CONFLICT", message: "value already set — retry with overrideExistingValue=true" };
@@ -519,7 +588,14 @@ export async function startFakeMaranics({ token = "t0k3n", tenant = "demo", port
 			const body = await readBody(req);
 			const f = flows.find((x) => x.flowId === decodeURIComponent(m[1]));
 			if (!f) return problem(res, 404, "FLOW_NOT_FOUND");
+			const unknown = Object.keys(body ?? {}).find((k) => !["action", "reason", "comment", "force"].includes(k));
+			if (unknown) return problem(res, 422, "UNKNOWN_FIELD", `unknown field ${unknown}; allowed: action, reason, comment, force`);
 			const action = String(body?.action ?? "").toLowerCase();
+			if (action === "discard") {
+				const reason = DISCARD_REASONS.find((x) => x.name === body?.reason);
+				if (!reason) return problem(res, 422, "VALUE_INVALID", "The given discard reason is not allowed in application options");
+				if (reason.requireComment && !String(body?.comment ?? "").trim()) return problem(res, 422, "VALUE_INVALID", "The given discard reason requires a comment to be non-empty");
+			}
 			if (action === "complete") {
 				if (f.tasks.some((t) => t.status !== "Done" && t.controls[0].type !== "Sign")) return problem(res, 422, "STATE_TRANSITION_INVALID", "open tasks remain");
 				f.status = "Completed";
@@ -546,8 +622,11 @@ export async function startFakeMaranics({ token = "t0k3n", tenant = "demo", port
 		}
 
 		// ---- Templates API ----
+		if (method === "GET" && url.pathname === "/app/templates/discardReasons") return json(res, 200, DISCARD_REASONS);
 		if (method === "GET" && url.pathname === "/app/templates/templates") {
 			// Real templates app: SearchString + SearchInTitle/SearchInRefId flags (no generic `search`).
+			// …and it refuses a list without a status group, exactly like the real one
+			if (!["ActiveAndDraft", "Deactivated", "Archived"].some((k) => url.searchParams.get(k) === "true")) return json(res, 400, { message: "You need to define at least one status" });
 			const search = (url.searchParams.get("SearchString") ?? "").trim().toLowerCase();
 			const inTitle = url.searchParams.get("SearchInTitle") !== "false";
 			const inRefId = url.searchParams.get("SearchInRefId") === "true";
@@ -600,6 +679,22 @@ export async function startFakeMaranics({ token = "t0k3n", tenant = "demo", port
 			const t = flows.find((x) => x.flowId === flowId)?.tasks.find((x) => x.taskId === taskId);
 			if (!t) throw new Error(`unknown task ${flowId}/${taskId}`);
 			t.status = status;
+		},
+		/** Set (or with `value === undefined` clear) a task's value the way the Flow app does. `ref` = task id or DataId. */
+		setTaskValue(flowId, ref, value) {
+			const f = flows.find((x) => x.flowId === flowId);
+			if (!f) throw new Error(`unknown flow ${flowId}`);
+			const t = f.tasks.find((x) => x.taskId === ref || x.controls?.some((c) => c.dataId === ref));
+			if (!t) throw new Error(`unknown task ${flowId}/${ref}`);
+			const c = t.controls[0];
+			if (value === undefined) {
+				t.values = [];
+				t.status = "Open";
+			} else {
+				t.values = [{ controlId: c.controlId, dataId: c.dataId, value: String(value), time: new Date().toISOString(), source: "app" }];
+				t.status = "Done";
+			}
+			return { taskId: t.taskId, dataId: c.dataId, status: t.status };
 		},
 		/** Add an Active flow of `templateId` (tasks generated from the template unless given). */
 		addFlow({ flowId, name, templateId, createdAt = new Date().toISOString(), status = "Active", tasks }) {

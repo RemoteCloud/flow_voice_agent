@@ -1,3 +1,6 @@
+/** Injected by vite.config.ts: git sha + build minute of this bundle. */
+declare const __WEB_BUILD__: string;
+
 /** Web Speech API types (not in lib.dom for every TS version). */
 interface SpeechRecognitionAlternative {
 	readonly transcript: string;

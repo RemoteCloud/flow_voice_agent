@@ -11,6 +11,9 @@ import type { HubEvent } from "../../server/protocol.js";
 import { AudioEndpoint, type EndpointState } from "./audio.js";
 import { useApp } from "./context.js";
 import { navigate } from "./router.js";
+import { isMobileClient } from "./platform.js";
+
+const mobile = isMobileClient();
 
 export interface VoiceApi {
 	state: EndpointState;
@@ -34,6 +37,12 @@ export interface VoiceApi {
 	/** Spoken language for this device ("" = the station's configured language). Reconnects if voice is on. */
 	language: string;
 	setLanguage(lang: string): void;
+	/** Language the crew answers in ("" = the checklist language). The hub understands all of them; this only steers the recogniser. */
+	answerLanguage: string;
+	setAnswerLanguage(lang: string): void;
+	/** Noisy bridge: the mic opens only while push-to-talk is held, never on its own after a prompt. */
+	holdToAnswer: boolean;
+	setHoldToAnswer(on: boolean): void;
 	clearError(): void;
 }
 
@@ -77,6 +86,10 @@ export function VoiceProvider({ children }: { children: ReactNode }) {
 	const pendingStation = useRef<string | undefined>(undefined);
 	const [language, setLanguageState] = useState<string>(() => localStorage.getItem("fv.lang") ?? "");
 	const langRef = useRef(language);
+	const [answerLanguage, setAnswerLanguageState] = useState<string>(() => localStorage.getItem("fv.answerLang") ?? "");
+	const answerLangRef = useRef(answerLanguage);
+	const [holdToAnswer, setHoldState] = useState<boolean>(() => localStorage.getItem("fv.hold") === "1");
+	const holdRef = useRef(holdToAnswer);
 
 	const stop = useCallback(() => {
 		ep.current?.stop();
@@ -88,6 +101,7 @@ export function VoiceProvider({ children }: { children: ReactNode }) {
 		setStationId(undefined);
 	}, []);
 
+	const startRef = useRef<((wanted?: string) => Promise<void>) | undefined>(undefined);
 	const start = useCallback(
 		async (wanted?: string) => {
 			const sid = wanted ?? me.stationId;
@@ -101,7 +115,8 @@ export function VoiceProvider({ children }: { children: ReactNode }) {
 			const open = station?.audioPolicy === "open";
 			setError(undefined);
 			const endpoint = new AudioEndpoint(
-				{ stationId: sid, endpointId: endpointId(), language: langRef.current || station?.language || "en", sttOnEndpoint: boot.speech.stt === "endpoint", pushToTalk: !open, handsFree: handsFree || open },
+				// phones / tablets have no settings of their own: language and hold-to-answer come from the station (and the run language from the template)
+				{ stationId: sid, endpointId: endpointId(), language: (mobile ? "" : langRef.current) || station?.language || "en", answerLanguage: mobile ? "" : answerLangRef.current, holdToAnswer: mobile ? !!station?.holdToAnswer : holdRef.current, sttOnEndpoint: boot.speech.stt === "endpoint", serverBackup: !!boot.speech.sttBackup, serverTts: boot.speech.tts === "http", pushToTalk: !open, handsFree: handsFree || open },
 				{
 					onState: (s, t) => {
 						setState(s);
@@ -111,15 +126,16 @@ export function VoiceProvider({ children }: { children: ReactNode }) {
 					onEvent: (e) => setEvents((prev) => [e, ...prev].slice(0, 30)),
 					onTranscript: (t, final) => setTranscript(final ? "" : t),
 					onError: (m) => setError(m),
+					onRestart: () => {
+						stop();
+						window.setTimeout(() => void startRef.current?.(sid), 400);
+					},
+					onReplaced: () => {
+						stop();
+						setError("Voice moved to another tab or device on this station. Press Start voice to take it back here.");
+					},
 					onRole: setRole,
 					onNavigate: (page, opts) => {
-						if (opts.stationId && opts.stationId !== sid) {
-							// the hub moved us to another station: rebind the session and reconnect there
-							pendingStation.current = opts.stationId;
-							void setStation(opts.stationId);
-							navigate({ page: "picker" });
-							return;
-						}
 						if (page === "run" && opts.runId) navigate({ page: "run", id: opts.runId });
 						else navigate({ page: "picker" });
 					},
@@ -137,8 +153,9 @@ export function VoiceProvider({ children }: { children: ReactNode }) {
 				setStationId(undefined);
 			}
 		},
-		[me.stationId, stationId, stations, boot.speech.stt, handsFree, stop, setStation],
+		[me.stationId, stationId, stations, boot.speech.stt, boot.speech.sttBackup, handsFree, stop, setStation],
 	);
+	startRef.current = start;
 
 	// station switched by voice: reconnect once the session carries the new station
 	useEffect(() => {
@@ -214,9 +231,23 @@ export function VoiceProvider({ children }: { children: ReactNode }) {
 					void start(sid);
 				}
 			},
+			answerLanguage,
+			setAnswerLanguage: (lang) => {
+				answerLangRef.current = lang;
+				setAnswerLanguageState(lang);
+				localStorage.setItem("fv.answerLang", lang);
+				ep.current?.setAnswerLanguage(lang);
+			},
+			holdToAnswer,
+			setHoldToAnswer: (on) => {
+				holdRef.current = on;
+				setHoldState(on);
+				localStorage.setItem("fv.hold", on ? "1" : "0");
+				ep.current?.setHoldToAnswer(on);
+			},
 			clearError: () => setError(undefined),
 		}),
-		[state, stateText, role, stationId, handsFree, transcript, run, events, error, start, stop, boot.speech.stt, language],
+		[state, stateText, role, stationId, handsFree, transcript, run, events, error, start, stop, boot.speech.stt, language, answerLanguage, holdToAnswer],
 	);
 
 	return <VoiceContext.Provider value={api}>{children}</VoiceContext.Provider>;
@@ -230,19 +261,29 @@ export function useVoice(): VoiceApi {
 
 export const STATE_TEXT: Record<EndpointState, string> = { disconnected: "Voice off", connecting: "Connecting…", observer: "Observing", ready: "Ready", speaking: "Speaking", listening: "Listening", thinking: "…" };
 
-/** Per-device spoken language. Shown wherever voice can be started. */
+/** Per-device languages: the one the checklist is spoken in, and the one the crew answers in. Shown wherever voice can be started. */
 export function LanguageSelect({ compact }: { compact?: boolean }) {
 	const v = useVoice();
 	const { me, stations } = useApp();
 	const station = stations.find((s) => s.stationId === (v.stationId ?? me.stationId));
+	const cls = `input w-auto ${compact ? "py-1 text-xs" : ""}`;
 	return (
-		<select className={`input w-auto ${compact ? "py-1 text-xs" : ""}`} value={v.language} onChange={(e) => v.setLanguage(e.target.value)} aria-label="Voice language" title="Voice language">
-			{LANGUAGES.map(([code, label]) => (
-				<option key={code} value={code}>
-					{code === "" && station?.language ? `${label} (${station.language})` : label}
-				</option>
-			))}
-		</select>
+		<span className="flex max-w-full flex-wrap items-center gap-1">
+			<select className={cls} value={v.language} onChange={(e) => v.setLanguage(e.target.value)} aria-label="Checklist language" title="Checklist language (spoken prompts)">
+				{LANGUAGES.map(([code, label]) => (
+					<option key={code} value={code}>
+						{code === "" && station?.language ? `${label} (${station.language})` : label}
+					</option>
+				))}
+			</select>
+			<select className={cls} value={v.answerLanguage} onChange={(e) => v.setAnswerLanguage(e.target.value)} aria-label="Answer language" title="Language you answer in (speech recognition)">
+				{LANGUAGES.map(([code, label]) => (
+					<option key={code} value={code}>
+						{code === "" ? "Answer: same" : `Answer: ${label}`}
+					</option>
+				))}
+			</select>
+		</span>
 	);
 }
 
@@ -271,16 +312,20 @@ export function VoiceBar({ compact }: { compact?: boolean }) {
 							Take over
 						</button>
 					)}
-					<label className="flex items-center gap-1.5 text-xs text-fg-muted">
+					{!mobile && <label className="flex items-center gap-1.5 text-xs text-fg-muted">
 						<input type="checkbox" checked={v.handsFree} onChange={(e) => v.setHandsFree(e.target.checked)} disabled={!v.handsFreeSupported} />
 						Hands-free
-					</label>
+					</label>}
+					{!mobile && <label className="flex items-center gap-1.5 text-xs text-fg-muted" title="Noisy bridge: the mic opens only while you hold the button">
+						<input type="checkbox" checked={v.holdToAnswer} onChange={(e) => v.setHoldToAnswer(e.target.checked)} disabled={v.handsFree} />
+						Hold to answer
+					</label>}
 					<button type="button" className="btn btn-sm btn-ghost" onClick={v.stop}>
 						Voice off
 					</button>
 				</>
 			)}
-			<LanguageSelect compact />
+			{!mobile && <LanguageSelect compact />}
 		</div>
 	);
 }

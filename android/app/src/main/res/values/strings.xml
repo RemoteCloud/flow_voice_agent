@@ -5,9 +5,9 @@
     <string name="hub_url_hint">http://flow-voice.vessel.local:8443</string>
     <string name="hub_url_help">The hub runs on the ship network. Ask the officer who set it up, or scan the QR code shown on the hub\u2019s sign-in page (Pair the Android app) or Admin → Status.</string>
     <string name="menu_hub">Hub address…</string>
-    <string name="menu_scan">Scan hub QR code…</string>
+    <string name="menu_scan">Scan station / hub QR code…</string>
     <string name="scan_qr">Scan QR</string>
-    <string name="scan_prompt">Point the camera at the QR code on the Flow Voice sign-in page</string>
+    <string name="scan_prompt">Point the camera at the station poster (or the QR code on the Flow Voice sign-in page)</string>
     <string name="qr_not_hub">That QR code is not a Flow Voice hub address: %1$s</string>
     <string name="menu_reload">Reload</string>
     <string name="menu_ptt_hint">Push-to-talk: hold the on-screen button, volume-up, or a headset button.</string>
@@ -15,6 +15,8 @@
     <string name="notification_title">Flow Voice</string>
     <string name="notification_text">Voice checklist active</string>
     <string name="mic_denied">Microphone permission is required to answer by voice. You can still answer on screen.</string>
+    <string name="stt_failed">Speech recognition failed: %1$s (%2$s). Install the language in the phone\u2019s speech settings or choose another voice language.</string>
+    <string name="grammar_model_state">Offline word list for %1$s: %2$s</string>
     <string name="save">Save</string>
     <string name="cancel">Cancel</string>
 </resources>

@@ -1,6 +1,7 @@
 /** Flow Voice configuration from environment variables. Pure (no process access); smoke-tested. */
 import path from "node:path";
 import { normalizeBaseUrl } from "./core/http.js";
+import type { CaptureEnv, CaptureS3Env } from "./speech/capture.js";
 
 export type LogLevel = "debug" | "info" | "warn";
 
@@ -34,9 +35,14 @@ export interface SpeechEnv {
 	sttUrl?: string;
 	sttModel: string;
 	sttApiKey?: string;
+	/** Backup recogniser: the device still transcribes itself, and sends the audio of a window here only when it could not (no model / language pack, nothing recognised). Same API as `sttUrl`. */
+	sttBackupUrl?: string;
+	sttBackupModel: string;
 	/** `endpoint` = device speaks; `http` = GET `ttsUrl?text=` for audio (Piper HTTP server). */
 	ttsMode: "endpoint" | "http";
 	ttsUrl?: string;
+	/** Raw `TTS_VOICES` (language=piper voice, comma-separated); defaults in `speech/tts.ts`. */
+	ttsVoices?: string;
 }
 
 export interface PolicyEnv {
@@ -50,6 +56,8 @@ export interface PolicyEnv {
 	timeZone?: string;
 	defaultLanguage: string;
 	readNotices: boolean;
+	/** Live sync tick per open run, ms (`GET /flows/{id}/values` stats only). 0 = no polling, push only. */
+	syncPollMs: number;
 }
 
 export interface HubEnv {
@@ -66,7 +74,13 @@ export interface HubEnv {
 	maranics?: MaranicsEnv;
 	oidc?: OidcEnv;
 	oidcReason?: string;
+	/** Password of the central admin area (`/central`, tenant management). Unset → main-hub admins manage tenants instead. */
+	centralPassword?: string;
+	/** Set on the core of a token tenant (`server/tenants.ts`); the main hub leaves it unset. */
+	tokenTenant?: { id: string; name: string };
 	speech: SpeechEnv;
+	/** Voice recording for training (stations opt in): where the clips go. */
+	capture: CaptureEnv;
 	policy: PolicyEnv;
 	/** Service bearer tokens accepted on POST /v1/prompts and /v1/runs/trigger (comma separated). */
 	serviceTokens: string[];
@@ -160,6 +174,8 @@ export function parseEnv(e: Env, defaults: { cwd: string } = { cwd: process.cwd(
 			};
 	} else oidcReason = "Sign-in is not configured (HUB_OIDC_ISSUER, HUB_OIDC_CLIENT_ID, HUB_OIDC_CLIENT_SECRET)";
 
+	const centralPassword = s(e, "CENTRAL_PASSWORD", "HUB_CENTRAL_PASSWORD");
+	if (centralPassword && centralPassword.length < 12) throw new EnvError("CENTRAL_PASSWORD must be at least 12 characters");
 	const devUserName = s(e, "DEV_USER");
 	const devUser = devUserName ? { sub: `dev:${devUserName.toLowerCase().replace(/\s+/g, "-")}`, name: devUserName, email: s(e, "DEV_USER_EMAIL") ?? `${devUserName.toLowerCase().replace(/\s+/g, ".")}@example.com` } : undefined;
 
@@ -172,6 +188,25 @@ export function parseEnv(e: Env, defaults: { cwd: string } = { cwd: process.cwd(
 	}
 	const single = s(e, "WEBHOOK_SECRET");
 	if (single) webhookSecrets["*"] = single;
+	let captureS3: CaptureS3Env | undefined;
+	const bucket = s(e, "CAPTURE_S3_BUCKET");
+	if (bucket) {
+		const region = s(e, "CAPTURE_S3_REGION", "AWS_REGION") ?? "us-east-1";
+		const endpoint = normalizeBaseUrl(s(e, "CAPTURE_S3_ENDPOINT"));
+		const accessKeyId = s(e, "CAPTURE_S3_ACCESS_KEY_ID", "AWS_ACCESS_KEY_ID");
+		const secretAccessKey = s(e, "CAPTURE_S3_SECRET_ACCESS_KEY", "AWS_SECRET_ACCESS_KEY");
+		if (!accessKeyId || !secretAccessKey) throw new EnvError("CAPTURE_S3_BUCKET needs CAPTURE_S3_ACCESS_KEY_ID and CAPTURE_S3_SECRET_ACCESS_KEY");
+		captureS3 = {
+			endpoint: endpoint ?? `https://s3.${region}.amazonaws.com`,
+			region,
+			bucket,
+			prefix: s(e, "CAPTURE_S3_PREFIX") ?? "flow-voice",
+			accessKeyId,
+			secretAccessKey,
+			// a custom endpoint (MinIO, R2, …) is nearly always path style
+			pathStyle: b(e, "CAPTURE_S3_PATH_STYLE", !!endpoint),
+		};
+	}
 	const levelRaw = (s(e, "LOG_LEVEL") ?? "info").toLowerCase();
 	const logLevel: LogLevel = levelRaw === "debug" || levelRaw === "warn" ? levelRaw : "info";
 
@@ -194,9 +229,13 @@ export function parseEnv(e: Env, defaults: { cwd: string } = { cwd: process.cwd(
 			sttUrl,
 			sttModel: s(e, "STT_MODEL") ?? "whisper-1",
 			sttApiKey: s(e, "STT_API_KEY"),
+			sttBackupUrl: normalizeBaseUrl(s(e, "STT_BACKUP_ENDPOINT", "STT_BACKUP_URL")),
+			sttBackupModel: s(e, "STT_BACKUP_MODEL") ?? s(e, "STT_MODEL") ?? "whisper-1",
 			ttsMode: ttsUrl ? "http" : "endpoint",
 			ttsUrl,
+			ttsVoices: s(e, "TTS_VOICES"),
 		},
+		capture: { maxMb: n(e, "CAPTURE_MAX_MB", 2048), s3: captureS3 },
 		policy: {
 			listenMs: n(e, "LISTEN_MS", 8000),
 			confirmMs: n(e, "CONFIRM_MS", 10000),
@@ -207,7 +246,9 @@ export function parseEnv(e: Env, defaults: { cwd: string } = { cwd: process.cwd(
 			timeZone: s(e, "TZ"),
 			defaultLanguage: s(e, "DEFAULT_LANGUAGE") ?? "en",
 			readNotices: b(e, "READ_NOTICES"),
+			syncPollMs: Math.max(0, n(e, "SYNC_POLL_MS", 3000)),
 		},
+		centralPassword,
 		serviceTokens: (s(e, "SERVICE_TOKENS", "FLOW_SERVICE_TOKEN") ?? "")
 			.split(",")
 			.map((x) => x.trim())

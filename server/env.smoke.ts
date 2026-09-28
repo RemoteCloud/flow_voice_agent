@@ -14,6 +14,16 @@ export async function run(): Promise<void> {
 	assert.equal(minimal.speech.sttMode, "endpoint");
 	assert.equal(minimal.policy.tzMode, "utc");
 	assert.equal(minimal.policy.listenMs, 8000);
+	assert.equal(minimal.capture.s3, undefined);
+	assert.equal(minimal.capture.maxMb, 2048);
+	assert.throws(() => parseEnv({ HUB_SECRET: "0123456789abcdef0123", CAPTURE_S3_BUCKET: "voice" }), EnvError);
+	const aws = parseEnv({ HUB_SECRET: "0123456789abcdef0123", CAPTURE_S3_BUCKET: "voice", CAPTURE_S3_REGION: "eu-north-1", CAPTURE_S3_ACCESS_KEY_ID: "AK", CAPTURE_S3_SECRET_ACCESS_KEY: "SK" });
+	assert.equal(aws.capture.s3?.endpoint, "https://s3.eu-north-1.amazonaws.com");
+	assert.equal(aws.capture.s3?.pathStyle, false);
+	assert.equal(aws.capture.s3?.prefix, "flow-voice");
+	const minio = parseEnv({ HUB_SECRET: "0123456789abcdef0123", CAPTURE_S3_BUCKET: "voice", CAPTURE_S3_ENDPOINT: "http://minio:9000/", AWS_ACCESS_KEY_ID: "AK", AWS_SECRET_ACCESS_KEY: "SK" });
+	assert.equal(minio.capture.s3?.endpoint, "http://minio:9000");
+	assert.equal(minio.capture.s3?.pathStyle, true);
 
 	const full = parseEnv(
 		{

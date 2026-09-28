@@ -17,7 +17,7 @@ export function applyTheme(t: Theme): void {
 	if (t === "system") root.removeAttribute("data-theme");
 	else root.setAttribute("data-theme", t);
 	const dark = t === "dark" || (t === "system" && window.matchMedia("(prefers-color-scheme: dark)").matches);
-	document.querySelector('meta[name="theme-color"]')?.setAttribute("content", dark ? "#0a0f19" : "#ffffff");
+	document.querySelector('meta[name="theme-color"]')?.setAttribute("content", dark ? "#000000" : "#ffffff");
 	window.FlowVoiceAndroid?.setTheme?.(dark ? "dark" : "light");
 }
 
@@ -40,4 +40,19 @@ export function useTheme(): [Theme, () => void] {
 		setTheme(next);
 	}, [theme]);
 	return [theme, cycle];
+}
+
+/** What is on screen right now: a pinned choice, else what the device prefers. */
+export function isDark(t: Theme): boolean {
+	return t === "dark" || (t === "system" && window.matchMedia("(prefers-color-scheme: dark)").matches);
+}
+
+/** The client's Day / Night switch: two states, one tap, no "auto" step in between. */
+export function useDayNight(): [boolean, () => void] {
+	const [night, setNight] = useState<boolean>(() => isDark(readTheme()));
+	const toggle = useCallback(() => {
+		saveTheme(night ? "light" : "dark");
+		setNight(!night);
+	}, [night]);
+	return [night, toggle];
 }

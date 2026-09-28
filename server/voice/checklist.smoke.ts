@@ -76,6 +76,7 @@ export async function run(): Promise<void> {
 	assert.equal(startAnnouncement("Arrival Checklist", items, "silent", false), "");
 	assert.equal(itemAnnouncement(items[1], undefined, true, "full"), "First section, Pilot operations. Item two. Pilot card exchanged?");
 	assert.equal(itemAnnouncement(items[2], "Pilot operations", false, "short"), "Master pilot exchange completed?");
+	assert.equal(itemAnnouncement(items[1], undefined, true, "silent"), "Pilot card exchanged?");
 
 	// profile binding overrides the spoken prompt
 	const bound = buildItems(flow, { readNotices: false, profile: { profileId: "p", name: "p", bindings: [{ bindingId: "b", dataId: "P/Card", spokenPrompt: "Has the pilot card been exchanged?" }] } });

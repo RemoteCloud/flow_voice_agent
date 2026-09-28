@@ -50,6 +50,13 @@ export class Credentials {
 		return session.credential?.idTokenEnc ? this.open(session.credential.idTokenEnc) : undefined;
 	}
 
+	/** The session's own tokens, for revoking them at sign-out. Never the shared dev / tenant token. */
+	tokensOf(session: HubSession): { refreshToken?: string; accessToken?: string } {
+		const cred = session.credential;
+		if (!cred) return {};
+		return { refreshToken: cred.refreshTokenEnc ? this.open(cred.refreshTokenEnc) : undefined, accessToken: this.open(cred.accessTokenEnc) };
+	}
+
 	private open(sealed: string): string | undefined {
 		try {
 			return openToken(sealed, this.deps.sealKey);

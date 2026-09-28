@@ -23,6 +23,9 @@ export interface AuthProviderView {
 	issuerHost?: string;
 	reason?: string;
 	devUserName?: string;
+	/** Token tenant: the client signs in by itself, there is nothing to type. */
+	auto?: boolean;
+	tenantName?: string;
 }
 
 export const DEFAULT_ACCESS_TTL_SEC = 3600;
@@ -51,6 +54,7 @@ export interface OidcAuthDeps {
 	rand?: RandomBytes;
 	unconfiguredReason?: string;
 	devUser?: { sub: string; name: string; email: string };
+	tokenTenant?: { id: string; name: string };
 	/** Position ids allowed to sign in; empty = everyone in the tenant. */
 	allowedPositionIds?: string[];
 }
@@ -87,7 +91,7 @@ export class OidcAuth {
 	}
 
 	providerView(): AuthProviderView {
-		if (!this.configured && this.deps.devUser) return { kind: "dev", configured: true, tenant: this.deps.tenant, devUserName: this.deps.devUser.name };
+		if (!this.configured && this.deps.devUser) return { kind: "dev", configured: true, tenant: this.deps.tenant, devUserName: this.deps.devUser.name, auto: !!this.deps.tokenTenant, tenantName: this.deps.tokenTenant?.name };
 		const v: AuthProviderView = { kind: "oidc", configured: this.configured, tenant: this.deps.tenant };
 		if (this.deps.oidc) {
 			try {
@@ -111,7 +115,7 @@ export class OidcAuth {
 		}
 	}
 
-	async startLogin(returnTo?: string): Promise<LoginStart> {
+	async startLogin(returnTo?: string, fresh = false): Promise<LoginStart> {
 		if (!this.deps.provider || !this.deps.oidc) return { ok: false, code: "not_configured", detail: "HUB_OIDC_* is not set" };
 		this.sweepFlows();
 		const state = randomToken(32, this.rand);
@@ -119,7 +123,7 @@ export class OidcAuth {
 		const { verifier, challenge } = pkcePair(this.rand);
 		let redirectUrl: string;
 		try {
-			redirectUrl = await this.deps.provider.authorizeUrl({ state, nonce, codeChallenge: challenge });
+			redirectUrl = await this.deps.provider.authorizeUrl({ state, nonce, codeChallenge: challenge, prompt: fresh ? "login" : undefined });
 		} catch (err) {
 			this.deps.log.warn(`login cannot start: ${err instanceof Error ? err.message : String(err)}`);
 			return { ok: false, code: "provider_unavailable", detail: err instanceof Error ? err.message : String(err) };
@@ -185,15 +189,24 @@ export class OidcAuth {
 
 		const cred = buildCredential(info, tokens, this.deps.sealKey, now);
 		const out = await this.provision(info, cred, ip);
-		this.deps.log.info(`login from ${ip}: ${info.email ?? sub}${info.positionName ? ` (${info.positionName})` : ""}${tokens.refreshToken ? "" : " (no refresh token — access ends when the token expires)"}`);
+		this.deps.log.info(`login from ${ip}: ${info.email ?? sub}${info.positionName ? ` (${info.positionName})` : ""}${info.locationName ?? info.locationId ? ` at ${info.locationName ?? info.locationId}` : ""}${tokens.refreshToken ? "" : " (no refresh token — access ends when the token expires)"}`);
 		return { ...out, returnTo: flow.returnTo };
 	}
 
 	/** Dev sign-in: no provider, no tokens (the Flows client uses DEV_MARANICS_TOKEN or the fake Maranics static token). */
-	async devLogin(ip: string): Promise<LoginOutcome> {
+	/** `role` (token tenants): "client" = came in through a station link → a separate, non-admin user. */
+	async devLogin(ip: string, role?: "admin" | "client"): Promise<LoginOutcome> {
 		const u = this.deps.devUser;
 		if (!u) return { ok: false, code: "not_configured", detail: "DEV_USER is not set" };
-		const out = await this.provision({ sub: u.sub, email: u.email, name: u.name }, undefined, ip);
+		const sub = role === "client" ? `${u.sub}:client` : u.sub;
+		const out = await this.provision({ sub, email: u.email, name: u.name }, undefined, ip);
+		if (role) {
+			await this.deps.store.update((d) => {
+				const row = d.users.find((x) => x.sub === sub);
+				if (row) row.isAdmin = role === "admin";
+			});
+			out.user.isAdmin = role === "admin";
+		}
 		this.deps.log.info(`dev login from ${ip}: ${u.name}`);
 		return out;
 	}
@@ -214,6 +227,8 @@ export class OidcAuth {
 			u.name = info.name;
 			u.positionId = info.positionId;
 			u.positionName = info.positionName;
+			u.locationId = info.locationId;
+			u.locationName = info.locationName;
 			u.lastLoginAt = nowIso;
 			u.logins += 1;
 			user = { ...u };
@@ -224,13 +239,22 @@ export class OidcAuth {
 		return { ok: true, sid, session: row, user: user as HubUser };
 	}
 
-	async logout(row: HubSession | undefined, idTokenHint?: string): Promise<{ endSessionUrl: string }> {
+	/**
+	 * Sign-out clears everything the hub holds for the person: the session row (with its sealed tokens) goes, and the
+	 * tokens are revoked at Maranics so a copy is worth nothing. The next sign-in starts at the Maranics sign-in page.
+	 */
+	async logout(row: HubSession | undefined, idTokenHint?: string, tokens: { refreshToken?: string; accessToken?: string } = {}): Promise<{ endSessionUrl: string }> {
 		if (row) {
 			await this.deps.store.update((d) => {
 				d.sessions = d.sessions.filter((s) => s.id !== row.id);
 			});
 		}
 		let endSessionUrl: string | undefined;
+		if (this.deps.provider?.revoke && row) {
+			// the refresh token first: with most providers that takes its access tokens along
+			if (tokens.refreshToken) await this.deps.provider.revoke(tokens.refreshToken, "refresh_token");
+			if (tokens.accessToken) await this.deps.provider.revoke(tokens.accessToken, "access_token");
+		}
 		if (this.deps.provider && row) {
 			try {
 				endSessionUrl = await this.deps.provider.endSessionUrl(idTokenHint);

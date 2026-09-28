@@ -1,16 +1,24 @@
+import { ChecklistsTab } from "./AdminChecklists.js";
+import { TenantsTab } from "./AdminTenants.js";
 import { useCallback, useEffect, useState } from "react";
-import type { AuditEntry, Station, StatusResponse, VoiceProfile, EventMapping } from "../../../server/api.js";
+import type { AuditEntry, ChecklistPick, LibraryView, Station, StatusResponse, VoiceProfile, EventMapping } from "../../../server/api.js";
 import { api, toApiError } from "../api.js";
 import { useApp } from "../context.js";
 import { navigate } from "../router.js";
 import { StationsTab } from "./AdminStations.js";
 import { HubQr } from "./Login.js";
+import { versionLine } from "../build.js";
+import { Alert, EXCHANGE_TEXT, joinNames, plural, RUN_STATE_TEXT } from "../components/ui.js";
+import type { RunState } from "../../../server/protocol.js";
 
-type Tab = "status" | "stations" | "devices" | "profiles" | "outbox" | "audit";
+type Tab = "status" | "checklists" | "tenants" | "stations" | "devices" | "profiles" | "outbox" | "audit";
+const TABS: Tab[] = ["status", "checklists", "stations", "devices", "profiles", "outbox", "audit", "tenants"];
 
-export function AdminPage() {
+/** The tab lives in the address (#/admin/stations), so a refresh, the back button and a pasted link land on the same screen. */
+export function AdminPage({ tab: wanted }: { tab?: string }) {
 	const { me } = useApp();
-	const [tab, setTab] = useState<Tab>("status");
+	const tab: Tab = TABS.includes(wanted as Tab) ? (wanted as Tab) : "status";
+	const setTab = (t: Tab) => navigate({ page: "admin", tab: t });
 	const [status, setStatus] = useState<StatusResponse | undefined>();
 	const [err, setErr] = useState<string | undefined>();
 
@@ -30,54 +38,113 @@ export function AdminPage() {
 
 	const tabs: [Tab, string][] = [
 		["status", "Status"],
+		["checklists", "Checklist setup"],
 		["stations", "Stations"],
 		["devices", "Devices & sessions"],
-		["profiles", "Profiles & mappings"],
+		["profiles", "Advanced (JSON)"],
 		["outbox", `Outbox${status?.outbox.queued ? ` (${status.outbox.queued})` : ""}`],
 		["audit", "Audit"],
+		["tenants", "Tenants"],
 	];
 
 	return (
 		<div className="space-y-4">
-			<div className="flex flex-wrap gap-1">
+			<nav className="flex flex-wrap gap-1" aria-label="Admin sections">
 				{tabs.map(([t, label]) => (
-					<button key={t} type="button" className={`btn btn-sm ${tab === t ? "btn-primary" : "btn-ghost"}`} onClick={() => setTab(t)}>
+					<button key={t} type="button" className={`btn btn-sm ${tab === t ? "btn-primary" : "btn-ghost"}`} aria-current={tab === t ? "page" : undefined} onClick={() => setTab(t)}>
 						{label}
 					</button>
 				))}
-				{!me.isAdmin && <span className="ml-auto text-xs text-fg-faint">read-only (not an admin)</span>}
-			</div>
-			{err && <p className="text-sm text-danger">{err}</p>}
-			{!status ? <p className="text-sm text-fg-muted">Loading…</p> : tab === "status" ? <StatusTab s={status} /> : tab === "stations" ? <StationsTab s={status} reload={load} canEdit={me.isAdmin} /> : tab === "devices" ? <DevicesTab s={status} reload={load} canEdit={me.isAdmin} /> : tab === "profiles" ? <ProfilesTab canEdit={me.isAdmin} /> : tab === "outbox" ? <OutboxTab s={status} reload={load} /> : <AuditTab />}
+				{!me.isAdmin && <span className="ml-auto self-center text-xs text-fg-faint">Read-only: you are not an admin</span>}
+			</nav>
+			{err && <Alert title="The hub could not be reached">{err}</Alert>}
+			{!status ? <p className="text-sm text-fg-muted">Loading…</p> : tab === "status" ? <StatusTab s={status} go={setTab} /> : tab === "checklists" ? <ChecklistsTab canEdit={me.isAdmin} /> : tab === "stations" ? <StationsTab s={status} reload={load} canEdit={me.isAdmin} /> : tab === "devices" ? <DevicesTab s={status} reload={load} canEdit={me.isAdmin} /> : tab === "profiles" ? <ProfilesTab canEdit={me.isAdmin} /> : tab === "tenants" ? <TenantsTab /> : tab === "outbox" ? <OutboxTab s={status} reload={load} /> : <AuditTab />}
 		</div>
 	);
 }
 
-function StatusTab({ s }: { s: StatusResponse }) {
+/** Three steps from an empty hub to a working station; each shows whether it is done and jumps to the right tab. */
+function SetupGuide({ s, go }: { s: StatusResponse; go: (t: Tab) => void }) {
+	const [downloaded, setDownloaded] = useState<number | undefined>();
+	useEffect(() => {
+		api.get<LibraryView>("library").then((l) => setDownloaded(l.templates.length), () => setDownloaded(undefined));
+	}, []);
+	const words = Object.values(s.settings.itemAnswers ?? {}).reduce((n, per) => n + Object.keys(per).length, 0);
+	const inUse = s.stations.filter((st) => st.endpoint).length;
+	const steps: { done: boolean; title: string; text: string; button: string; tab: Tab }[] = [
+		{ done: !!downloaded, title: "Download checklists", text: downloaded ? `${downloaded} downloaded from Maranics.` : "Pick the checklists to use from the Maranics Templates app.", button: "Checklist setup", tab: "checklists" },
+		{ done: words > 0, title: "Set language and answer words", text: words ? `${plural(words, "item")} with answer words.` : "Optional: tap the words that count as the answer, like UP for Ramp.", button: "Checklist setup", tab: "checklists" },
+		{ done: inUse > 0, title: "Open a station", text: inUse ? `${plural(inUse, "station")} in use now.` : "Each station has its own link and QR code. Scan it with the tablet.", button: "Stations", tab: "stations" },
+	];
+	return (
+		<section className="card md:col-span-2">
+			<div className="card-head">
+				<h2 className="card-title">Set up in three steps</h2>
+			</div>
+			<ol className="grid gap-px bg-line md:grid-cols-3">
+				{steps.map((st, i) => (
+					<li key={st.title} className="flex flex-col gap-2 bg-panel p-4">
+						<p className="flex items-center gap-2 text-sm font-semibold">
+							<span className={`flex h-7 w-7 shrink-0 items-center justify-center rounded-full border text-xs ${st.done ? "border-ok text-ok" : "border-line-strong text-fg-muted"}`}>{st.done ? "✓" : i + 1}</span>
+							{st.title}
+						</p>
+						<p className="flex-1 text-xs text-fg-muted">{st.text}</p>
+						<button type="button" className={`btn btn-sm self-start ${st.done ? "" : "btn-primary"}`} onClick={() => go(st.tab)}>
+							{st.button}
+						</button>
+					</li>
+				))}
+			</ol>
+		</section>
+	);
+}
+
+function StatusTab({ s, go }: { s: StatusResponse; go: (t: Tab) => void }) {
 	const { boot } = useApp();
 	return (
 		<div className="grid gap-4 md:grid-cols-2">
+			<SetupGuide s={s} go={go} />
 			<section className="card">
 				<div className="card-head">
 					<h2 className="card-title">Hub</h2>
 				</div>
 				<dl className="card-body kv">
+					<dt>Client link</dt>
+					<dd>
+						<a className="mono underline" href="/client">
+							{boot.hubUrl.replace(/\/$/, "")}/client
+						</a>{" "}
+						<span className="text-fg-faint">— checklists and voice only (PC, Mac, Raspberry Pi, tablet)</span>
+					</dd>
+					<dt>Admin link</dt>
+					<dd>
+						<a className="mono underline" href="/admin">
+							{boot.hubUrl.replace(/\/$/, "")}/admin
+						</a>
+					</dd>
 					<dt>Version</dt>
-					<dd>{s.hubVersion}</dd>
-					<dt>Uptime</dt>
-					<dd>{Math.round(s.uptimeSec / 60)} min</dd>
+					<dd>{versionLine(s.hubVersion)}</dd>
+					<dt>Running for</dt>
+					<dd>{s.uptimeSec >= 5400 ? `${Math.round(s.uptimeSec / 3600)} h` : `${Math.round(s.uptimeSec / 60)} min`}</dd>
 					<dt>Speech</dt>
 					<dd>
-						STT {s.speech.stt}
-						{s.speech.sttUrl ? ` (${s.speech.sttUrl})` : ""} · TTS {s.speech.tts}
+						Hears {s.speech.stt === "endpoint" ? "on each device" : `on the hub${s.speech.sttUrl ? ` (${s.speech.sttUrl})` : ""}`} · speaks {s.speech.tts === "endpoint" ? "with the device's own voice" : "with the hub's voice"}
 					</dd>
-					<dt>Settings</dt>
+					<dt>Read-back</dt>
 					<dd>
-						time {s.settings.tzMode} · notices {s.settings.readNotices ? "read" : "silent"} · confirmation {s.settings.confirmation}
+						{s.settings.confirmation === "required" ? "Every answer is read back and confirmed" : "Answers are read back only when the hub is unsure"} · times in {String(s.settings.tzMode).toUpperCase()} · notices {s.settings.readNotices ? "read aloud" : "not read aloud"}
 					</dd>
-					<dt>Outbox</dt>
+					<dt>Waiting to sync</dt>
 					<dd>
-						{s.outbox.queued} queued · {s.outbox.failed} failed
+						{s.outbox.queued ? <span className="text-warn">{plural(s.outbox.queued, "answer")} on the way to Flow</span> : "Nothing"}
+						{s.outbox.failed ? (
+							<>
+								{" · "}
+								<button type="button" className="text-danger underline" onClick={() => go("outbox")}>
+									{s.outbox.failed} failed
+								</button>
+							</>
+						) : ""}
 					</dd>
 				</dl>
 			</section>
@@ -99,10 +166,20 @@ function StatusTab({ s }: { s: StatusResponse }) {
 							<p className="font-medium">
 								{st.name} <span className="mono text-xs text-fg-faint">{st.stationId}</span>
 							</p>
-							<p className="text-xs text-fg-muted">{st.endpoint ? `endpoint ${st.endpoint.endpointId}${st.endpoint.user ? ` as ${st.endpoint.user}` : ""} · ${st.endpoint.observers} observer(s)${st.endpoint.localStt ? " · STT on device" : ""}` : "no endpoint online"}</p>
+							<p className="text-xs text-fg-muted">
+								{st.endpoint ? (
+									<>
+										<span className="text-ok">● In use</span>
+										{st.endpoint.user ? ` by ${st.endpoint.user}` : ""}
+										{st.endpoint.observers ? ` · ${plural(st.endpoint.observers, "other screen")} watching` : ""}
+									</>
+								) : (
+									"No device connected"
+								)}
+							</p>
 							{st.activeRun && (
 								<button type="button" className="mt-1 text-xs text-accent underline" onClick={() => navigate({ page: "run", id: st.activeRun!.runId })}>
-									{st.activeRun.templateName} · {st.activeRun.state} · {st.activeRun.answered}/{st.activeRun.total}
+									{st.activeRun.templateName} · {(RUN_STATE_TEXT[st.activeRun.state as RunState] ?? st.activeRun.state).toLowerCase()} · {st.activeRun.answered} of {st.activeRun.total}
 								</button>
 							)}
 						</li>
@@ -111,7 +188,8 @@ function StatusTab({ s }: { s: StatusResponse }) {
 			</section>
 			<section className="card md:col-span-2">
 				<div className="card-head">
-					<h2 className="card-title">Runs & prompts</h2>
+					<h2 className="card-title">Checklists running now</h2>
+					<span className="text-xs text-fg-faint">Click one to open it.</span>
 				</div>
 				<div className="overflow-x-auto">
 					<table className="table">
@@ -120,8 +198,8 @@ function StatusTab({ s }: { s: StatusResponse }) {
 								<th>Run</th>
 								<th>Station</th>
 								<th>State</th>
-								<th>Progress</th>
-								<th>Users</th>
+								<th>Answered</th>
+								<th>Who</th>
 							</tr>
 						</thead>
 						<tbody>
@@ -132,23 +210,24 @@ function StatusTab({ s }: { s: StatusResponse }) {
 											{r.templateName}
 										</button>
 									</td>
-									<td>{r.stationId}</td>
+									<td>{s.stations.find((st) => st.stationId === r.stationId)?.name ?? r.stationId}</td>
 									<td>
-										{r.state} / {r.exchange}
+										{RUN_STATE_TEXT[r.state]}
+										{EXCHANGE_TEXT[r.exchange] ? <span className="text-fg-faint"> · {EXCHANGE_TEXT[r.exchange]}</span> : null}
 									</td>
 									<td>
-										{r.answered}/{r.total}
-										{r.unsynced ? ` (${r.unsynced} unsynced)` : ""}
+										{r.answered} of {r.total}
+										{r.unsynced ? <span className="text-warn"> · {r.unsynced} not yet in Flow</span> : ""}
 									</td>
-									<td className="text-xs">{r.users.map((u) => u.name ?? u.sub).join(", ")}</td>
+									<td className="text-xs">{joinNames(r.users)}</td>
 								</tr>
 							))}
 							{s.prompts
 								.filter((p) => p.state !== "committed" && p.state !== "cancelled")
 								.map((p) => (
 									<tr key={p.promptId}>
-										<td className="text-fg-muted">prompt: {p.prompt}</td>
-										<td>{p.stationId}</td>
+										<td className="text-fg-muted">Question: {p.prompt}</td>
+										<td>{s.stations.find((st) => st.stationId === p.stationId)?.name ?? p.stationId}</td>
 										<td>{p.state}</td>
 										<td colSpan={2} className="text-xs text-fg-faint">
 											{p.createdAt}
@@ -158,7 +237,7 @@ function StatusTab({ s }: { s: StatusResponse }) {
 							{!s.runs.length && (
 								<tr>
 									<td colSpan={5} className="text-fg-muted">
-										No active runs.
+										Nothing is running right now.
 									</td>
 								</tr>
 							)}
@@ -318,6 +397,9 @@ function ProfilesTab({ canEdit }: { canEdit: boolean }) {
 	};
 	return (
 		<div className="grid gap-4 md:grid-cols-2">
+			<Alert tone="info" className="md:col-span-2">
+				For integrators. Everyday setup lives under Checklist setup and Stations; nothing here is needed to run a checklist by voice.
+			</Alert>
 			<section className="card">
 				<div className="card-head">
 					<h2 className="card-title">Voice profiles</h2>
@@ -353,7 +435,7 @@ function ProfilesTab({ canEdit }: { canEdit: boolean }) {
 					<p className="help">{mappings.length} mapping(s). Triggers arrive on POST /v1/runs/trigger (service token or X-Flow-Signature HMAC).</p>
 				</div>
 			</section>
-			{err && <p className="text-sm text-danger md:col-span-2">{err}</p>}
+			{err && <Alert className="md:col-span-2">{err}</Alert>}
 		</div>
 	);
 }
@@ -362,9 +444,12 @@ function OutboxTab({ s, reload }: { s: StatusResponse; reload: () => Promise<voi
 	return (
 		<section className="card">
 			<div className="card-head">
-				<h2 className="card-title">Outbox</h2>
-				<button type="button" className="btn btn-sm" onClick={() => void api.post("outbox/retry").then(reload)}>
-					Retry failed now
+				<div>
+					<h2 className="card-title">Outbox</h2>
+					<p className="text-xs text-fg-faint">Answers on their way to Flow. Failed ones are retried on their own; "Retry now" does it at once.</p>
+				</div>
+				<button type="button" className="btn btn-sm" disabled={!s.outbox.failed && !s.outbox.queued} onClick={() => void api.post("outbox/retry").then(reload)}>
+					Retry now
 				</button>
 			</div>
 			<div className="overflow-x-auto">
@@ -398,7 +483,7 @@ function OutboxTab({ s, reload }: { s: StatusResponse; reload: () => Promise<voi
 						{!s.outbox.entries.length && (
 							<tr>
 								<td colSpan={7} className="text-fg-muted">
-									Empty.
+									Nothing waiting. Every answer has reached Flow.
 								</td>
 							</tr>
 						)}
@@ -410,15 +495,27 @@ function OutboxTab({ s, reload }: { s: StatusResponse; reload: () => Promise<voi
 }
 
 function AuditTab() {
-	const [rows, setRows] = useState<AuditEntry[]>([]);
+	const [rows, setRows] = useState<AuditEntry[] | undefined>();
+	const [q, setQ] = useState("");
+	const load = useCallback(() => api.get<AuditEntry[]>("audit?limit=300").then(setRows, () => setRows([])), []);
 	useEffect(() => {
-		void api.get<AuditEntry[]>("audit?limit=300").then(setRows);
-	}, []);
+		void load();
+	}, [load]);
+	const needle = q.trim().toLowerCase();
+	const shown = (rows ?? []).filter((a) => !needle || [a.kind, a.stationId, a.dataId, a.taskId, a.transcript, a.text, a.value, a.sub].some((f) => f && String(f).toLowerCase().includes(needle)));
 	return (
 		<section className="card">
 			<div className="card-head">
-				<h2 className="card-title">Audit</h2>
-				<span className="text-xs text-fg-faint">Text only: prompt, transcript, value, confidence, user, station, timestamps. Audio is never stored.</span>
+				<div>
+					<h2 className="card-title">Audit</h2>
+					<p className="text-xs text-fg-faint">What was asked, what was heard and what was written, by whom and when. Audio is never stored.</p>
+				</div>
+				<div className="flex items-center gap-2">
+					<input className="input w-56 py-1 text-xs" placeholder="Filter (station, user, word…)" value={q} onChange={(e) => setQ(e.target.value)} aria-label="Filter the audit list" />
+					<button type="button" className="btn btn-sm" onClick={() => void load()}>
+						Refresh
+					</button>
+				</div>
 			</div>
 			<div className="overflow-x-auto">
 				<table className="table">
@@ -435,7 +532,7 @@ function AuditTab() {
 						</tr>
 					</thead>
 					<tbody>
-						{rows.map((a, i) => (
+						{shown.map((a, i) => (
 							<tr key={i}>
 								<td className="text-xs">{a.at.slice(0, 19).replace("T", " ")}</td>
 								<td>{a.kind}</td>
@@ -447,6 +544,13 @@ function AuditTab() {
 								<td className="text-xs">{a.sub ?? ""}</td>
 							</tr>
 						))}
+						{rows && !shown.length && (
+							<tr>
+								<td colSpan={8} className="text-fg-muted">
+									{rows.length ? "Nothing matches the filter." : "Nothing recorded yet."}
+								</td>
+							</tr>
+						)}
 					</tbody>
 				</table>
 			</div>

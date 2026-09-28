@@ -33,6 +33,7 @@ services:
       - /tmp
     networks:
       - traefik_proxy
+      - speech
     volumes:
       - ./hub.mjs:/app/hub.mjs:ro
       - ./public:/app/public:ro
@@ -49,6 +50,7 @@ services:
       VESSEL_ID: ${VESSEL_ID:-ai-playground}
       HUB_SECRET: ${HUB_SECRET:?set HUB_SECRET in /opt/flowvoice/.env}
       SESSION_SECRET: ${SESSION_SECRET:?set SESSION_SECRET in /opt/flowvoice/.env}
+      CENTRAL_PASSWORD: ${CENTRAL_PASSWORD:-}
       # Maranics tenant + API gateway host (Flows / Templates APIs under {host}/app/…)
       HUB_TENANT: ${HUB_TENANT:?set HUB_TENANT in /opt/flowvoice/.env}
       HUB_MARANICS_HOST: ${HUB_MARANICS_HOST:?set HUB_MARANICS_HOST in /opt/flowvoice/.env}
@@ -69,6 +71,11 @@ services:
       STT_ENDPOINT: ${STT_ENDPOINT:-}
       STT_MODEL: ${STT_MODEL:-}
       STT_API_KEY: ${STT_API_KEY:-}
+      # Backup recogniser (the `whisper` service below): devices transcribe themselves and send a window here only when
+      # they could not; browsers without speech recognition (Raspberry Pi, offline PCs) stream their mic to it.
+      STT_BACKUP_ENDPOINT: ${STT_BACKUP_ENDPOINT:-http://whisper:8080}
+      TTS_ENDPOINT: ${TTS_ENDPOINT:-http://piper:5000}
+      TTS_VOICES: ${TTS_VOICES:-}
       TZ: ${TZ:-Europe/Oslo}
       TZ_MODE: ${TZ_MODE:-utc}
       DEFAULT_LANGUAGE: ${DEFAULT_LANGUAGE:-en}
@@ -87,9 +94,46 @@ services:
       - traefik.http.routers.flowvoice.service=flowvoice
       - traefik.http.services.flowvoice.loadbalancer.server.port=8443
 
+  # Backup speech recogniser: whisper.cpp server, CPU only, no ports published (hub-only network).
+  # Build once on the host:  docker build -t flowvoice-whisper:local /opt/flowvoice/whisper-build
+  # Models (./whisper, read-only), from https://huggingface.co/ggerganov/whisper.cpp :
+  #   ggml-small-q5_1.bin  190 MB file, ~310 MB RAM, ~1.3 s per answer on 4 cores  (default; good Norwegian)
+  #   ggml-base-q5_1.bin    60 MB file, ~135 MB RAM, ~0.4 s per answer             (WHISPER_MODEL=ggml-base-q5_1.bin; Raspberry Pi)
+  # Idle cost is zero CPU; one request at a time (the hub queues).
+  whisper:
+    image: flowvoice-whisper:local
+    container_name: flowvoice-whisper
+    restart: unless-stopped
+    command: ["-m", "/models/${WHISPER_MODEL:-ggml-small-q5_1.bin}", "-t", "${WHISPER_THREADS:-4}"]
+    read_only: true
+    tmpfs:
+      - /tmp
+    volumes:
+      - ./whisper:/models:ro
+    networks:
+      - speech
+    mem_limit: 700m
+    # no CPU cap: a request is a ~1 s burst on all cores; capping below the thread count makes it 3x slower for the same work
+
+  # Server-side voice: Piper (neural TTS, CPU only), voices baked into the image, no ports published (hub-only network).
+  # Build once on the host:  docker build -t flowvoice-piper:local /opt/flowvoice/piper-build   (deploy/piper/Dockerfile)
+  # ~350 MB RAM with two voices loaded, ~1 s per sentence, idle = 0 CPU. The hub caches sentences in RAM.
+  piper:
+    image: flowvoice-piper:local
+    container_name: flowvoice-piper
+    restart: unless-stopped
+    read_only: true
+    tmpfs:
+      - /tmp
+    networks:
+      - speech
+    mem_limit: 900m
+
 volumes:
   flowvoice-data: {}
 
 networks:
   traefik_proxy:
     external: true
+  speech:
+    internal: true

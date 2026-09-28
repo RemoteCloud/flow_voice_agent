@@ -33,7 +33,7 @@ export function isInfoType(t: string | undefined): boolean {
 
 export type RunState = "pending" | "active" | "paused" | "completed" | "abandoned";
 export type ItemState = "unanswered" | "current" | "answered" | "skipped" | "needs_screen" | "info" | "unsynced";
-export type ExchangeState = "idle" | "speaking" | "listening" | "interpreting" | "confirming" | "committing" | "clarifying" | "escalated";
+export type ExchangeState = "idle" | "speaking" | "listening" | "interpreting" | "confirming" | "committing" | "clarifying" | "escalated" | "waiting";
 
 export interface RunItem {
 	/** Maranics task id. */
@@ -59,7 +59,31 @@ export interface RunItem {
 	committedAt?: string;
 	outboxId?: string;
 	skipReason?: string;
+	/** Words set in Admin → Answers: an answer that contains one of them counts as the answer for this item. A word
+	 * written "a + b" is a combination: every part must be heard, in any order. */
+	expected?: string[];
+	/** Words set in Admin → Checklist setup that name *and* set this item when the crew says them out of turn. */
+	triggers?: TriggerSpec;
+	/**
+	 * The hub is deliberately asking this item again although Flow holds a value for it (someone jumped to it,
+	 * or it came back in the sweep). Live sync leaves such an item alone until it is answered again — otherwise
+	 * the value already in Flow would take the question away the moment it was asked.
+	 */
+	reasking?: boolean;
 }
+
+/**
+ * The trigger words of one item: the words that name it when it is spoken out of turn, and set it on their own.
+ * `need` = how many of them must be heard (1 = any one, `words.length` = all of them); order never matters.
+ * Each word may itself be a combination ("hivt + körbro"), just like an answer word.
+ */
+export interface TriggerSpec {
+	words: string[];
+	need: number;
+}
+
+/** How a station answers: the hub asking item by item, the crew speaking trigger words, or both at once. */
+export type VoiceMode = "prompt" | "trigger" | "both";
 
 export interface RunView {
 	runId: string;
@@ -70,6 +94,8 @@ export interface RunView {
 	state: RunState;
 	exchange: ExchangeState;
 	currentTaskId?: string;
+	/** Set while the next item is held back (exchange "waiting"): what releases it. */
+	waiting?: { taskId: string; mode: "ask" | "timer" | "external"; until?: string };
 	items: RunItem[];
 	answered: number;
 	total: number;
@@ -90,6 +116,12 @@ export interface RunView {
 	verbosity: "full" | "short" | "silent";
 	/** Set while the hub waits for "start" on a triggered run. */
 	pendingReason?: string;
+	/** How this station answers right now (station setting, applied live). */
+	voiceMode: VoiceMode;
+	/** The crew may change `voiceMode` from the run screen (admin allowed it). */
+	voiceModeCrew: boolean;
+	/** Answers on this station are recorded for training (shown on the run screen). */
+	recording?: boolean;
 }
 
 export interface ChecklistPick {
@@ -104,6 +136,12 @@ export interface ChecklistPick {
 	lastActivity?: string;
 	source: "instance" | "template";
 	activeRunId?: string;
+	/** false when an admin left this template out of the home-screen start buttons (Admin → Start buttons). */
+	startable?: boolean;
+	/** What the asking station may do with it: start new ones, only work on open ones, or nothing. */
+	access?: "start" | "use" | "off";
+	/** Language set for this template in Admin → Start buttons (absent → the station's language). */
+	language?: string;
 }
 
 // ---------------------------------------------------------------- AEP
@@ -124,7 +162,7 @@ export type EndpointMessage =
 	| { type: "hello"; endpointId: string; stationId: string; capabilities: EndpointCapabilities; language?: string; observer?: boolean }
 	| { type: "ptt"; state: "down" | "up" }
 	| { type: "audio.end"; reason: "silence" | "ptt" | "timeout" | "cancel" }
-	| { type: "transcript"; text: string; confidence?: number; final?: boolean }
+	| { type: "transcript"; text: string; confidence?: number; final?: boolean; /** Other guesses of the recogniser for the same words, best first (browsers give up to five). */ alternatives?: string[] }
 	| { type: "spoken"; promptId?: string }
 	| { type: "command"; name: string }
 	| { type: "takeover" }
@@ -133,7 +171,7 @@ export type EndpointMessage =
 export type HubToEndpointMessage =
 	| { type: "hello"; protocol: number; hubVersion: string; stationId: string; role: "endpoint" | "observer"; runId?: string }
 	| { type: "speak"; promptId: string; text: string; language: string; bargeIn: boolean; audioFormat?: "opus" | "wav" | "none" }
-	| { type: "listen.open"; promptId: string; maxMs: number; vad: boolean; bias?: string[]; expect?: string }
+	| { type: "listen.open"; promptId: string; maxMs: number; vad: boolean; bias?: string[]; expect?: string; grammar?: string[]; /** Language of the run: the endpoint recognises in it (the checklist decides, not the phone). */ language?: string; /** The station records answers for training: stream the microphone during this window even when recognising on the device. */ record?: boolean }
 	| { type: "listen.close" }
 	| { type: "status"; state: ExchangeState; text?: string }
 	| { type: "released"; by?: string }
@@ -159,6 +197,11 @@ export type HubEventType =
 	| "run.item.queued_offline"
 	| "run.item.skipped"
 	| "run.item.escalated"
+	| "run.item.missed"
+	/** An item changed in Maranics under an open run (the Flow app, or a workflow) and the hub took it over. */
+	| "run.item.external"
+	| "run.waiting"
+	| "run.proceeded"
 	| "run.paused"
 	| "run.resumed"
 	| "run.completed"
@@ -214,7 +257,7 @@ export function parseEndpointMessage(raw: string): EndpointMessage | undefined {
 		case "audio.end":
 			return { type: "audio.end", reason: (["silence", "ptt", "timeout", "cancel"] as const).find((r) => r === v.reason) ?? "silence" };
 		case "transcript":
-			return typeof v.text === "string" ? { type: "transcript", text: v.text, confidence: typeof v.confidence === "number" ? v.confidence : undefined, final: v.final !== false } : undefined;
+			return typeof v.text === "string" ? { type: "transcript", text: v.text, confidence: typeof v.confidence === "number" ? v.confidence : undefined, final: v.final !== false, alternatives: Array.isArray(v.alternatives) ? v.alternatives.filter((a): a is string => typeof a === "string" && a.length <= 300).slice(0, 5) : undefined } : undefined;
 		case "spoken":
 			return { type: "spoken", promptId: typeof v.promptId === "string" ? v.promptId : undefined };
 		case "command":

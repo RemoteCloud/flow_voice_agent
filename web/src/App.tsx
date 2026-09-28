@@ -7,7 +7,6 @@ import { AdminPage } from "./pages/Admin.js";
 import { EnrollPage } from "./pages/Enroll.js";
 import { HomePage } from "./pages/Home.js";
 import { LoginPage } from "./pages/Login.js";
-import { PickerPage } from "./pages/Picker.js";
 import { RunPage } from "./pages/Run.js";
 import { isMobileClient } from "./platform.js";
 import { navigate, parseRoute, useRoute } from "./router.js";
@@ -74,6 +73,12 @@ export function App() {
 			await probe();
 		})();
 	}, [probe, joinToken]);
+
+	// a station link opened while the app is already running (a second poster, "Change station" on a PC) must
+	// still count: the token is read once on boot, so load the page again with it
+	useEffect(() => {
+		if (rawRoute.page === "join" && rawRoute.token !== joinToken) location.reload();
+	}, [rawRoute, joinToken]);
 
 	const sessionLost = useCallback(
 		(text?: string) => {
@@ -150,7 +155,7 @@ export function App() {
 		<AppContext.Provider value={ctx}>
 			<VoiceProvider>
 				<Shell route={route} mobile={mobile}>
-					{route.page === "run" && route.id ? <RunPage runId={route.id} mobile={mobile} /> : route.page === "admin" && !mobile ? <AdminPage /> : mobile ? <HomePage onOpenRun={(id) => navigate({ page: "run", id })} /> : <PickerPage onOpenRun={(id) => navigate({ page: "run", id })} />}
+					{route.page === "run" && route.id ? <RunPage runId={route.id} mobile={mobile} /> : route.page === "admin" && !mobile ? <AdminPage tab={route.tab} /> : <HomePage mobile={mobile} onOpenRun={(id) => navigate({ page: "run", id })} />}
 				</Shell>
 			</VoiceProvider>
 		</AppContext.Provider>
