@@ -7,7 +7,7 @@ import { Icon } from "../icons.js";
 
 const LANGS = ["en", "sv", "no", "fr", "de"];
 const LANG_NAMES: Record<string, string> = { en: "English", no: "Norsk", sv: "Svenska", de: "Deutsch", fr: "Français" };
-type Minted = { token: string; path: string; tokenHint: string };
+type Minted = { token: string; path: string; tokenHint: string; code: string };
 
 const strip = (s: StationView): Station => {
 	const { endpoint: _e, activeRun: _r, join: _j, ...st } = s;
@@ -94,7 +94,7 @@ export function StationsTab({ s, reload, canEdit }: { s: StatusResponse; reload:
 	const mint = async (stationId: string) => {
 		try {
 			const res = await api.post<JoinTokenResponse>(`stations/${encodeURIComponent(stationId)}/join-token`);
-			setMinted((m) => ({ ...m, [stationId]: { token: res.token, path: res.path, tokenHint: res.tokenHint } }));
+			setMinted((m) => ({ ...m, [stationId]: { token: res.token, path: res.path, tokenHint: res.tokenHint, code: res.code } }));
 			setBase(new URL(res.url).origin);
 			setErr(undefined);
 			await reload();
@@ -125,7 +125,7 @@ export function StationsTab({ s, reload, canEdit }: { s: StatusResponse; reload:
 		}
 	};
 	const revoke = async (stationId: string) => {
-		if (!confirm("Revoke this QR code? Posters carrying it stop working; phones already joined stay signed in.")) return;
+		if (!confirm("Revoke this link and code? Posters carrying them stop working; phones already joined stay signed in.")) return;
 		try {
 			await api.del(`stations/${encodeURIComponent(stationId)}/join-token`);
 			setMinted((m) => {
@@ -409,6 +409,8 @@ function JoinPanel({ station, minted, base, setBase, canEdit, onMint, onRevoke }
 	const label = `${station.location ? `${station.location} · ` : ""}${station.name}`;
 	const path = minted?.path ?? station.join?.path;
 	const url = path ? `${base.replace(/\/$/, "")}${path}` : undefined;
+	const code = minted?.code ?? station.join?.code;
+	const codeText = code ? `${code.slice(0, 3)} ${code.slice(3)}` : undefined;
 	const [copied, setCopied] = useState(false);
 
 	const print = () => {
@@ -422,7 +424,7 @@ function JoinPanel({ station, minted, base, setBase, canEdit, onMint, onRevoke }
 		const w = window.open("", "_blank");
 		if (!w) return;
 		const esc = (t: string) => t.replace(/[&<>]/g, (ch) => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;" })[ch] as string);
-		w.document.write(`<!doctype html><html><head><meta charset="utf-8"><title>${esc(label)}</title><style>@page{margin:2cm}body{font-family:system-ui,sans-serif;text-align:center;color:#000;background:#fff;margin:0;padding:2rem}h1{font-size:2.2rem;margin:0 0 .25rem}p{margin:.25rem 0;color:#333}svg{width:min(80vw,60vh);height:auto;margin:1.5rem auto}code{font-size:.8rem;color:#666;word-break:break-all}</style></head><body><h1>${esc(label)}</h1><p>Scan to open Flow Voice on this station</p>${svg}<p><code>${esc(url)}</code></p><script>window.onload=function(){window.print()}</script></body></html>`);
+		w.document.write(`<!doctype html><html><head><meta charset="utf-8"><title>${esc(label)}</title><style>@page{margin:2cm}body{font-family:system-ui,sans-serif;text-align:center;color:#000;background:#fff;margin:0;padding:2rem}h1{font-size:2.2rem;margin:0 0 .25rem}p{margin:.25rem 0;color:#333}svg{width:min(80vw,60vh);height:auto;margin:1.5rem auto}code{font-size:.8rem;color:#666;word-break:break-all}</style></head><body><h1>${esc(label)}</h1><p>Scan to open Flow Voice on this station</p>${svg}${codeText ? `<p>Or type the station code in the app</p><p style="font-size:3rem;font-weight:700;letter-spacing:.3em;margin:.5rem 0 1rem">${esc(codeText)}</p>` : ""}<p><code>${esc(url)}</code></p><script>window.onload=function(){window.print()}</script></body></html>`);
 		w.document.close();
 	};
 
@@ -432,13 +434,19 @@ function JoinPanel({ station, minted, base, setBase, canEdit, onMint, onRevoke }
 				<Icon name="qr" size={16} /> Open this station
 			</p>
 			{station.join ? (
-				<p className="mt-1 text-xs text-fg-muted">Scan with the phone or tablet, or open the link on a PC.</p>
+				<p className="mt-1 text-xs text-fg-muted">Scan with the phone or tablet, open the link on a PC, or type the station code in the app.</p>
 			) : (
 				<p className="mt-1 text-xs text-fg-muted">Save the station to get its link.</p>
 			)}
 			{url ? (
 				<div className="mt-3 space-y-2">
 					<QrCode text={url} size={208} className="mx-auto block border border-line" />
+					{codeText && (
+						<p className="text-center">
+							<span className="block text-[11px] tracking-wide text-fg-muted uppercase">Station code</span>
+							<span className="mono block text-3xl font-semibold tracking-[0.3em]">{codeText}</span>
+						</p>
+					)}
 					<div className="grid grid-cols-2 gap-2">
 						<a className="btn btn-sm btn-primary col-span-2" href={url} target="_blank" rel="noreferrer">
 							Open on this computer
@@ -459,9 +467,9 @@ function JoinPanel({ station, minted, base, setBase, canEdit, onMint, onRevoke }
 			{url && (
 				<details className="mt-3 text-xs text-fg-muted">
 					<summary className="cursor-pointer">Link lost or shared by mistake?</summary>
-					<p className="mt-2">Make a new link. The old link and printed posters stop working. Devices already in use stay signed in.</p>
-					<button type="button" className="btn btn-sm mt-2" disabled={!canEdit} onClick={() => confirm("Make a new link? The old link and printed QR codes stop working.") && onMint()}>
-						Make a new link
+					<p className="mt-2">Make a new link and code. The old link, code and printed posters stop working. Devices already in use stay signed in.</p>
+					<button type="button" className="btn btn-sm mt-2" disabled={!canEdit} onClick={() => confirm("Make a new link and code? The old ones and printed posters stop working.") && onMint()}>
+						Make a new link and code
 					</button>
 					<label className="label mt-3">Web address on the poster</label>
 					<input className="input mono" value={base} onChange={(e) => setBase(e.target.value)} />

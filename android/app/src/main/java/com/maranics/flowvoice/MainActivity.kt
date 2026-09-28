@@ -232,13 +232,47 @@ class MainActivity : AppCompatActivity() {
             .show()
     }
 
+    /** "Enter station code": the six digits on the poster, typed instead of scanned (the hub address must already be known). */
+    private fun askStationCode() {
+        val hub = hubUrl?.trimEnd('/')
+        if (hub.isNullOrBlank()) {
+            askHubUrl(first = true)
+            return
+        }
+        val layout = LinearLayout(this).apply { orientation = LinearLayout.VERTICAL; setPadding(48, 24, 48, 0) }
+        val input = EditText(this).apply {
+            inputType = InputType.TYPE_CLASS_NUMBER
+            hint = getString(R.string.code_hint)
+            textSize = 28f
+            letterSpacing = 0.3f
+            gravity = android.view.Gravity.CENTER
+        }
+        layout.addView(input)
+        layout.addView(TextView(this).apply { text = getString(R.string.code_help); setPadding(0, 16, 0, 0) })
+        AlertDialog.Builder(this)
+            .setTitle(R.string.code_title)
+            .setView(layout)
+            .setPositiveButton(R.string.join) { _, _ ->
+                val code = input.text.toString().filter { it.isDigit() }
+                if (code.length != 6) {
+                    Toast.makeText(this, R.string.code_bad, Toast.LENGTH_LONG).show()
+                    return@setPositiveButton
+                }
+                // same route as a scanned poster: the PWA redeems `#/join/<code>` on boot; the query string forces a full load
+                web.loadUrl("$hub/client?scan=${System.currentTimeMillis()}#/join/$code")
+            }
+            .setNegativeButton(R.string.cancel, null)
+            .show()
+    }
+
     private fun showMenu() {
-        val items = arrayOf(getString(R.string.menu_hub), getString(R.string.menu_scan), getString(R.string.menu_reload), getString(R.string.menu_ptt_hint))
+        val items = arrayOf(getString(R.string.menu_hub), getString(R.string.menu_scan), getString(R.string.menu_code), getString(R.string.menu_reload), getString(R.string.menu_ptt_hint))
         AlertDialog.Builder(this).setItems(items) { _, which ->
             when (which) {
                 0 -> askHubUrl(first = false)
                 1 -> startScan()
-                2 -> web.reload()
+                2 -> askStationCode()
+                3 -> web.reload()
             }
         }.show()
     }
@@ -370,6 +404,10 @@ class MainActivity : AppCompatActivity() {
         /** Open the camera to scan a station poster (or a hub QR): the only way to change station on this device. */
         @JavascriptInterface
         fun scanStation() = runOnUiThread { startScan() }
+
+        /** Type the six-digit station code instead of scanning (the PWA shows its own field too; this is the native dialog). */
+        @JavascriptInterface
+        fun enterStationCode() = runOnUiThread { askStationCode() }
 
         /** Is the grammar recogniser's model for this language loaded? (web/src/audio.ts decides per window.) */
         @JavascriptInterface

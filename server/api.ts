@@ -60,12 +60,14 @@ export interface StationView extends Station {
 	endpoint?: { endpointId: string; user?: string; observers: number; aec?: boolean; pushToTalk?: boolean; localStt?: boolean; localTts?: boolean };
 	activeRun?: { runId: string; templateName: string; state: string; answered: number; total: number };
 	/** The station's live QR join token, never the hash. */
-	join?: { tokenHint: string; createdAt: string; createdBy?: string; /** `/client#/join/<token>` — admins only; absent on links minted before the hub kept them (rotate once). */ path?: string };
+	join?: { tokenHint: string; createdAt: string; createdBy?: string; /** `/client#/join/<token>` — admins only; absent on links minted before the hub kept them (rotate once). */ path?: string; /** Six-digit station code to type into the app — admins only. */ code?: string };
 }
 
-/** `POST /api/auth/join` — redeem a station QR token (no session required). */
+/** `POST /api/auth/join` — redeem a station QR token, or the station's six-digit code (no session required). */
 export interface JoinRequest {
-	token: string;
+	token?: string;
+	/** Six digits, spaces allowed. */
+	code?: string;
 }
 export interface JoinResponse {
 	ok: true;
@@ -84,6 +86,8 @@ export interface JoinTokenResponse {
 	path: string;
 	/** `path` on HUB_PUBLIC_URL, or on the request origin when unset. */
 	url: string;
+	/** The station's new six-digit code. */
+	code: string;
 }
 
 export interface StatusResponse {

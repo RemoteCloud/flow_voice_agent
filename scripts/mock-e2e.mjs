@@ -124,6 +124,11 @@ try {
 	const bridgeView = stationsAfterMint.body.find((s) => s.stationId === "bridge-01");
 	assert.equal(bridgeView.join.tokenHint, minted.body.tokenHint);
 	assert.equal(bridgeView.join.tokenHash, undefined, "hash never leaves the hub");
+	assert.match(minted.body.code, /^\d{6}$/, "every link comes with a six-digit station code");
+	assert.equal(bridgeView.join.code, minted.body.code, "admins see the code on the station card");
+	const allCodes = stationsAfterMint.body.map((s) => s.join?.code).filter(Boolean);
+	assert.equal(new Set(allCodes).size, allCodes.length, "codes are unique per station");
+	assert.ok(allCodes.length >= 2, "every station has a code without anyone minting it");
 	assert.ok(!log.join("").includes(minted.body.token), "the join token is never logged");
 	const phone = new Map();
 	const joined = await api("POST", "auth/join", { token: minted.body.token }, phone);
@@ -140,7 +145,25 @@ try {
 	const bogus = await api("POST", "auth/join", { token: "fvj_" + "x".repeat(43) }, new Map());
 	assert.equal(bogus.status, 404);
 	assert.equal(bogus.body.code, "JOIN_INVALID");
-	const rejoin = await api("POST", "auth/join", { token: minted.body.token });
+	// ---- the same by typed code (Netflix-style): spaces allowed, wrong code refused, the code rotates with the link
+	const tablet = new Map();
+	const byCode = await api("POST", "auth/join", { code: `${minted.body.code.slice(0, 3)} ${minted.body.code.slice(3)}` }, tablet);
+	assert.equal(byCode.status, 200, JSON.stringify(byCode.body));
+	assert.equal(byCode.body.authenticated, false);
+	assert.equal(byCode.body.station.stationId, "bridge-01");
+	assert.equal((await api("POST", "auth/dev", undefined, tablet)).body.stationId, "bridge-01", "sign-in after a typed code binds the station");
+	assert.equal((await api("GET", "auth/me", undefined, tablet)).body.stationSource, "join");
+	const wrongCode = await api("POST", "auth/join", { code: minted.body.code === "000000" ? "000001" : "000000" }, new Map());
+	assert.equal(wrongCode.status, 404);
+	assert.equal(wrongCode.body.code, "JOIN_INVALID");
+	assert.equal((await api("POST", "auth/join", { code: "12345" }, new Map())).status, 400, "five digits is not a code");
+	assert.equal((await api("POST", "auth/join", {}, new Map())).status, 400);
+	const reminted = await api("POST", "stations/bridge-01/join-token");
+	assert.notEqual(reminted.body.code, minted.body.code, "a new link is a new code");
+	assert.equal((await api("POST", "auth/join", { code: minted.body.code }, new Map())).status, 404, "the old code dies with the old link");
+	assert.equal((await api("POST", "auth/join", { code: reminted.body.code })).body.authenticated, true, "the new code binds an existing session at once");
+	assert.ok(!(await api("GET", "auth/session", undefined, tablet)).body.stations.some((s) => s.join?.code), "codes are never shown to the crew");
+	const rejoin = await api("POST", "auth/join", { token: reminted.body.token });
 	assert.equal(rejoin.status, 200);
 	assert.equal(rejoin.body.authenticated, true, "an existing session is bound immediately");
 	assert.equal(rejoin.body.me.stationSource, "join");
@@ -148,6 +171,8 @@ try {
 	assert.equal((await api("POST", "auth/join", { token: minted.body.token }, new Map())).status, 404, "revoked token rejected");
 	const afterRevoke = (await api("GET", "stations")).body.find((s) => s.stationId === "bridge-01").join;
 	assert.ok(afterRevoke?.path && !afterRevoke.path.endsWith(minted.body.token), "a station always has a link: revoking issues a fresh one");
+	assert.match(afterRevoke.code, /^\d{6}$/, "and a fresh code");
+	assert.notEqual(afterRevoke.code, reminted.body.code);
 	const repick = await api("PUT", "auth/station", { stationId: "bridge-01" });
 	assert.equal(repick.body.stationSource, "pick");
 	const stationList = (await api("GET", "stations")).body.map(({ endpoint: _e, activeRun: _r, join: _j, ...s }) => (s.stationId === "bridge-01" ? { ...s, location: "Location 1" } : s));

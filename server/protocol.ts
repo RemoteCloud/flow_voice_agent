@@ -233,6 +233,17 @@ export function isJoinToken(v: unknown): v is string {
 	return typeof v === "string" && v.startsWith(JOIN_TOKEN_PREFIX) && v.length > JOIN_TOKEN_PREFIX.length + 20;
 }
 
+/** A station code: six digits, typed instead of scanning the poster (`POST /api/auth/join {code}`). Spaces are allowed on the way in. */
+export const JOIN_CODE_LENGTH = 6;
+export function normalizeJoinCode(v: unknown): string | undefined {
+	if (typeof v !== "string") return undefined;
+	const digits = v.replace(/[\s-]/g, "");
+	return new RegExp(`^\\d{${JOIN_CODE_LENGTH}}$`).test(digits) ? digits : undefined;
+}
+export function isJoinCode(v: unknown): v is string {
+	return normalizeJoinCode(v) !== undefined;
+}
+
 export function isDeviceToken(v: unknown): v is string {
 	return typeof v === "string" && v.startsWith(DEVICE_TOKEN_PREFIX) && v.length > DEVICE_TOKEN_PREFIX.length + 20;
 }

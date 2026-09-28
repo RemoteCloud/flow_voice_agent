@@ -136,6 +136,24 @@ export class Tenants {
 		return undefined;
 	}
 
+	/** A typed station code finds its own tenant the same way. */
+	coreOfJoinCode(code: string): { core: Core; id?: string } | undefined {
+		const has = (c: Core) => Object.values(c.store.get().stationJoins).some((j) => j.code === code);
+		if (has(this.deps.main)) return { core: this.deps.main };
+		for (const [id, core] of this.cores) if (has(core)) return { core, id };
+		return undefined;
+	}
+
+	/** Station codes held by every core but `own`: a new code must not collide with any of them. */
+	joinCodesExcept(own: HubStore): string[] {
+		const out: string[] = [];
+		for (const c of [this.deps.main, ...this.cores.values()]) {
+			if (c.store === own) continue;
+			for (const j of Object.values(c.store.get().stationJoins)) if (j.code) out.push(j.code);
+		}
+		return out;
+	}
+
 	private entries(): TenantEntry[] {
 		return this.deps.store.get().tenants ?? [];
 	}

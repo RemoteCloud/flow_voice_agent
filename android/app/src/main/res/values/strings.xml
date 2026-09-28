@@ -9,6 +9,12 @@
     <string name="scan_qr">Scan QR</string>
     <string name="scan_prompt">Point the camera at the station poster (or the QR code on the Flow Voice sign-in page)</string>
     <string name="qr_not_hub">That QR code is not a Flow Voice hub address: %1$s</string>
+    <string name="menu_code">Enter station code…</string>
+    <string name="code_title">Station code</string>
+    <string name="code_hint">6 digits from the station poster</string>
+    <string name="code_help">The code is printed under the QR code on the station poster (Admin → Stations). The hub address must be set first.</string>
+    <string name="code_bad">Enter the six digits of the station code.</string>
+    <string name="join">Join</string>
     <string name="menu_reload">Reload</string>
     <string name="menu_ptt_hint">Push-to-talk: hold the on-screen button, volume-up, or a headset button.</string>
     <string name="notification_channel">Voice session</string>

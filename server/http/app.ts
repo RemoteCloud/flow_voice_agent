@@ -8,14 +8,14 @@ import { Hono, type Context } from "hono";
 import QRCode from "qrcode";
 import { deleteCookie, getCookie, setCookie } from "hono/cookie";
 import type { ApiError, EnrollPollResponse, EnrollRequest, EnrollResponse, HealthResponse, JoinRequest, JoinResponse, JoinTokenResponse, LibraryView, LogoutResponse, MeResponse, SessionProbeResponse, StationView, StatusResponse } from "../api.js";
-import { isJoinToken, type TriggerSpec, type VoiceMode } from "../protocol.js";
+import { isJoinToken, normalizeJoinCode, type TriggerSpec, type VoiceMode } from "../protocol.js";
 import type { HubEnv } from "../env.js";
 import type { Logger } from "../core/log.js";
 import type { VoiceRecorder } from "../speech/capture.js";
 import type { SttAdapter } from "../speech/stt.js";
 import { MAX_TTS_CHARS, type HttpTts } from "../speech/tts.js";
 import { ANSWER_MATCH, type AnswerMatch } from "../voice/interpret.js";
-import { hashDeckToken, newDeckId, newDeckToken, newJoinToken, tokenHint, verifyDeckToken } from "../store/crypto.js";
+import { hashDeckToken, newDeckId, newDeckToken, newJoinCode, newJoinToken, tokenHint, verifyDeckToken } from "../store/crypto.js";
 import type { Credentials } from "../store/credentials.js";
 import type { Device, HubData, HubSession, HubStore, PendingEnrollment, PromptRecord, Station, StationJoin, StationTemplateRule, VoiceProfile, EventMapping } from "../store/HubStore.js";
 import { deriveKey, openToken, sealToken } from "../store/crypto.js";
@@ -24,7 +24,7 @@ import { SpeechModels, VOSK_MODELS } from "../speech/models.js";
 import type { Outbox } from "../voice/Outbox.js";
 import type { Gateway } from "../ws/Gateway.js";
 import { OidcAuth } from "./auth.js";
-import { JOIN_LIMITS, LOGIN_LIMITS, RateLimiter } from "./rateLimit.js";
+import { JOIN_CODE_LIMITS, JOIN_LIMITS, LOGIN_LIMITS, RateLimiter } from "./rateLimit.js";
 import { ROLE_HEADER, clearJoinCookie, clearLoginCookie, clearSession, JOIN_MAX_AGE_SEC, LOGIN_COOKIE, newSession, readJoinCookie, readLoginCookie, readSession, requireSession, sidHash, validSession, writeJoinCookie, writeLoginCookie, writeSession, type SessionEnv } from "./session.js";
 import { resolveStatic } from "./static.js";
 
@@ -43,6 +43,8 @@ export interface AppDeps {
 	recorder?: VoiceRecorder;
 	/** Central switch (`/central`): recording allowed on this hub at all. */
 	recordingAllowed?(): boolean;
+	/** Six-digit station codes held by the other cores (tenants), so a code never names two stations on one hub. */
+	joinCodesElsewhere?(): string[];
 	tts?: HttpTts;
 	log: Logger;
 	version: string;
@@ -89,6 +91,7 @@ export function createApp(deps: AppDeps): Hono {
 	const secure = !!env.publicUrl && env.publicUrl.startsWith("https://");
 	const loginLimiter = new RateLimiter(LOGIN_LIMITS, deps.now);
 	const joinLimiter = new RateLimiter(JOIN_LIMITS, deps.now);
+	const joinCodeLimiter = new RateLimiter(JOIN_CODE_LIMITS, deps.now);
 	const app = new Hono();
 
 	const fail = (c: Context, status: 400 | 401 | 403 | 404 | 409 | 422 | 429 | 500 | 502, code: string, error: string) => c.json<ApiError>({ error, code }, status);
@@ -149,6 +152,7 @@ export function createApp(deps: AppDeps): Hono {
 	};
 
 	const findJoin = (token: string): StationJoin | undefined => Object.values(store.get().stationJoins).find((j) => verifyDeckToken(token, j.tokenHash));
+	const findJoinByCode = (code: string): StationJoin | undefined => Object.values(store.get().stationJoins).find((j) => j.code === code);
 
 	/** Session from cookie or a device token; used by both the HTTP API and the WebSocket upgrade. */
 	const sessionFromRequest = async (c: Context): Promise<HubSession | undefined> => {
@@ -260,29 +264,32 @@ export function createApp(deps: AppDeps): Hono {
 		return c.json(meOf(out.session));
 	});
 
-	// ----- station QR join (no session required; the token is only ever in the JSON body, never in a URL the hub sees)
+	// ----- station join by QR token or six-digit code (no session required; both only ever travel in the JSON body, never in a URL the hub sees)
 	api.post("/auth/join", async (c) => {
 		const ip = clientIp(c, env.trustProxy);
-		const lim = joinLimiter.check(ip);
+		const body = (await c.req.json().catch(() => ({}))) as Partial<JoinRequest>;
+		const token = str(body.token);
+		const code = normalizeJoinCode(body.code);
+		if (!isJoinToken(token) && !code) return fail(c, 400, "BAD_REQUEST", "token or code is required");
+		// a typed code is guessable in principle: it gets its own, tighter budget
+		const lim = code ? joinCodeLimiter.check(ip) : joinLimiter.check(ip);
 		if (!lim.ok) {
 			c.header("Retry-After", String(lim.retryAfterSec));
 			return fail(c, 429, "RATE_LIMITED", "too many attempts");
 		}
-		const body = (await c.req.json().catch(() => ({}))) as Partial<JoinRequest>;
-		const token = str(body.token);
-		if (!isJoinToken(token)) return fail(c, 400, "BAD_REQUEST", "token is required");
-		const join = findJoin(token);
+		const how = code ? "code" : "QR";
+		const join = code ? findJoinByCode(code) : findJoin(token as string);
 		const station = join && store.get().stations.find((s) => s.stationId === join.stationId);
-		if (!join || !station) return fail(c, 404, "JOIN_INVALID", "this QR code is no longer valid");
+		if (!join || !station) return fail(c, 404, "JOIN_INVALID", code ? "no station has this code" : "this QR code is no longer valid");
 		const view = { stationId: station.stationId, name: station.name, location: station.location };
 		const row = await sessionFromRequest(c);
 		if (row) {
 			await bindStation(row, station.stationId, "join");
-			log.info(`session ${row.id} joined station ${station.stationId} via QR`);
+			log.info(`session ${row.id} joined station ${station.stationId} via ${how}`);
 			return c.json<JoinResponse>({ ok: true, station: view, authenticated: true, me: meOf(row) });
 		}
 		await writeJoinCookie(c, { stationId: station.stationId, iat: deps.now() }, env.sessionSecret, secure);
-		log.info(`station ${station.stationId} QR scanned from ${ip}; awaiting sign-in`);
+		log.info(`station ${station.stationId} ${how} entered from ${ip}; awaiting sign-in`);
 		return c.json<JoinResponse>({ ok: true, station: view, authenticated: false });
 	});
 
@@ -424,18 +431,28 @@ export function createApp(deps: AppDeps): Hono {
 
 	const joinKey = deriveKey(env.secret);
 	/** Every station has its own client link; the token is kept sealed so Admin can show it again. */
+	/** Codes in use by other stations (this hub and every other core): a code must name exactly one station. */
+	const codesTaken = (d: HubData, exceptStationId: string): string[] => [
+		...Object.values(d.stationJoins).filter((j) => j.stationId !== exceptStationId && j.code).map((j) => j.code as string),
+		...(deps.joinCodesElsewhere?.() ?? []),
+	];
 	const mintJoin = (d: HubData, stationId: string, sub: string | undefined): string => {
 		const token = newJoinToken();
 		const createdAt = new Date(deps.now()).toISOString();
-		d.stationJoins[stationId] = { stationId, tokenHash: hashDeckToken(token), tokenHint: tokenHint(token), sealed: sealToken(token, joinKey), createdAt, createdBy: sub };
+		d.stationJoins[stationId] = { stationId, tokenHash: hashDeckToken(token), tokenHint: tokenHint(token), sealed: sealToken(token, joinKey), code: newJoinCode(codesTaken(d, stationId)), createdAt, createdBy: sub };
 		d.audit.push({ at: createdAt, kind: "station.join.rotated", stationId, sub });
 		return token;
 	};
+	/** Every station has a link and a code; joins minted before codes existed get one without rotating the link. */
 	const ensureJoins = async (sub?: string): Promise<void> => {
 		const d0 = store.get();
-		if (d0.stations.every((s) => d0.stationJoins[s.stationId])) return;
+		if (d0.stations.every((s) => d0.stationJoins[s.stationId]?.code)) return;
 		await store.update((d) => {
-			for (const s of d.stations) if (!d.stationJoins[s.stationId]) mintJoin(d, s.stationId, sub);
+			for (const s of d.stations) {
+				const j = d.stationJoins[s.stationId];
+				if (!j) mintJoin(d, s.stationId, sub);
+				else if (!j.code) j.code = newJoinCode(codesTaken(d, s.stationId));
+			}
 		});
 	};
 	const isAdminCtx = (c: Context<SessionEnv>): boolean => !!store.get().users.find((x) => x.sub === c.get("sessionRow").sub)?.isAdmin;
@@ -449,6 +466,7 @@ export function createApp(deps: AppDeps): Hono {
 			const j = store.get().stationJoins[s.stationId];
 			if (j) {
 				v.join = { tokenHint: j.tokenHint, createdAt: j.createdAt, createdBy: j.createdBy };
+				if (withLinks) v.join.code = j.code;
 				if (withLinks && j.sealed) {
 					try {
 						v.join.path = `/client#/join/${openToken(j.sealed, joinKey)}`;
@@ -521,10 +539,10 @@ export function createApp(deps: AppDeps): Hono {
 		});
 		const join = store.get().stationJoins[id];
 		const createdAt = join.createdAt;
-		log.info(`station ${id} link rotated by ${sub} (…${join.tokenHint})`);
+		log.info(`station ${id} link and code rotated by ${sub} (…${join.tokenHint})`);
 		const path = `/client#/join/${token}`;
 		const base = env.publicUrl ? env.publicUrl.replace(/\/$/, "") : new URL(c.req.url).origin;
-		return c.json<JoinTokenResponse>({ stationId: id, token, tokenHint: join.tokenHint, createdAt, path, url: base + path }, 201);
+		return c.json<JoinTokenResponse>({ stationId: id, token, tokenHint: join.tokenHint, createdAt, path, url: base + path, code: join.code as string }, 201);
 	});
 	api.delete("/stations/:id/join-token", async (c) => {
 		const denied = requireAdmin(c);
@@ -537,7 +555,7 @@ export function createApp(deps: AppDeps): Hono {
 				d.audit.push({ at: new Date(deps.now()).toISOString(), kind: "station.join.revoked", stationId: id, sub });
 			}
 		});
-		log.info(`station ${id} QR join token revoked by ${sub}`);
+		log.info(`station ${id} link and code revoked by ${sub}`);
 		return c.json({ ok: true });
 	});
 

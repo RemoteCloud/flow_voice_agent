@@ -151,6 +151,8 @@ export interface StationJoin {
 	tokenHint: string;
 	/** The token itself, sealed with the hub key, so Admin can show the station link and QR again at any time. */
 	sealed?: string;
+	/** Six-digit station code typed into the app instead of scanning (unique per hub); rotates with the link. */
+	code?: string;
 	createdAt: string;
 	createdBy?: string;
 }

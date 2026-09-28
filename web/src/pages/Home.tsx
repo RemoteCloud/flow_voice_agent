@@ -1,5 +1,6 @@
 import { useCallback, useEffect, useState } from "react";
-import type { ChecklistPick, RunView } from "../../../server/api.js";
+import type { ChecklistPick, JoinResponse, RunView } from "../../../server/api.js";
+import { joinErrorText } from "../App.js";
 import { api, credentialErrorText, toApiError } from "../api.js";
 import { useApp } from "../context.js";
 import { Icon, iconFor } from "../icons.js";
@@ -20,7 +21,7 @@ const OPEN_STATES = new Set<RunView["state"]>(["active", "paused", "pending"]);
  * for every checklist. Station chips only when the phone was not locked to a station by QR.
  */
 export function HomePage({ onOpenRun, mobile = true }: { onOpenRun: (runId: string) => void; mobile?: boolean }) {
-	const { me, stations, boot } = useApp();
+	const { me, stations, boot, refreshMe } = useApp();
 	const v = useVoice();
 	const [picks, setPicks] = useState<ChecklistPick[] | undefined>();
 	const [runs, setRuns] = useState<RunView[]>([]);
@@ -71,17 +72,24 @@ export function HomePage({ onOpenRun, mobile = true }: { onOpenRun: (runId: stri
 	const canScan = !!window.FlowVoiceAndroid?.scanStation;
 	const scan = () => window.FlowVoiceAndroid?.scanStation?.();
 	const station = stations.find((s) => s.stationId === me.stationId);
+	const [changing, setChanging] = useState(false);
 
-	// every client takes its station from the station link / QR code, never from a control on screen
-	if (!locked || !me.stationId) {
+	// every client takes its station from the station link / QR code / six-digit code, never from a picker
+	if (!locked || !me.stationId || changing) {
 		return (
 			<div className="flex min-h-[70vh] flex-col items-center justify-center gap-5 text-center">
 				<Icon name="qr" size={72} strokeWidth={1.4} />
 				<h1 className="text-2xl font-semibold tracking-wide uppercase">{canScan ? "Scan the station QR code" : "Open the station link"}</h1>
-				<p className="max-w-sm text-sm text-fg-muted">{canScan ? "This device works on one station, set by the QR poster at that station." : "This client works on one station. Open that station's own link (Admin → Stations), or scan its QR code with a phone or tablet."}</p>
+				<p className="max-w-sm text-sm text-fg-muted">{canScan ? "This device works on one station, set by the poster at that station." : "This client works on one station. Open that station's own link (Admin → Stations), or scan its QR code with a phone or tablet."}</p>
 				{canScan && (
 					<button type="button" className="start-btn max-w-sm justify-center text-lg font-semibold tracking-wide uppercase" onClick={scan}>
 						Scan QR code
+					</button>
+				)}
+				<StationCodeForm onJoined={() => { setChanging(false); void refreshMe(); }} />
+				{changing && (
+					<button type="button" className="btn btn-sm btn-ghost" onClick={() => setChanging(false)}>
+						Keep {station?.name ?? "this station"}
 					</button>
 				)}
 				<p className="text-[11px] text-fg-faint">{versionLine(boot.hubVersion)}</p>
@@ -94,11 +102,9 @@ export function HomePage({ onOpenRun, mobile = true }: { onOpenRun: (runId: stri
 			<div className="flex items-center justify-between gap-2">
 				<VoiceBar compact />
 				<div className="flex items-center gap-1">
-					{canScan && (
-						<button type="button" className="btn btn-sm btn-ghost" onClick={scan}>
-							<Icon name="qr" size={14} /> Change station
-						</button>
-					)}
+					<button type="button" className="btn btn-sm btn-ghost" onClick={() => (canScan ? scan() : setChanging(true))}>
+						<Icon name="qr" size={14} /> Change station
+					</button>
 					<button type="button" className="btn btn-sm btn-ghost" onClick={() => void load()} aria-label="Refresh the list">
 						Refresh
 					</button>
@@ -167,5 +173,56 @@ export function HomePage({ onOpenRun, mobile = true }: { onOpenRun: (runId: stri
 			)}
 			<p className="mt-6 text-center text-[11px] text-fg-faint">{versionLine(boot.hubVersion)}</p>
 		</div>
+	);
+}
+
+/** "Or type the station code": the six digits on the poster, the same as scanning it. */
+function StationCodeForm({ onJoined }: { onJoined: () => void }) {
+	const [code, setCode] = useState("");
+	const [busy, setBusy] = useState(false);
+	const [err, setErr] = useState<string | undefined>();
+	const digits = code.replace(/\D/g, "").slice(0, 6);
+	const submit = async () => {
+		if (digits.length !== 6 || busy) return;
+		setBusy(true);
+		setErr(undefined);
+		try {
+			await api.post<JoinResponse>("auth/join", { code: digits });
+			setCode("");
+			onJoined();
+		} catch (e) {
+			setErr(joinErrorText(toApiError(e), true));
+		} finally {
+			setBusy(false);
+		}
+	};
+	return (
+		<form
+			className="w-full max-w-xs space-y-2"
+			onSubmit={(e) => {
+				e.preventDefault();
+				void submit();
+			}}
+		>
+			<label className="label" htmlFor="station-code">
+				Or type the station code
+			</label>
+			<input
+				id="station-code"
+				className="input mono text-center text-2xl tracking-[0.4em]"
+				inputMode="numeric"
+				autoComplete="one-time-code"
+				pattern="[0-9 ]*"
+				placeholder="000 000"
+				maxLength={7}
+				value={digits.length > 3 ? `${digits.slice(0, 3)} ${digits.slice(3)}` : digits}
+				onChange={(e) => setCode(e.target.value)}
+				disabled={busy}
+			/>
+			<button type="submit" className="btn btn-primary w-full" disabled={busy || digits.length !== 6}>
+				{busy ? "Joining…" : "Join station"}
+			</button>
+			{err && <Alert>{err}</Alert>}
+		</form>
 	);
 }

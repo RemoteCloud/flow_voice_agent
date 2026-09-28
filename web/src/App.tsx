@@ -12,8 +12,23 @@ import { isMobileClient } from "./platform.js";
 import { navigate, parseRoute, useRoute } from "./router.js";
 import { VoiceProvider } from "./voice.js";
 
-/** Station QR: `#/join/<token>` is redeemed once on boot, then scrubbed from the address bar. */
+/** Station QR or code: `#/join/<token | 6 digits>` is redeemed once on boot, then scrubbed from the address bar. */
 type JoinState = { state: "pending" } | { state: "ok"; station: JoinResponse["station"] } | { state: "invalid"; message: string };
+
+/** Six digits (spaces allowed) → the code; anything else is a link token. */
+export function joinCode(v: string): string | undefined {
+	const d = v.replace(/[\s-]/g, "");
+	return /^\d{6}$/.test(d) ? d : undefined;
+}
+export function joinBody(v: string): { token: string } | { code: string } {
+	const code = joinCode(v);
+	return code ? { code } : { token: v };
+}
+export function joinErrorText(a: { code?: string; message: string }, byCode: boolean): string {
+	if (a.code === "JOIN_INVALID") return byCode ? "No station has this code. Check the six digits on the station poster." : "This QR code is no longer valid.";
+	if (a.code === "RATE_LIMITED") return byCode ? "Too many tries from this network right now. Wait a few minutes." : "Too many scans from this network right now. Try again in a few minutes.";
+	return `The station could not be joined (${a.message}).`;
+}
 
 export function App() {
 	const mobile = isMobileClient();
@@ -64,11 +79,10 @@ export function App() {
 		window.dispatchEvent(new HashChangeEvent("hashchange"));
 		void (async () => {
 			try {
-				const res = await api.post<JoinResponse>("auth/join", { token: joinToken }, { noAuthRedirect: true });
+				const res = await api.post<JoinResponse>("auth/join", joinBody(joinToken), { noAuthRedirect: true });
 				setJoin({ state: "ok", station: res.station });
 			} catch (e) {
-				const a = toApiError(e);
-				setJoin({ state: "invalid", message: a.code === "JOIN_INVALID" ? "This QR code is no longer valid." : a.code === "RATE_LIMITED" ? "Too many scans from this network right now. Try again in a few minutes." : `The station could not be joined (${a.message}).` });
+				setJoin({ state: "invalid", message: joinErrorText(toApiError(e), !!joinCode(joinToken)) });
 			}
 			await probe();
 		})();

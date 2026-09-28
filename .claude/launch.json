@@ -4,14 +4,37 @@
     {
       "name": "hub-dev",
       "runtimeExecutable": "env",
-      "runtimeArgs": ["FAKE_PORT=8091", "npm", "run", "dev"],
+      "runtimeArgs": [
+        "FAKE_PORT=8091",
+        "npm",
+        "run",
+        "dev"
+      ],
       "port": 8443
     },
     {
       "name": "web-dev",
       "runtimeExecutable": "npx",
-      "runtimeArgs": ["vite", "web", "--port", "5199", "--strictPort"],
+      "runtimeArgs": [
+        "vite",
+        "web",
+        "--port",
+        "5199",
+        "--strictPort"
+      ],
       "port": 5199
+    },
+    {
+      "name": "hub-dev-8444",
+      "runtimeExecutable": "env",
+      "runtimeArgs": [
+        "FAKE_PORT=8091",
+        "HUB_PORT=8444",
+        "npm",
+        "run",
+        "dev"
+      ],
+      "port": 8444
     }
   ]
 }

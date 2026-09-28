@@ -1,4 +1,4 @@
-/** Hash router: #/ (picker / phone home) · #/run/<id> · #/admin[/<tab>] · #/enroll · #/join/<token> (station QR, consumed on boot) */
+/** Hash router: #/ (picker / phone home) · #/run/<id> · #/admin[/<tab>] · #/enroll · #/join/<token or six-digit code> (station QR / typed code, consumed on boot) */
 import { useEffect, useState } from "react";
 
 export type Route = { page: "picker" } | { page: "run"; id: string } | { page: "admin"; tab?: string } | { page: "enroll" } | { page: "join"; token: string };

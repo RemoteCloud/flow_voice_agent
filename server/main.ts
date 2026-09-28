@@ -8,6 +8,7 @@ import { createLogger } from "./core/log.js";
 import { registerSecret } from "./core/redact.js";
 import { EnvError, parseEnv, type HubEnv } from "./env.js";
 import { ROLE_HEADER, SESSION_COOKIE, Tenants, type Core } from "./tenants.js";
+import { normalizeJoinCode } from "./protocol.js";
 import { createApp, upgradeAuthenticator } from "./http/app.js";
 import { OidcAuth } from "./http/auth.js";
 import { FlowsClient } from "./maranics/FlowsClient.js";
@@ -54,6 +55,9 @@ async function run(): Promise<void> {
 		const r = centralStore?.get().recording;
 		return !!r?.enabled && !r.off?.includes(core);
 	};
+
+	/** Set once every core is up; station codes are unique across all of them. */
+	let tenantsRef: Tenants | undefined;
 
 	/** One isolated hub: its own data folder, sessions, stations, register, runs, outbox and audio gateway. */
 	const buildCore = async (env: HubEnv): Promise<Core> => {
@@ -110,7 +114,7 @@ async function run(): Promise<void> {
 		});
 		engine = new RunEngine({ store, flows, credentials, outbox, log, now, policy: env.policy, io: gateway, vesselId: env.vesselId, recordingAllowed: () => recordingAllowed(coreId) });
 		gateway.attachEngine(engine);
-		const app = createApp({ env, store, auth, credentials, engine, outbox, gateway, stt, sttBackup, tts, recorder, recordingAllowed: () => recordingAllowed(coreId), log, version: HUB_VERSION, now, uptime: () => (now() - startedAt) / 1000 });
+		const app = createApp({ env, store, auth, credentials, engine, outbox, gateway, stt, sttBackup, tts, recorder, recordingAllowed: () => recordingAllowed(coreId), joinCodesElsewhere: () => tenantsRef?.joinCodesExcept(store) ?? [], log, version: HUB_VERSION, now, uptime: () => (now() - startedAt) / 1000 });
 		await engine.recover();
 		outbox.start();
 		gateway.start();
@@ -130,6 +134,7 @@ async function run(): Promise<void> {
 
 	const main = await buildCore(env);
 	const tenants = new Tenants({ env, store: main.store, sealKey: deriveKey(env.secret), log, now, main, build: buildCore });
+	tenantsRef = tenants;
 	await tenants.start();
 	const tenantApi = tenants.app();
 
@@ -149,9 +154,10 @@ async function run(): Promise<void> {
 		let picked = tenants.pick(req.headers.get("cookie"));
 		let tenantCookie: string | undefined;
 		if (req.method === "POST" && url.pathname === "/api/auth/join") {
-			// a station link belongs to exactly one tenant: find it, and move this browser there
-			const body = (await req.clone().json().catch(() => ({}))) as { token?: unknown };
-			const owner = typeof body.token === "string" ? tenants.coreOfJoinToken(body.token) : undefined;
+			// a station link or code belongs to exactly one tenant: find it, and move this browser there
+			const body = (await req.clone().json().catch(() => ({}))) as { token?: unknown; code?: unknown };
+			const code = normalizeJoinCode(body.code);
+			const owner = code ? tenants.coreOfJoinCode(code) : typeof body.token === "string" ? tenants.coreOfJoinToken(body.token) : undefined;
 			if (owner && owner.id !== picked.id) {
 				picked = { core: owner.core, id: owner.id, role: owner.id ? "client" : undefined };
 				tenantCookie = tenants.setCookie(owner.id, "client");

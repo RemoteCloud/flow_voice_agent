@@ -1,6 +1,6 @@
 /** Token sealing (AES-256-GCM under an HKDF-derived key), deck tokens and hashes. node:crypto only. */
-import { createCipheriv, createDecipheriv, createHash, hkdfSync, randomBytes, timingSafeEqual } from "node:crypto";
-import { DECK_TOKEN_PREFIX, JOIN_TOKEN_PREFIX } from "../protocol.js";
+import { createCipheriv, createDecipheriv, createHash, hkdfSync, randomBytes, randomInt, timingSafeEqual } from "node:crypto";
+import { DECK_TOKEN_PREFIX, JOIN_CODE_LENGTH, JOIN_TOKEN_PREFIX } from "../protocol.js";
 
 const SEAL_VERSION = "v1:";
 const IV_LEN = 12;
@@ -41,6 +41,15 @@ export function newDeckToken(): string {
 /** `fvj_` + 32 random bytes (base64url): a station QR join token; hashed with `hashDeckToken`. */
 export function newJoinToken(): string {
 	return JOIN_TOKEN_PREFIX + randomBytes(32).toString("base64url");
+}
+
+/** A fresh six-digit station code not in `taken` (uniformly random, unbiased). */
+export function newJoinCode(taken: Iterable<string>): string {
+	const used = new Set(taken);
+	for (;;) {
+		const code = String(randomInt(0, 10 ** JOIN_CODE_LENGTH)).padStart(JOIN_CODE_LENGTH, "0");
+		if (!used.has(code)) return code;
+	}
 }
 
 export function hashDeckToken(token: string): string {

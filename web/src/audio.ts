@@ -27,6 +27,8 @@ declare global {
 			/** Grammar-restricted offline recogniser (Vosk): is a model for this language ready on the phone? */
 			/** Open the camera to scan a station poster: the app reloads joined to that station. */
 			scanStation?(): void;
+			/** Native dialog for the six-digit station code (same effect as scanning). */
+			enterStationCode?(): void;
 			hasGrammarStt?(language: string): boolean;
 			/** The hub has a backup recogniser: the app may send it a window it could not transcribe. */
 			setServerStt?(enabled: boolean): void;
