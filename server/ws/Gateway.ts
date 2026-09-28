@@ -277,7 +277,12 @@ export class Gateway implements EngineIo {
 			l.chunks.length = 0;
 			try {
 				const r = await stt.transcribe(pcm, { language: l.language, bias: l.bias });
-				await this.answer(ep, { text: r.text, confidence: r.confidence, by: "hub", language: l.language }, l.record && r.text ? full : undefined, l.promptId);
+				if (!r.text.trim()) {
+					// nothing said in the window: silence, not an empty utterance (which would count as a failed answer)
+					this.engine.onListenEnd(ep.stationId);
+					return;
+				}
+				await this.answer(ep, { text: r.text, confidence: r.confidence, by: "hub", language: l.language }, l.record ? full : undefined, l.promptId);
 			} catch (err) {
 				this.deps.log.warn(`stt failed: ${err instanceof Error ? err.message : String(err)}`);
 				this.engine.onListenEnd(ep.stationId);

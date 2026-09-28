@@ -113,6 +113,11 @@ const CONTROL_PHRASES: [string, ControlWord][] = CONTROL.flatMap(([re, w]) =>
 		.map((p) => [p, w] as [string, ControlWord]),
 );
 
+/** "Ready" said where the hub waits for "next": only a command when one was asked for ("alt klart" is an answer elsewhere). */
+const READY = /^(ready|i'?m ready|i am ready|go ahead|klar|klart|jeg er klar|vi er klare?|redo|jag är redo|bereit|fertig|prêt|prête|on y va|c'est parti)$/i;
+/** One word that means "next" anywhere in a short utterance ("oppdaterer skip neste"). */
+const NEXT_WORDS = new Set(["next", "neste", "nästa", "weiter", "suivant", "videre"]);
+
 function exactControl(t: string): ControlWord | undefined {
 	for (const [re, w] of CONTROL) if (re.test(t)) return w;
 	return undefined;
@@ -135,8 +140,11 @@ export function controlWord(transcript: string, loose = false): ControlWord | un
 	while (ws.length > 1 && FILLER.has(ws[ws.length - 1]!)) ws = ws.slice(0, -1);
 	if (ws.length === 2 && ws[0] === ws[1]) ws = [ws[0]!];
 	const stripped = ws.join(" ");
+	if (READY.test(stripped)) return "next";
 	const h = stripped !== t ? exactControl(stripped) : undefined;
-	return h ?? nearControl(stripped);
+	if (h) return h;
+	if (ws.some((w) => NEXT_WORDS.has(w))) return "next";
+	return nearControl(stripped);
 }
 
 /** Commands worth a near miss. Volume / speed / "where am I" are left exact: "høyre" (starboard) is an answer, not "høyere". */

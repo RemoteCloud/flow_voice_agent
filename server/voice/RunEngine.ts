@@ -1062,6 +1062,11 @@ export class RunEngine {
 		}
 		if (await this.tryItemJump(r, text)) return;
 		if (r.exchange === "waiting") {
+			if (!text.trim()) {
+				// an empty final from the recogniser is silence: keep the mic open, nothing to note
+				await this.openWaitListen(r);
+				return;
+			}
 			// the hub asked for a command ("say next when you are ready"): take it loosely, and leave a trace of what was heard
 			const w = controlWord(text, true);
 			await this.audit(r, "command.heard", { taskId: r.waiting?.taskId, transcript: text, confidence, command: w ?? null, sub: (session ?? this.sessionOnStation(stationId))?.sub });

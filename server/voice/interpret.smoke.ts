@@ -212,6 +212,9 @@ export async function run(): Promise<void> {
 	assert.equal(controlWord("kan man innføre", true), undefined);
 	assert.equal(controlWord("hive opp kjørebro nå", true), undefined);
 	assert.equal(controlWord("nei", true), "no");
+	for (const w of ["Klar.", "klart", "jeg er klar", "ready", "I'm ready", "Oppdaterer skip neste.", "og så neste da"]) assert.equal(controlWord(w, true), "next", w);
+	assert.equal(controlWord("Klar.", false), undefined); // an answer while an item is asked
+	assert.equal(controlWord("alt klart neste gang vi kommer", true), undefined); // too long to be a command
 
 	// item jumps
 	assert.equal(itemNumber("item four"), 4);
