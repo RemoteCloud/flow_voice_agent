@@ -86,7 +86,8 @@ export function HomePage({ onOpenRun, mobile = true }: { onOpenRun: (runId: stri
 						Scan QR code
 					</button>
 				)}
-				<StationCodeForm onJoined={() => { setChanging(false); void refreshMe(); }} />
+				{/* reload like the QR flow: an open voice session stays on the station it connected to, and the boot / station data may belong to another tenant */}
+				<StationCodeForm onJoined={() => location.reload()} />
 				{changing && (
 					<button type="button" className="btn btn-sm btn-ghost" onClick={() => setChanging(false)}>
 						Keep {station?.name ?? "this station"}

@@ -9,7 +9,8 @@ import { registerSecret } from "./core/redact.js";
 import { EnvError, parseEnv, type HubEnv } from "./env.js";
 import { ROLE_HEADER, SESSION_COOKIE, Tenants, type Core } from "./tenants.js";
 import { normalizeJoinCode } from "./protocol.js";
-import { createApp, upgradeAuthenticator } from "./http/app.js";
+import { clientIpOf, createApp, upgradeAuthenticator } from "./http/app.js";
+import { JOIN_CODE_LIMITS, RateLimiter } from "./http/rateLimit.js";
 import { OidcAuth } from "./http/auth.js";
 import { FlowsClient } from "./maranics/FlowsClient.js";
 import { VoiceRecorder } from "./speech/capture.js";
@@ -148,6 +149,9 @@ async function run(): Promise<void> {
 			.map((p) => (p.startsWith(`${SESSION_COOKIE}_${id}=`) ? `${SESSION_COOKIE}=${p.slice(`${SESSION_COOKIE}_${id}=`.length)}` : p))
 			.join("; ");
 	};
+	// Six-digit codes are looked up in every tenant, so the guessing budget must be one hub-wide budget, spent
+	// before any lookup: otherwise each tenant's own limiter starts fresh and a 429 from one core still reveals the owner.
+	const codeLimiter = new RateLimiter(JOIN_CODE_LIMITS, now);
 	const dispatch = async (req: Request): Promise<Response> => {
 		const url = new URL(req.url);
 		if (url.pathname === "/api/tenants" || url.pathname.startsWith("/api/tenants/") || url.pathname.startsWith("/api/central/") || /^\/t\/[^/]+$/.test(url.pathname)) return tenantApi.fetch(req);
@@ -157,6 +161,10 @@ async function run(): Promise<void> {
 			// a station link or code belongs to exactly one tenant: find it, and move this browser there
 			const body = (await req.clone().json().catch(() => ({}))) as { token?: unknown; code?: unknown };
 			const code = normalizeJoinCode(body.code);
+			if (code) {
+				const lim = codeLimiter.check(clientIpOf((n) => req.headers.get(n), env.trustProxy));
+				if (!lim.ok) return new Response(JSON.stringify({ error: "too many attempts", code: "RATE_LIMITED" }), { status: 429, headers: { "content-type": "application/json", "retry-after": String(lim.retryAfterSec) } });
+			}
 			const owner = code ? tenants.coreOfJoinCode(code) : typeof body.token === "string" ? tenants.coreOfJoinToken(body.token) : undefined;
 			if (owner && owner.id !== picked.id) {
 				picked = { core: owner.core, id: owner.id, role: owner.id ? "client" : undefined };
@@ -175,7 +183,8 @@ async function run(): Promise<void> {
 		const set = res.headers.getSetCookie();
 		out.delete("set-cookie");
 		for (const sc of set) out.append("set-cookie", picked.id && sessionRe(SESSION_COOKIE).test(sc) && sc.startsWith(`${SESSION_COOKIE}=`) ? `${SESSION_COOKIE}_${picked.id}=${sc.slice(SESSION_COOKIE.length + 1)}` : sc);
-		if (tenantCookie) out.append("set-cookie", tenantCookie);
+		// the browser moves tenant only once the join really went through: a refused guess must not say who owns the code
+		if (tenantCookie && res.ok) out.append("set-cookie", tenantCookie);
 		return new Response(res.body, { status: res.status, statusText: res.statusText, headers: out });
 	};
 

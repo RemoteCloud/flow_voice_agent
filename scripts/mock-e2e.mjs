@@ -939,6 +939,20 @@ try {
 	assert.equal(tPhoneMe.isAdmin, false, "a station link never makes an admin");
 	assert.equal(tPhoneMe.stationId, tStations[0].stationId);
 	assert.equal((await api("PUT", "settings", { readNotices: true }, tPhone)).status, 403);
+	// guessing codes: one hub-wide budget per address, spent before any tenant is asked, and no tenant cookie until a join went through
+	const tCode = tStations[0].join.code;
+	const guess = (code, ip) => fetch(`${base}/api/auth/join`, { method: "POST", headers: { "content-type": "application/json", "x-real-ip": ip }, body: JSON.stringify({ code }) });
+	const wrongGuess = await guess(tCode === "000000" ? "000001" : "000000", "10.9.9.9");
+	assert.equal(wrongGuess.status, 404);
+	assert.ok(!wrongGuess.headers.getSetCookie().some((c) => c.startsWith("fv_tenant=")), "a wrong code never moves the browser");
+	for (let i = 0; i < 12; i++) await guess(String(100000 + i), "10.9.9.9");
+	const throttled = await guess(tCode, "10.9.9.9");
+	assert.equal(throttled.status, 429, "the right code is throttled like any other once the budget is spent");
+	assert.ok(throttled.headers.get("retry-after"), "429 carries Retry-After");
+	assert.ok(!throttled.headers.getSetCookie().some((c) => c.startsWith("fv_tenant=")), "a throttled guess reveals no owner");
+	const fresh = await guess(tCode, "10.9.9.10");
+	assert.equal(fresh.status, 200, "another address keeps its own budget");
+	assert.ok(fresh.headers.getSetCookie().some((c) => c.startsWith("fv_tenant=other-co.client.")), "a real join moves the browser");
 	// a forged cookie is ignored: the request lands in the main hub
 	const forged = new Map([["fv_tenant", "other-co.admin.AAAA"]]);
 	assert.equal((await api("GET", "tenants", undefined, forged)).body.current, undefined);

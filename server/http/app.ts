@@ -55,12 +55,17 @@ export interface AppDeps {
 const isObj = (v: unknown): v is Record<string, unknown> => typeof v === "object" && v !== null && !Array.isArray(v);
 const str = (v: unknown): string | undefined => (typeof v === "string" && v.trim() ? v.trim() : undefined);
 
-function clientIp(c: Context, trustProxy: boolean): string {
+/** The caller's address for rate limiting, from the headers alone (shared with the tenant dispatcher in main.ts). */
+export function clientIpOf(get: (name: string) => string | undefined | null, trustProxy: boolean): string {
 	if (trustProxy) {
-		const xff = c.req.header("x-forwarded-for");
+		const xff = get("x-forwarded-for");
 		if (xff) return xff.split(",")[0].trim();
 	}
-	return c.req.header("x-real-ip") ?? "unknown";
+	return get("x-real-ip") ?? "unknown";
+}
+
+function clientIp(c: Context, trustProxy: boolean): string {
+	return clientIpOf((n) => c.req.header(n), trustProxy);
 }
 
 function hmacOk(secret: string, raw: string, header: string | undefined): boolean {
