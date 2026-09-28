@@ -3,13 +3,15 @@
  *   /v1/audio   Audio Endpoint Protocol — one active audio endpoint per station, observers alongside
  *   /v1/events  Event stream for UIs and integrations
  * Implements `EngineIo` for the RunEngine. Audio is transient: PCM chunks are held in memory only
- * between listen.open and listen.close and discarded once transcribed (spec 15).
+ * between listen.open and listen.close and discarded once transcribed (spec 15) — unless the station records
+ * answers for training (`Station.recordVoice`), when the window is handed to the `VoiceRecorder` with its context.
  */
 import type { IncomingMessage } from "node:http";
 import type { Duplex } from "node:stream";
 import { WebSocketServer, type WebSocket } from "ws";
 import type { Logger } from "../core/log.js";
 import { parseEndpointMessage, PROTOCOL_VERSION, WS_CLOSE_PROTOCOL, WS_CLOSE_REPLACED, WS_CLOSE_UNAUTHORIZED, type EndpointCapabilities, type ExchangeState, type HubEvent, type HubToEndpointMessage, type RunView } from "../protocol.js";
+import type { CaptureRecognition, VoiceRecorder } from "../speech/capture.js";
 import type { SttAdapter } from "../speech/stt.js";
 import { spokenText } from "../voice/i18n.js";
 import type { HubSession } from "../store/HubStore.js";
@@ -27,6 +29,10 @@ export interface GatewayDeps {
 	/** Persist "this session is on this station". */
 	bindStation(session: HubSession, stationId: string, deviceId?: string): Promise<void>;
 	now(): number;
+	/** Voice recording for training; absent = never record. */
+	recorder?: VoiceRecorder;
+	/** Does this station record its answers (`Station.recordVoice`)? */
+	records?(stationId: string): boolean;
 }
 
 interface Endpoint {
@@ -38,7 +44,7 @@ interface Endpoint {
 	deviceId?: string;
 	language?: string;
 	role: "endpoint" | "observer";
-	listening?: { promptId: string; chunks: Buffer[]; bytes: number; language?: string; bias?: string[] };
+	listening?: { promptId: string; chunks: Buffer[]; bytes: number; language?: string; bias?: string[]; record?: boolean };
 	/** Resolve of the speak() promise waiting for `spoken`. */
 	speakWaiter?: { promptId: string; resolve: () => void; timer: NodeJS.Timeout };
 	lastSeen: number;
@@ -239,11 +245,12 @@ export class Gateway implements EngineIo {
 					this.engine.onPartial(ep.stationId, m.text);
 					return;
 				}
-				if (ep.listening) {
+				const l = ep.listening;
+				if (l) {
 					ep.listening = undefined;
 					this.send(ep, { type: "listen.close" });
 				}
-				await this.engine.onTranscript(ep.stationId, m.text, m.confidence, ep.session, m.alternatives);
+				await this.answer(ep, { text: m.text, confidence: m.confidence, alternatives: m.alternatives, by: "endpoint", language: l?.language }, l?.record ? Buffer.concat(l.chunks) : undefined, l?.promptId);
 				return;
 			case "command":
 				if (ep.role !== "endpoint") return;
@@ -260,15 +267,17 @@ export class Gateway implements EngineIo {
 		ep.listening = undefined;
 		this.send(ep, { type: "listen.close" });
 		if (reason === "cancel") return;
-		const stt = this.deps.stt.kind === "http" ? this.deps.stt : this.deps.sttBackup;
+		// a device that recognises itself streams audio only to have it recorded: its silence stays silence
+		const stt = this.deps.stt.kind === "http" ? this.deps.stt : ep.caps.localStt ? undefined : this.deps.sttBackup;
 		if (stt && l.bytes > 3200) {
-			let pcm = Buffer.concat(l.chunks);
+			const full = Buffer.concat(l.chunks);
+			let pcm = full;
 			// the backup recogniser encodes short windows only (cheap on CPU): keep the last 8 s, where the answer is
 			if (stt !== this.deps.stt && pcm.length > 16000 * 2 * 8) pcm = pcm.subarray(pcm.length - 16000 * 2 * 8);
 			l.chunks.length = 0;
 			try {
 				const r = await stt.transcribe(pcm, { language: l.language, bias: l.bias });
-				await this.engine.onTranscript(ep.stationId, r.text, r.confidence, ep.session);
+				await this.answer(ep, { text: r.text, confidence: r.confidence, by: "hub", language: l.language }, l.record && r.text ? full : undefined, l.promptId);
 			} catch (err) {
 				this.deps.log.warn(`stt failed: ${err instanceof Error ? err.message : String(err)}`);
 				this.engine.onListenEnd(ep.stationId);
@@ -276,6 +285,14 @@ export class Gateway implements EngineIo {
 			return;
 		}
 		this.engine.onListenEnd(ep.stationId);
+	}
+
+	/** Hand an answer to the engine; with a recorded window, keep the audio with what was asked and what it did. */
+	private async answer(ep: Endpoint, rec: CaptureRecognition, pcm: Buffer | undefined, windowId: string | undefined): Promise<void> {
+		const recorder = this.deps.recorder;
+		const ctx = pcm && recorder ? this.engine.captureContext(ep.stationId, ep.session?.sub) : undefined;
+		await this.engine.onTranscript(ep.stationId, rec.text, rec.confidence, ep.session, rec.alternatives);
+		if (ctx && pcm && recorder) void recorder.save(pcm, ctx, this.engine.captureOutcome(ctx), rec, windowId ?? "");
 	}
 
 	// ------------------------------------------------------------ EngineIo
@@ -308,8 +325,9 @@ export class Gateway implements EngineIo {
 	listen(stationId: string, promptId: string, opts: { maxMs: number; bias?: string[]; expect?: string; grammar?: string[]; language?: string }): void {
 		const ep = this.endpoints.get(stationId);
 		if (!ep) return;
-		ep.listening = { promptId, chunks: [], bytes: 0, language: opts.language ?? ep.language, bias: opts.bias };
-		this.send(ep, { type: "listen.open", promptId, maxMs: opts.maxMs, vad: !ep.caps.pushToTalk, bias: opts.bias, expect: opts.expect, grammar: opts.grammar, language: opts.language });
+		const record = !!this.deps.recorder && !!this.deps.records?.(stationId);
+		ep.listening = { promptId, chunks: [], bytes: 0, language: opts.language ?? ep.language, bias: opts.bias, record };
+		this.send(ep, { type: "listen.open", promptId, maxMs: opts.maxMs, vad: !ep.caps.pushToTalk, bias: opts.bias, expect: opts.expect, grammar: opts.grammar, language: opts.language, ...(record ? { record } : {}) });
 	}
 
 	stopListening(stationId: string): void {

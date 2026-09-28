@@ -13,6 +13,7 @@ import { getCookie } from "hono/cookie";
 import type { Logger } from "./core/log.js";
 import { registerSecret } from "./core/redact.js";
 import type { HubEnv } from "./env.js";
+import type { CaptureStatus } from "./speech/capture.js";
 import { ROLE_HEADER, SESSION_COOKIE, readSession, sidHash, validSession } from "./http/session.js";
 export { SESSION_COOKIE };
 import { LOGIN_LIMITS, RateLimiter } from "./http/rateLimit.js";
@@ -33,6 +34,23 @@ export interface Core {
 	handleUpgrade(req: import("node:http").IncomingMessage, socket: import("node:stream").Duplex, head: Buffer): Promise<boolean>;
 	store: HubStore;
 	stop(): void;
+	/** Training recordings of this core: queued / uploaded (`speech/capture.ts`). */
+	captureStatus?(): Promise<CaptureStatus>;
+}
+
+/** One row of the central recording switch: the main hub or a tenant entry. */
+export interface RecordingCoreView {
+	id: string;
+	name: string;
+	/** Recording allowed here (hub-wide switch on and this core not switched off). */
+	allowed: boolean;
+	/** Stations of this core that tick "Record answers for training". */
+	stations: number;
+	status?: CaptureStatus;
+}
+export interface RecordingView {
+	enabled: boolean;
+	cores: RecordingCoreView[];
 }
 
 export interface TenantView {
@@ -449,6 +467,41 @@ export class Tenants {
 			} catch (err) {
 				return fail(c, 502, "TENANT_START", err instanceof Error ? err.message : String(err));
 			}
+		});
+		// central switch for recording answers for training: hub-wide, and per tenant / location
+		const recordingView = async (): Promise<RecordingView> => {
+			const r = store.get().recording;
+			const row = async (id: string, name: string, core: Core | undefined): Promise<RecordingCoreView> => ({
+				id,
+				name,
+				allowed: !!r?.enabled && !r.off?.includes(id),
+				stations: core?.store.get().stations.filter((s) => s.recordVoice).length ?? 0,
+				status: await core?.captureStatus?.().catch(() => undefined),
+			});
+			const rows = [await row("main", env.maranics?.tenant ?? "main", this.deps.main)];
+			for (const t of this.entries()) rows.push(await row(t.id, t.location ? `${t.name} / ${t.location}` : t.name, this.cores.get(t.id)));
+			return { enabled: !!r?.enabled, cores: rows };
+		};
+		app.get("/api/central/recording", async (c) => ((await canManage(c)) ? c.json(await recordingView()) : fail(c, 403, "FORBIDDEN", env.centralPassword ? "sign in to the central admin area first" : "only an admin of the main hub manages tenants")));
+		app.put("/api/central/recording", async (c) => {
+			if (!(await canManage(c))) return fail(c, 403, "FORBIDDEN", env.centralPassword ? "sign in to the central admin area first" : "only an admin of the main hub manages tenants");
+			const b = (await c.req.json().catch(() => ({}))) as Record<string, unknown>;
+			const core = str(b.core);
+			if (core && core !== "main" && !this.entries().some((t) => t.id === core)) return fail(c, 404, "NOT_FOUND", "unknown tenant");
+			if (typeof b.enabled !== "boolean" && !(core && typeof b.allowed === "boolean")) return fail(c, 400, "BAD_REQUEST", "give enabled, or core and allowed");
+			await store.update((d) => {
+				const r = (d.recording ??= { enabled: false });
+				if (typeof b.enabled === "boolean") r.enabled = b.enabled;
+				if (core && typeof b.allowed === "boolean") {
+					const off = new Set(r.off ?? []);
+					if (b.allowed) off.delete(core);
+					else off.add(core);
+					r.off = [...off];
+				}
+			});
+			const r = store.get().recording;
+			this.deps.log.info(`central: voice recording ${r?.enabled ? "on" : "off"} hub-wide${r?.off?.length ? `, off for ${r.off.join(", ")}` : ""}`);
+			return c.json(await recordingView());
 		});
 		app.delete("/api/tenants/:id", async (c) => ((await this.remove(c.req.param("id"))) ? c.json({ ok: true }) : fail(c, 404, "NOT_FOUND", "unknown tenant")));
 		app.post("/api/tenants/:id/enter", (c) => {

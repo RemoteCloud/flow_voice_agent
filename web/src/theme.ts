@@ -17,7 +17,7 @@ export function applyTheme(t: Theme): void {
 	if (t === "system") root.removeAttribute("data-theme");
 	else root.setAttribute("data-theme", t);
 	const dark = t === "dark" || (t === "system" && window.matchMedia("(prefers-color-scheme: dark)").matches);
-	document.querySelector('meta[name="theme-color"]')?.setAttribute("content", dark ? "#0a0f19" : "#ffffff");
+	document.querySelector('meta[name="theme-color"]')?.setAttribute("content", dark ? "#000000" : "#ffffff");
 	window.FlowVoiceAndroid?.setTheme?.(dark ? "dark" : "light");
 }
 

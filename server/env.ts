@@ -1,6 +1,7 @@
 /** Flow Voice configuration from environment variables. Pure (no process access); smoke-tested. */
 import path from "node:path";
 import { normalizeBaseUrl } from "./core/http.js";
+import type { CaptureEnv, CaptureS3Env } from "./speech/capture.js";
 
 export type LogLevel = "debug" | "info" | "warn";
 
@@ -55,6 +56,8 @@ export interface PolicyEnv {
 	timeZone?: string;
 	defaultLanguage: string;
 	readNotices: boolean;
+	/** Live sync tick per open run, ms (`GET /flows/{id}/values` stats only). 0 = no polling, push only. */
+	syncPollMs: number;
 }
 
 export interface HubEnv {
@@ -76,6 +79,8 @@ export interface HubEnv {
 	/** Set on the core of a token tenant (`server/tenants.ts`); the main hub leaves it unset. */
 	tokenTenant?: { id: string; name: string };
 	speech: SpeechEnv;
+	/** Voice recording for training (stations opt in): where the clips go. */
+	capture: CaptureEnv;
 	policy: PolicyEnv;
 	/** Service bearer tokens accepted on POST /v1/prompts and /v1/runs/trigger (comma separated). */
 	serviceTokens: string[];
@@ -183,6 +188,25 @@ export function parseEnv(e: Env, defaults: { cwd: string } = { cwd: process.cwd(
 	}
 	const single = s(e, "WEBHOOK_SECRET");
 	if (single) webhookSecrets["*"] = single;
+	let captureS3: CaptureS3Env | undefined;
+	const bucket = s(e, "CAPTURE_S3_BUCKET");
+	if (bucket) {
+		const region = s(e, "CAPTURE_S3_REGION", "AWS_REGION") ?? "us-east-1";
+		const endpoint = normalizeBaseUrl(s(e, "CAPTURE_S3_ENDPOINT"));
+		const accessKeyId = s(e, "CAPTURE_S3_ACCESS_KEY_ID", "AWS_ACCESS_KEY_ID");
+		const secretAccessKey = s(e, "CAPTURE_S3_SECRET_ACCESS_KEY", "AWS_SECRET_ACCESS_KEY");
+		if (!accessKeyId || !secretAccessKey) throw new EnvError("CAPTURE_S3_BUCKET needs CAPTURE_S3_ACCESS_KEY_ID and CAPTURE_S3_SECRET_ACCESS_KEY");
+		captureS3 = {
+			endpoint: endpoint ?? `https://s3.${region}.amazonaws.com`,
+			region,
+			bucket,
+			prefix: s(e, "CAPTURE_S3_PREFIX") ?? "flow-voice",
+			accessKeyId,
+			secretAccessKey,
+			// a custom endpoint (MinIO, R2, …) is nearly always path style
+			pathStyle: b(e, "CAPTURE_S3_PATH_STYLE", !!endpoint),
+		};
+	}
 	const levelRaw = (s(e, "LOG_LEVEL") ?? "info").toLowerCase();
 	const logLevel: LogLevel = levelRaw === "debug" || levelRaw === "warn" ? levelRaw : "info";
 
@@ -211,6 +235,7 @@ export function parseEnv(e: Env, defaults: { cwd: string } = { cwd: process.cwd(
 			ttsUrl,
 			ttsVoices: s(e, "TTS_VOICES"),
 		},
+		capture: { maxMb: n(e, "CAPTURE_MAX_MB", 2048), s3: captureS3 },
 		policy: {
 			listenMs: n(e, "LISTEN_MS", 8000),
 			confirmMs: n(e, "CONFIRM_MS", 10000),
@@ -221,6 +246,7 @@ export function parseEnv(e: Env, defaults: { cwd: string } = { cwd: process.cwd(
 			timeZone: s(e, "TZ"),
 			defaultLanguage: s(e, "DEFAULT_LANGUAGE") ?? "en",
 			readNotices: b(e, "READ_NOTICES"),
+			syncPollMs: Math.max(0, n(e, "SYNC_POLL_MS", 3000)),
 		},
 		centralPassword,
 		serviceTokens: (s(e, "SERVICE_TOKENS", "FLOW_SERVICE_TOKEN") ?? "")

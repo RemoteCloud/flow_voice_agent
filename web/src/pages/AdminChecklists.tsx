@@ -1,7 +1,9 @@
 import { useCallback, useEffect, useState } from "react";
 import type { LibraryAvailable, LibraryView } from "../../../server/api.js";
+import type { TriggerSpec } from "../../../server/protocol.js";
 import { api, toApiError } from "../api.js";
 import { Icon } from "../icons.js";
+import { Alert, SaveMark, type SaveState } from "../components/ui.js";
 
 type Entry = LibraryView["templates"][number];
 const LANGS: [string, string][] = [
@@ -28,6 +30,7 @@ export function ChecklistsTab({ canEdit }: { canEdit: boolean }) {
 	const [err, setErr] = useState<string | undefined>();
 	const [busy, setBusy] = useState<string | undefined>();
 	const [open, setOpen] = useState<string | undefined>();
+	const [saved, setSaved] = useState<SaveState>("idle");
 
 	const loadAvail = useCallback(() => api.get<LibraryAvailable>("library/available").then((a) => setAvail(a.templates), (e) => (setErr(toApiError(e).message), setAvail([]))), []);
 	useEffect(() => {
@@ -38,23 +41,26 @@ export function ChecklistsTab({ canEdit }: { canEdit: boolean }) {
 	const act = async (key: string, fn: () => Promise<LibraryView>) => {
 		setBusy(key);
 		setErr(undefined);
+		if (key.startsWith("save:")) setSaved("saving");
 		try {
 			setLib(await fn());
 			void loadAvail();
+			if (key.startsWith("save:")) setSaved("saved");
 		} catch (e) {
 			setErr(toApiError(e).message);
+			setSaved("idle");
 		} finally {
 			setBusy(undefined);
 		}
 	};
 	const add = (id: string) => act(id, () => api.post<LibraryView>("library", { templateId: id })).then(() => setOpen(id));
 	const remove = (id: string) => act(id, () => api.del<LibraryView>(`library?templateId=${encodeURIComponent(id)}`));
-	const saveEntry = (id: string, patch: { language?: string; words?: Record<string, string[]>; wordsOnly?: boolean; wordMatch?: "exact" | "normal" | "loose"; step?: { mode: "auto" | "ask" | "external" } | { mode: "timer"; delaySec: number } }) => act(`save:${id}`, () => api.put<LibraryView>("library/entry", { templateId: id, ...patch }));
+	const saveEntry = (id: string, patch: { language?: string; words?: Record<string, string[]>; triggers?: Record<string, TriggerSpec>; wordsOnly?: boolean; wordMatch?: "exact" | "normal" | "loose"; step?: { mode: "auto" | "ask" | "external" } | { mode: "timer"; delaySec: number } }) => act(`save:${id}`, () => api.put<LibraryView>("library/entry", { templateId: id, ...patch }));
 
 	const notAdded = avail?.filter((a) => !a.registered) ?? [];
 	return (
 		<div className="space-y-4">
-			{err && <p className="text-sm text-danger">{err}</p>}
+			{err && <Alert>{err}</Alert>}
 			<section className="card">
 				<div className="card-head">
 					<div>
@@ -85,9 +91,14 @@ export function ChecklistsTab({ canEdit }: { canEdit: boolean }) {
 				)}
 			</section>
 
-			<div>
-				<h2 className="px-1 text-sm font-semibold">2 · Language and answer words</h2>
-				<p className="px-1 text-xs text-fg-muted">Open a checklist and tap the words that count as the answer. "Ramp up" with UP marked: any answer that contains "up" checks the item. Mark two words and press "any one word" to turn it into "all words together": both must be said, in any order ("körbro er hivt"). Saved at once, for every station.</p>
+			<div className="flex flex-wrap items-end gap-2 px-1">
+				<div className="min-w-0 flex-1 basis-80">
+					<h2 className="text-sm font-semibold">2 · Language and answer words</h2>
+					<p className="text-xs text-fg-muted">
+						Open a checklist and tap the words on each item. <b>Answer</b> = words that count as the answer to the question ("Ramp up" with UP marked: any answer containing "up" checks it). <b>Say to set</b> = words that name the item, so the crew can set it without being asked (stations set to "Crew says the words" or "Both"). Every change is saved at once, for every station.
+					</p>
+				</div>
+				<SaveMark state={saved} />
 			</div>
 			{!lib ? (
 				<p className="text-sm text-fg-muted">Loading…</p>
@@ -154,7 +165,7 @@ export function ChecklistsTab({ canEdit }: { canEdit: boolean }) {
 											</label>
 										)}
 									</div>
-									<ItemWords entry={t} canEdit={canEdit} onChange={(words) => void saveEntry(t.templateId, { words })} />
+									<ItemWords entry={t} canEdit={canEdit} onChange={(words) => void saveEntry(t.templateId, { words })} onTriggers={(triggers) => void saveEntry(t.templateId, { triggers })} />
 									<div className="flex flex-wrap items-center gap-2 border-t border-line px-4 py-2 text-xs text-fg-faint">
 										<span className="flex-1">Downloaded {new Date(t.importedAt).toLocaleString()}</span>
 										<button type="button" className="btn btn-sm" disabled={!canEdit || !!busy} onClick={() => void add(t.templateId)} title="Fetch the items again after the template changed in Maranics">
@@ -175,13 +186,19 @@ export function ChecklistsTab({ canEdit }: { canEdit: boolean }) {
 	);
 }
 
-function ItemWords({ entry, canEdit, onChange }: { entry: Entry; canEdit: boolean; onChange: (w: Record<string, string[]>) => void }) {
+function ItemWords({ entry, canEdit, onChange, onTriggers }: { entry: Entry; canEdit: boolean; onChange: (w: Record<string, string[]>) => void; onTriggers: (t: Record<string, TriggerSpec>) => void }) {
 	const [extra, setExtra] = useState<Record<string, string>>({});
 	const set = (key: string, list: string[]) => {
 		const next = { ...entry.words };
 		if (list.length) next[key] = list;
 		else delete next[key];
 		onChange(next);
+	};
+	const setTrigger = (key: string, words: string[], need: number) => {
+		const next = { ...entry.triggers };
+		if (words.length) next[key] = { words, need: Math.min(Math.max(1, need), words.length) };
+		else delete next[key];
+		onTriggers(next);
 	};
 	let section: string | undefined;
 	return (
@@ -192,45 +209,25 @@ function ItemWords({ entry, canEdit, onChange }: { entry: Entry; canEdit: boolea
 				const together = list.length === 1 && list[0].includes("+");
 				const words = together ? list[0].split("+").map(norm).filter(Boolean) : list;
 				const tokens = it.name.split(/\s+/).filter(Boolean);
-				const inName = new Set(tokens.map(norm));
-				const custom = words.filter((w) => !inName.has(w));
 				const setWords = (next: string[]) => set(it.key, together && next.length > 1 ? [next.join(" + ")] : next);
-				const toggle = (w: string) => setWords(words.includes(w) ? words.filter((x) => x !== w) : [...words, w]);
+				const trigger = entry.triggers[it.key];
+				const triggerWords = trigger?.words ?? [];
+				const need = Math.min(Math.max(1, trigger?.need ?? 1), Math.max(1, triggerWords.length));
 				const head = it.section !== section ? (section = it.section) : undefined;
 				return (
 					<li key={`${it.key}-${i}`}>
 						{head && <p className="bg-panel-2 px-4 py-1 text-xs font-semibold tracking-wide text-fg-muted uppercase">{head}</p>}
-						<div className="flex flex-wrap items-center gap-x-3 gap-y-2 border-b border-line px-4 py-2.5">
-							<div className="flex min-w-0 flex-1 basis-64 flex-wrap items-center gap-1">
-								{tokens.map((tok, k) => {
-									const w = norm(tok);
-									const on = !!w && words.includes(w);
-									return (
-										<button key={k} type="button" disabled={!canEdit || !w} aria-pressed={on} onClick={() => toggle(w)} className={`rounded-md border px-1.5 py-0.5 font-mono text-sm uppercase ${on ? "border-info bg-info/15 font-bold text-info" : "border-transparent hover:border-line-strong"}`}>
-											{tok}
-										</button>
-									);
-								})}
-							</div>
-							<div className="flex flex-wrap items-center gap-1">
-								{custom.map((w) => (
-									<button key={w} type="button" disabled={!canEdit} onClick={() => toggle(w)} className="rounded-md border border-info bg-info/15 px-1.5 py-0.5 font-mono text-sm font-bold text-info uppercase" title="Remove">
-										{w} ×
-									</button>
-								))}
-								<input
-									className="input mono w-32 py-1 text-xs uppercase"
-									placeholder="+ other word"
-									value={extra[it.key] ?? ""}
-									disabled={!canEdit}
-									onChange={(e) => setExtra((x) => ({ ...x, [it.key]: e.target.value }))}
-									onKeyDown={(e) => {
-										const w = norm(extra[it.key] ?? "");
-										if (e.key !== "Enter" || !w) return;
-										if (!words.includes(w)) setWords([...words, w]);
-										setExtra((x) => ({ ...x, [it.key]: "" }));
-									}}
-								/>
+						<div className="space-y-1.5 border-b border-line px-4 py-2.5">
+							<WordRow
+								label="Answer"
+								tone="info"
+								tokens={tokens}
+								words={words}
+								canEdit={canEdit}
+								draft={extra[it.key] ?? ""}
+								onDraft={(v) => setExtra((x) => ({ ...x, [it.key]: v }))}
+								onWords={setWords}
+							>
 								{words.length > 1 && (
 									<button
 										type="button"
@@ -243,12 +240,88 @@ function ItemWords({ entry, canEdit, onChange }: { entry: Entry; canEdit: boolea
 										{together ? "all words together" : "any one word"}
 									</button>
 								)}
-							</div>
+							</WordRow>
+							<WordRow
+								label="Say to set"
+								tone="ok"
+								tokens={tokens}
+								words={triggerWords}
+								canEdit={canEdit}
+								draft={extra[`t:${it.key}`] ?? ""}
+								onDraft={(v) => setExtra((x) => ({ ...x, [`t:${it.key}`]: v }))}
+								onWords={(next) => setTrigger(it.key, next, need)}
+							>
+								{triggerWords.length > 1 && (
+									<select
+										className="input w-auto py-0.5 text-xs"
+										value={need}
+										disabled={!canEdit}
+										title="How many of these words the crew must say. Order never matters."
+										onChange={(e) => setTrigger(it.key, triggerWords, Number(e.target.value))}
+									>
+										<option value={1}>any one word</option>
+										{triggerWords.slice(2).map((_, k) => (
+											<option key={k} value={k + 2}>
+												at least {k + 2} words
+											</option>
+										))}
+										<option value={triggerWords.length}>all {triggerWords.length} words</option>
+									</select>
+								)}
+							</WordRow>
 						</div>
 					</li>
 				);
 			})}
 			{!entry.items.length && <li className="px-4 py-3 text-sm text-fg-muted">No items in this checklist.</li>}
 		</ul>
+	);
+}
+
+/**
+ * One row of tappable words for an item: the words of its own name plus anything the admin typed. Used twice — for
+ * the answer words and for the "say to set" trigger words — so both look and behave the same.
+ */
+function WordRow({ label, tone, tokens, words, canEdit, draft, onDraft, onWords, children }: { label: string; tone: "info" | "ok"; tokens: string[]; words: string[]; canEdit: boolean; draft: string; onDraft: (v: string) => void; onWords: (next: string[]) => void; children?: React.ReactNode }) {
+	const inName = new Set(tokens.map(norm));
+	const custom = words.filter((w) => !inName.has(w));
+	const toggle = (w: string) => onWords(words.includes(w) ? words.filter((x) => x !== w) : [...words, w]);
+	const on = tone === "info" ? "border-info bg-info/15 font-bold text-info" : "border-ok bg-ok/15 font-bold text-ok";
+	return (
+		<div className="flex flex-wrap items-center gap-x-3 gap-y-1">
+			<span className="w-20 shrink-0 text-xs text-fg-faint">{label}</span>
+			<div className="flex min-w-0 flex-1 basis-56 flex-wrap items-center gap-1">
+				{tokens.map((tok, k) => {
+					const w = norm(tok);
+					const marked = !!w && words.includes(w);
+					return (
+						<button key={k} type="button" disabled={!canEdit || !w} aria-pressed={marked} onClick={() => toggle(w)} className={`rounded-md border px-1.5 py-0.5 font-mono text-sm uppercase ${marked ? on : "border-transparent hover:border-line-strong"}`}>
+							{tok}
+						</button>
+					);
+				})}
+			</div>
+			<div className="flex flex-wrap items-center gap-1">
+				{custom.map((w) => (
+					<button key={w} type="button" disabled={!canEdit} onClick={() => toggle(w)} className={`rounded-md border px-1.5 py-0.5 font-mono text-sm uppercase ${on}`} title="Remove">
+						{w} ×
+					</button>
+				))}
+				<input
+					className="input mono w-32 py-1 text-xs uppercase"
+					placeholder="+ other word"
+					value={draft}
+					disabled={!canEdit}
+					onChange={(e) => onDraft(e.target.value)}
+					onKeyDown={(e) => {
+						const w = norm(draft);
+						if (e.key !== "Enter" || !w) return;
+						if (!words.includes(w)) onWords([...words, w]);
+						onDraft("");
+					}}
+				/>
+				{children}
+			</div>
+		</div>
 	);
 }

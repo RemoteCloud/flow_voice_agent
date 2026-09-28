@@ -11,6 +11,7 @@ import { ROLE_HEADER, SESSION_COOKIE, Tenants, type Core } from "./tenants.js";
 import { createApp, upgradeAuthenticator } from "./http/app.js";
 import { OidcAuth } from "./http/auth.js";
 import { FlowsClient } from "./maranics/FlowsClient.js";
+import { VoiceRecorder } from "./speech/capture.js";
 import { HttpTts, parseVoices } from "./speech/tts.js";
 import { OidcClient } from "./oidc/OidcClient.js";
 import { EndpointStt, HttpStt } from "./speech/stt.js";
@@ -42,13 +43,23 @@ async function run(): Promise<void> {
 	registerSecret(env.devToken);
 	registerSecret(env.centralPassword);
 	for (const t of env.serviceTokens) registerSecret(t);
+	registerSecret(env.capture.s3?.secretAccessKey);
 	const log = createLogger(env.logLevel);
 	const now = () => Date.now();
 	const startedAt = now();
 
+	/** The main hub's store (built first): holds the central recording switch every core reads live. */
+	let centralStore: JsonHubStore | undefined;
+	const recordingAllowed = (core: string): boolean => {
+		const r = centralStore?.get().recording;
+		return !!r?.enabled && !r.off?.includes(core);
+	};
+
 	/** One isolated hub: its own data folder, sessions, stations, register, runs, outbox and audio gateway. */
 	const buildCore = async (env: HubEnv): Promise<Core> => {
 		const store = new JsonHubStore(env.dataDir, log);
+		centralStore ??= store;
+		const coreId = /[\\/]tenants[\\/]([^\\/]+)$/.exec(env.dataDir)?.[1] ?? "main";
 		const sealKey = deriveKey(env.secret);
 		const provider = env.oidc ? new OidcClient(env.oidc, { now, log, tenant: env.maranics?.tenant }) : undefined;
 		const credentials = new Credentials({ store, sealKey, provider, maranics: env.maranics, now, log, devToken: env.devToken });
@@ -57,8 +68,12 @@ async function run(): Promise<void> {
 		const stt = env.speech.sttMode === "http" && env.speech.sttUrl ? new HttpStt({ url: env.speech.sttUrl, model: env.speech.sttModel, apiKey: env.speech.sttApiKey }, log) : new EndpointStt();
 		const tts = env.speech.ttsUrl ? new HttpTts({ url: env.speech.ttsUrl, voices: parseVoices(env.speech.ttsVoices), log }) : undefined;
 		const sttBackup = env.speech.sttBackupUrl ? new HttpStt({ url: env.speech.sttBackupUrl, model: env.speech.sttBackupModel, apiKey: env.speech.sttApiKey, timeoutMs: 20000 }, log) : undefined;
+		// every core keeps its own queue (its data folder) and uploads under its own name: "main" or the tenant entry id
+		const recorder = new VoiceRecorder({ dataDir: env.dataDir, env: env.capture, log, now, secret: env.secret, source: { hub: env.vesselId, core: coreId, tenant: env.maranics?.tenant } });
 		const gateway = new Gateway({
 			log,
+			recorder,
+			records: (stationId) => recordingAllowed(coreId) && !!store.get().stations.find((s) => s.stationId === stationId)?.recordVoice,
 			hubVersion: HUB_VERSION,
 			stt,
 			sttBackup,
@@ -93,19 +108,22 @@ async function run(): Promise<void> {
 				gateway.emit({ type: "outbox.changed", at: new Date(now()).toISOString(), runId: entry.runId, taskId: entry.taskId, text: outcome });
 			},
 		});
-		engine = new RunEngine({ store, flows, credentials, outbox, log, now, policy: env.policy, io: gateway, vesselId: env.vesselId });
+		engine = new RunEngine({ store, flows, credentials, outbox, log, now, policy: env.policy, io: gateway, vesselId: env.vesselId, recordingAllowed: () => recordingAllowed(coreId) });
 		gateway.attachEngine(engine);
-		const app = createApp({ env, store, auth, credentials, engine, outbox, gateway, stt, sttBackup, tts, log, version: HUB_VERSION, now, uptime: () => (now() - startedAt) / 1000 });
+		const app = createApp({ env, store, auth, credentials, engine, outbox, gateway, stt, sttBackup, tts, recorder, recordingAllowed: () => recordingAllowed(coreId), log, version: HUB_VERSION, now, uptime: () => (now() - startedAt) / 1000 });
 		await engine.recover();
 		outbox.start();
 		gateway.start();
+		recorder.start();
 		return {
 			fetch: (req) => app.fetch(req),
 			handleUpgrade: (req, socket, head) => gateway.handleUpgrade(req, socket, head),
 			store,
+			captureStatus: () => recorder.status(),
 			stop: () => {
 				outbox.stop();
 				gateway.stop();
+				recorder.stop();
 			},
 		};
 	};

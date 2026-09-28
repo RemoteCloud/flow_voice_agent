@@ -1,5 +1,5 @@
 import assert from "node:assert/strict";
-import { bestTranscript, containsAllWords, controlWord, itemNumber, interpret, normalizeTranscript, parseClock, parseRelative, wordsToNumber, type InterpretContext } from "./interpret.js";
+import { bestTranscript, containsAllWords, controlWord, heardTrigger, itemNumber, interpret, normalizeTranscript, parseClock, parseRelative, triggerNeed, wordsToNumber, type InterpretContext } from "./interpret.js";
 
 const ctx: InterpretContext = { utteredAt: new Date("2026-09-09T07:47:03Z"), tzMode: "utc", maxPastHours: 12 };
 const ok = (r: ReturnType<typeof interpret>) => {
@@ -17,6 +17,37 @@ export async function run(): Promise<void> {
 	const neg = interpret("Checkbox", "not up", ramp);
 	assert.ok(!neg.ok || neg.value !== "OK", "a negation is never the answer word");
 	assert.equal(ok(interpret("QuickSelect", "it reads high today", { ...ctx, answers: ["high"], options: [{ title: "Normal", value: "Normal" }, { title: "High", value: "High" }] })).value, "High");
+
+	// trigger words: the crew names the item and that alone sets it, in any order, any number of them required
+	const n = (t: string) => normalizeTranscript(t);
+	const one = { words: ["gangway", "körbro"], need: 1 };
+	assert.deepEqual(heardTrigger(n("gangway is clear"), one), ["gangway"]);
+	assert.deepEqual(heardTrigger(n("körbro"), one), ["körbro"]);
+	assert.deepEqual(heardTrigger(n("gangway and körbro"), one), ["gangway", "körbro"], "both heard, one was enough");
+	assert.equal(heardTrigger(n("ramp is up"), one), undefined);
+	assert.equal(heardTrigger(n("no gangway"), one), undefined, "a negation never triggers");
+	const all = { words: ["hivt", "körbro"], need: 2 };
+	assert.deepEqual(heardTrigger(n("körbro er hivt"), all), ["hivt", "körbro"], "order does not matter");
+	assert.equal(heardTrigger(n("hivt"), all), undefined, "one of two is not enough");
+	const some = { words: ["pilot", "on", "board", "bridge"], need: 2 };
+	assert.deepEqual(heardTrigger(n("the pilot is on the bridge"), some), ["pilot", "on", "bridge"], "three of the four, two were needed");
+	assert.deepEqual(heardTrigger(n("board the pilot"), some), ["pilot", "board"], "any two of the four, in any order");
+	assert.equal(heardTrigger(n("the pilot is here"), some), undefined, "one of the four is not enough");
+	assert.equal(triggerNeed({ words: ["a", "b"], need: 9 }), 2, "need never exceeds the list");
+	assert.equal(triggerNeed({ words: [], need: 1 }), 0);
+	assert.equal(heardTrigger(n("anything"), undefined), undefined);
+
+	// a trigger word is an answer in itself: the crew named the item, so the item is set — no read-back question
+	const trig: InterpretContext = { ...ctx, triggers: one };
+	const set = ok(interpret("Checkbox", "gangway", trig));
+	assert.equal(set.value, "OK");
+	assert.equal(set.byWord, true, "the word is the confirmation");
+	assert.equal(ok(interpret("RadioButtons", "körbro", trig)).value, "Yes");
+	assert.equal(interpret("Checkbox", "engine room", trig).ok, false, "another item's words do not set this one");
+	// the item's own answer word still decides the value when both are said
+	assert.equal(ok(interpret("QuickSelect", "gangway is high", { ...trig, answers: ["high"], options: [{ title: "Normal", value: "Normal" }, { title: "High", value: "High" }] })).value, "High");
+	// a strict checklist still accepts the trigger words themselves
+	assert.equal(ok(interpret("Checkbox", "gangway", { ...trig, answers: ["up"], answersOnly: true })).value, "OK");
 
 	// strict checklist: only the marked words count
 	const strict: InterpretContext = { ...ctx, answers: ["körbro"], answersOnly: true };

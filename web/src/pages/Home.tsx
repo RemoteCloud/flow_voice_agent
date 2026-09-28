@@ -2,7 +2,8 @@ import { useCallback, useEffect, useState } from "react";
 import type { ChecklistPick, RunView } from "../../../server/api.js";
 import { api, credentialErrorText, toApiError } from "../api.js";
 import { useApp } from "../context.js";
-import { Icon } from "../icons.js";
+import { Icon, iconFor } from "../icons.js";
+import { Alert } from "../components/ui.js";
 import { useVoice, VoiceBar } from "../voice.js";
 import { versionLine } from "../build.js";
 
@@ -98,7 +99,7 @@ export function HomePage({ onOpenRun, mobile = true }: { onOpenRun: (runId: stri
 							<Icon name="qr" size={14} /> Change station
 						</button>
 					)}
-					<button type="button" className="btn btn-sm btn-ghost" onClick={() => void load()} aria-label="Refresh">
+					<button type="button" className="btn btn-sm btn-ghost" onClick={() => void load()} aria-label="Refresh the list">
 						Refresh
 					</button>
 				</div>
@@ -121,7 +122,7 @@ export function HomePage({ onOpenRun, mobile = true }: { onOpenRun: (runId: stri
 			{open && (
 				<button type="button" className="btn btn-primary btn-hero" onClick={() => onOpenRun(open.runId)}>
 					<span className="flex h-14 w-14 shrink-0 items-center justify-center rounded-2xl bg-accent-fg/15">
-						<Icon name="play" size={30} strokeWidth={2} />
+						<Icon name={open.state === "pending" ? "bell" : "play"} size={30} strokeWidth={2} />
 					</span>
 					<span className="min-w-0 flex-1 text-left">
 						<span className="block text-xs font-medium tracking-wide uppercase opacity-80">{open.state === "pending" ? "Accept" : open.state === "paused" ? "Resume" : "Continue"}</span>
@@ -137,7 +138,7 @@ export function HomePage({ onOpenRun, mobile = true }: { onOpenRun: (runId: stri
 				</button>
 			)}
 
-			{err && <p className="text-sm text-danger">{err}</p>}
+			{err && <Alert>{err}</Alert>}
 			{open && tiles.length > 0 && <p className="text-xs text-fg-muted">One checklist at a time on this station. Finish or discard “{open.templateName}” to start another.</p>}
 			{picks === undefined ? (
 				<p className="text-sm text-fg-muted">Loading checklists…</p>
@@ -148,6 +149,7 @@ export function HomePage({ onOpenRun, mobile = true }: { onOpenRun: (runId: stri
 						const disabled = busy === key || p.readiness === "none" || !!open;
 						return (
 							<button key={key} type="button" className="start-btn" disabled={disabled} onClick={() => void start(p)}>
+								<Icon name={iconFor(p.templateName)} size={34} strokeWidth={1.5} className="shrink-0 opacity-80" />
 								<span className="min-w-0 flex-1 text-left">
 									<span className="line-clamp-2 block text-lg leading-tight font-semibold tracking-wide uppercase">{p.templateName}</span>
 									<span className="mt-1 block text-xs tracking-wide text-fg-muted uppercase">
@@ -160,7 +162,7 @@ export function HomePage({ onOpenRun, mobile = true }: { onOpenRun: (runId: stri
 							</button>
 						);
 					})}
-					{!tiles.length && !open && <p className="col-span-full text-sm text-fg-muted">Nothing to run{station ? ` on ${station.name}` : ""}.</p>}
+					{!tiles.length && !open && <p className="col-span-full text-sm text-fg-muted">No checklists on {station?.name ?? "this station"} yet. An admin adds them under Checklist setup and Stations.</p>}
 				</div>
 			)}
 			<p className="mt-6 text-center text-[11px] text-fg-faint">{versionLine(boot.hubVersion)}</p>

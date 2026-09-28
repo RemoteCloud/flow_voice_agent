@@ -11,7 +11,8 @@
 import type { Logger } from "../core/log.js";
 import type { PolicyEnv } from "../env.js";
 import type { DiscardReason, FlowDetail, FlowsClient, TemplateDetail } from "../maranics/FlowsClient.js";
-import type { ChecklistPick, ExchangeState, HubEvent, HubEventType, RunItem, RunView } from "../protocol.js";
+import type { ChecklistPick, ExchangeState, HubEvent, HubEventType, RunItem, RunView, TriggerSpec, VoiceMode } from "../protocol.js";
+import type { CaptureContext, CaptureOutcome } from "../speech/capture.js";
 import type { Credentials } from "../store/credentials.js";
 import type { HubSession, HubStore, PromptRecord, RunRecord, Station, StepMode, VoiceProfile } from "../store/HubStore.js";
 import { answerKey, buildItems, itemAnnouncement, nextItem, previousItem, progressOf, readinessOf, spokenNumber, startAnnouncement } from "./checklist.js";
@@ -19,7 +20,9 @@ import { CHECKBOX_CHECKED, CHECKBOX_NOT_DONE, checkboxCheckedValue, controlWord,
 import type { Outbox } from "./Outbox.js";
 import { normLang, t as tr } from "./i18n.js";
 import { grammarFor } from "./grammar.js";
-import { ANSWER_MATCH, answerLabel, answerParts, bestTranscript, containsAllWords, heardAnswer, normalizeTranscript, wordsToNumber } from "./interpret.js";
+import { FlowWatcher } from "./FlowWatcher.js";
+import { diffExternal, sameValue, type ExternalChange, type ExternalDiff, type ValueRow } from "./livesync.js";
+import { ANSWER_MATCH, answerLabel, answerParts, bestTranscript, containsAllWords, heardAnswer, heardTrigger, normalizeTranscript, triggerNeed, wordsToNumber } from "./interpret.js";
 
 /** What the screen and the voice menu offer: `code` is the Flow reason name (the status body sends it as `reason`). */
 export interface DiscardOption {
@@ -61,6 +64,8 @@ export interface EngineDeps {
 	policy: PolicyEnv;
 	io: EngineIo;
 	vesselId: string;
+	/** Central switch (`/central`): may this hub record answers at all? Absent = yes (the station decides). */
+	recordingAllowed?(): boolean;
 }
 
 export class EngineError extends Error {
@@ -117,8 +122,32 @@ export class RunEngine {
 	/** Item index → section name already announced, per run. */
 	private readonly lastSection = new Map<string, string | undefined>();
 	private readonly speaking = new Set<string>();
+	/** Watches Maranics for changes made outside this hub (the Flow app on a phone, a workflow). */
+	private readonly watcher: FlowWatcher;
 
-	constructor(private readonly deps: EngineDeps) {}
+	constructor(private readonly deps: EngineDeps) {
+		this.watcher = new FlowWatcher({
+			flows: deps.flows,
+			log: deps.log,
+			now: deps.now,
+			pollMs: deps.policy.syncPollMs,
+			host: {
+				// single-item prompt runs are left out: the hub was told to ask that one question, so a value
+				// already in Flow is not a reason to drop it
+				watched: () => this.deps.store.get().runs.filter((r) => r.state === "active" && !!r.instanceId && !r.runId.startsWith("prun_")).map((r) => ({ runId: r.runId, instanceId: r.instanceId })),
+				itemsOf: (runId) => this.deps.store.get().runs.find((x) => x.runId === runId && (x.state === "active" || x.state === "paused"))?.items,
+				apiFor: async (runId) => {
+					// never `actingSession` here: it throws when the run has just ended under the ticker
+					const r = this.deps.store.get().runs.find((x) => x.runId === runId);
+					if (!r) return undefined;
+					const sessions = this.deps.store.get().sessions;
+					const session = [...r.users].reverse().map((u) => sessions.find((s) => s.id === u.sessionId)).find((s) => !!s) ?? this.sessionOnStation(r.stationId);
+					return session ? ((await this.deps.credentials.apiSettings(session)) ?? undefined) : undefined;
+				},
+				onDiff: (runId, diff) => this.applyExternal(runId, diff),
+			},
+		});
+	}
 
 	// ------------------------------------------------------------ views
 
@@ -161,6 +190,9 @@ export class RunEngine {
 			language: r.language,
 			verbosity: r.verbosity,
 			pendingReason: r.pendingReason,
+			voiceMode: this.voiceMode(r),
+			voiceModeCrew: !!this.deps.store.get().stations.find((x) => x.stationId === r.stationId)?.voiceModeCrew,
+			recording: (this.deps.recordingAllowed?.() ?? true) && !!this.deps.store.get().stations.find((x) => x.stationId === r.stationId)?.recordVoice ? true : undefined,
 		};
 	}
 
@@ -175,13 +207,71 @@ export class RunEngine {
 		return live?.length ? live : item.expected;
 	}
 
+	/** The item's trigger words as they stand now, or undefined while this station answers the plain way. */
+	private triggersOf(r: RunRecord, item: RunItem): TriggerSpec | undefined {
+		if (this.voiceMode(r) === "prompt") return undefined;
+		const per = this.deps.store.get().settings.itemTriggers?.[r.templateId ?? ""];
+		const live = per?.[answerKey({ dataId: item.dataId, name: item.name })] ?? per?.[answerKey({ name: item.name })];
+		const spec = live ?? item.triggers;
+		return spec && triggerNeed(spec) ? spec : undefined;
+	}
+
+	/**
+	 * How this station answers: the hub asking item by item (`prompt`, the default), the crew speaking trigger
+	 * words with the hub quiet (`trigger`), or both at once. Read live, so a change applies to an open run.
+	 * A single-item prompt run always asks: it exists to ask one question.
+	 */
+	private voiceMode(r: RunRecord): VoiceMode {
+		if (r.runId.startsWith("prun_")) return "prompt";
+		return this.deps.store.get().stations.find((x) => x.stationId === r.stationId)?.voiceMode ?? "prompt";
+	}
+
 	/** How close a heard word must be to a marked one (Checklist setup → word tolerance). */
 	private matchLevel(r: RunRecord): number {
 		return ANSWER_MATCH[this.deps.store.get().settings.wordMatch?.[r.templateId ?? ""] ?? "normal"];
 	}
 
 	private interpretCtx(r: RunRecord, item: RunItem, utteredAt: Date): InterpretContext {
-		return { utteredAt, tzMode: this.deps.store.get().settings.tzMode, timeZone: this.deps.policy.timeZone, maxPastHours: this.deps.policy.maxPastHours, options: item.options, language: normLang(r.language), answers: this.answersOf(r, item), answersOnly: !!r.templateId && !!this.deps.store.get().settings.wordsOnly?.includes(r.templateId), answerMatch: this.matchLevel(r) };
+		return { utteredAt, tzMode: this.deps.store.get().settings.tzMode, timeZone: this.deps.policy.timeZone, maxPastHours: this.deps.policy.maxPastHours, options: item.options, language: normLang(r.language), answers: this.answersOf(r, item), answersOnly: !!r.templateId && !!this.deps.store.get().settings.wordsOnly?.includes(r.templateId), answerMatch: this.matchLevel(r), triggers: this.triggersOf(r, item) };
+	}
+
+	/** Voice recording: what the hub was asking on this station when an answer came in (`speech/capture.ts`). */
+	captureContext(stationId: string, speakerSub?: string): CaptureContext | undefined {
+		const r = this.activeRun(stationId);
+		if (!r) return undefined;
+		const st = this.deps.store.get().stations.find((x) => x.stationId === stationId);
+		const item = r.currentTaskId ? r.items.find((i) => i.taskId === r.currentTaskId) : undefined;
+		return {
+			runId: r.runId,
+			instanceId: r.instanceId,
+			templateId: r.templateId,
+			templateName: r.templateName,
+			language: r.language,
+			stationId,
+			stationName: st?.name,
+			location: st?.location,
+			exchange: r.pendingAction ? `action:${r.pendingAction.kind}` : r.exchange,
+			prompt: r.lastSpoken,
+			item: item && { taskId: item.taskId, dataId: item.dataId, name: item.name, index: item.index, section: item.sectionName, type: item.type, options: item.options, answerWords: this.answersOf(r, item), triggerWords: this.triggersOf(r, item)?.words },
+			readback: r.pendingReadback && { taskId: r.pendingReadback.taskId, valueText: r.pendingReadback.valueText },
+			before: r.items.map((i) => ({ taskId: i.taskId, state: i.state, value: i.value })),
+			speakerSub,
+		};
+	}
+
+	/** Voice recording: what the answer did (items set / skipped / reopened, a read-back asked). */
+	captureOutcome(ctx: CaptureContext): CaptureOutcome {
+		const r = this.deps.store.get().runs.find((x) => x.runId === ctx.runId);
+		if (!r) return { changed: [], exchange: "gone", runState: "gone" };
+		const before = new Map(ctx.before.map((b) => [b.taskId, b]));
+		const changed = r.items
+			.filter((i) => {
+				const b = before.get(i.taskId);
+				return !b || b.state !== i.state || b.value !== i.value;
+			})
+			.map((i) => ({ taskId: i.taskId, dataId: i.dataId, name: i.name, state: i.state, value: i.value, valueText: i.valueText }));
+		const rb = r.pendingReadback;
+		return { changed, readback: rb && { taskId: rb.taskId, value: rb.value, valueText: rb.valueText }, exchange: r.exchange, runState: r.state };
 	}
 
 	runsForUser(sub: string): RunRecord[] {
@@ -353,7 +443,7 @@ export class RunEngine {
 	private newRun(flow: FlowDetail, station: Station, session: HubSession | undefined, userName: string | undefined, template?: TemplateDetail): RunRecord {
 		const settings = this.deps.store.get().settings;
 		const profile = this.profileFor(flow.templateId, station);
-		const items = buildItems(flow, { profile, template, readNotices: settings.readNotices, answers: settings.itemAnswers?.[flow.templateId ?? ""] });
+		const items = buildItems(flow, { profile, template, readNotices: settings.readNotices, answers: settings.itemAnswers?.[flow.templateId ?? ""], triggers: settings.itemTriggers?.[flow.templateId ?? ""] });
 		const now = this.deps.now();
 		return {
 			runId: newId("run"),
@@ -380,7 +470,7 @@ export class RunEngine {
 		const detail = await this.deps.flows.getFlow(api, r.instanceId);
 		if (!detail.ok) return;
 		const profile = this.profileFor(detail.data.templateId, station);
-		const fresh = buildItems(detail.data, { profile, template: await this.templateDetail(api, detail.data.templateId), readNotices: this.deps.store.get().settings.readNotices, answers: this.deps.store.get().settings.itemAnswers?.[detail.data.templateId ?? ""] });
+		const fresh = buildItems(detail.data, { profile, template: await this.templateDetail(api, detail.data.templateId), readNotices: this.deps.store.get().settings.readNotices, answers: this.deps.store.get().settings.itemAnswers?.[detail.data.templateId ?? ""], triggers: this.deps.store.get().settings.itemTriggers?.[detail.data.templateId ?? ""] });
 		const local = new Map(r.items.map((i) => [i.taskId, i]));
 		for (const f of fresh) {
 			const l = local.get(f.taskId);
@@ -715,6 +805,11 @@ export class RunEngine {
 			await this.offerSweepOrComplete(r);
 			return;
 		}
+		if (this.voiceMode(r) === "trigger" && !r.sweepOffered) {
+			await this.say(r, tr(r.language, "trigger_ready"));
+			await this.openTriggerListen(r);
+			return;
+		}
 		await this.speakItem(r, next);
 	}
 
@@ -751,8 +846,46 @@ export class RunEngine {
 		const b = profile?.bindings.find((x) => x.dataId === item.dataId);
 		if (b?.phrases) out.push(...b.phrases);
 		// a combination ("hivt + körbro") biases the recogniser towards each part and towards the whole phrase
-		for (const a of item.expected ?? []) out.push(answerLabel(a), ...answerParts(a));
+		for (const a of [...(this.answersOf(r, item) ?? []), ...(this.triggersOf(r, item)?.words ?? [])]) out.push(answerLabel(a), ...answerParts(a));
 		return out;
+	}
+
+	/** Every word that can set something right now: what the recogniser is biased towards while nobody was asked. */
+	private triggerBias(r: RunRecord): string[] {
+		const lang = normLang(r.language);
+		const out = ["confirm", "yes", "no", "skip", "next", "repeat", "where", "pause"];
+		if (lang !== "en") out.push(tr(lang, "yes"), tr(lang, "no"));
+		for (const i of r.items) {
+			if (!i.voice || (i.state !== "unanswered" && i.state !== "skipped" && i.state !== "current")) continue;
+			out.push(i.name);
+			for (const a of [...(this.answersOf(r, i) ?? []), ...(this.triggersOf(r, i)?.words ?? [])]) out.push(answerLabel(a), ...answerParts(a));
+		}
+		return [...new Set(out)];
+	}
+
+	/**
+	 * Trigger mode: nobody is asked anything. The mic stays open with every trigger word of every open item on the
+	 * bias list and no grammar, so the crew can work down the deck and say them in their own order.
+	 */
+	private async openTriggerListen(r: RunRecord): Promise<void> {
+		const current = this.record(r.runId);
+		if (current.state !== "active") return;
+		for (const i of r.items) if (i.state === "current") i.state = "unanswered";
+		r.currentTaskId = undefined;
+		r.pendingReadback = undefined;
+		r.waiting = undefined;
+		r.attempts = 0;
+		r.exchange = "listening";
+		this.partial.delete(r.runId);
+		await this.save(r);
+		this.deps.io.status(r.stationId, "listening", tr(r.language, "trigger_ready"));
+		const maxMs = this.deps.policy.listenMs;
+		this.deps.io.listen(r.stationId, `${r.runId}:triggers`, { maxMs, bias: this.triggerBias(r), language: r.language });
+		this.clearTimer(r.runId, "listen");
+		this.clearTimer(r.runId, "confirm");
+		const t = setTimeout(() => void this.onListenTimeout(r.runId), maxMs + 1500);
+		t.unref?.();
+		this.timerSet(r.runId).listen = t;
 	}
 
 	private async openListen(r: RunRecord, item: RunItem, maxMs = this.deps.policy.listenMs): Promise<void> {
@@ -798,6 +931,11 @@ export class RunEngine {
 
 	private async onListenTimeout(runId: string): Promise<void> {
 		const r = this.deps.store.get().runs.find((x) => x.runId === runId);
+		// a held item in "ask" mode: silence is no answer, keep the mic open for "next"
+		if (r && r.state === "active" && r.exchange === "waiting") {
+			if (!this.partial.get(runId)) await this.openWaitListen(r);
+			return;
+		}
 		if (!r || r.state !== "active" || (r.exchange !== "listening" && r.exchange !== "confirming")) return;
 		if (r.pendingAction) {
 			r.pendingAction = undefined;
@@ -809,7 +947,11 @@ export class RunEngine {
 			return;
 		}
 		const item = r.items.find((i) => i.taskId === r.currentTaskId);
-		if (!item) return;
+		if (!item) {
+			// trigger mode: silence means nobody spoke yet, not a missed answer. Re-arm and stay quiet.
+			if (this.voiceMode(r) === "trigger" && r.state === "active" && !this.partial.get(runId)) await this.openTriggerListen(r);
+			return;
+		}
 		if (this.partial.get(runId)) return; // a transcript is arriving
 		this.deps.io.stopListening(r.stationId);
 		if (!r.runId.startsWith("prun_")) {
@@ -927,10 +1069,14 @@ export class RunEngine {
 			}
 			if (w === "repeat") {
 				await this.say(r, r.waiting?.mode === "ask" ? tr(r.language, "step_ask") : tr(r.language, "step_external"));
+				await this.openWaitListen(r);
 				return;
 			}
+			const heldId = r.waiting?.taskId;
 			if (w) await this.handleCommand(r, w, session);
 			else await this.unpromptedAnswer(r, text, confidence, session);
+			// still holding the same item (anything but "next"): the mic stays open. A new hold opened its own window.
+			if (this.record(r.runId).waiting?.taskId === heldId) await this.openWaitListen(r);
 			return;
 		}
 		if (r.exchange === "idle" || r.exchange === "speaking" || r.exchange === "committing") {
@@ -941,7 +1087,13 @@ export class RunEngine {
 			return;
 		}
 		const item = r.items.find((i) => i.taskId === r.currentTaskId);
-		if (!item) return;
+		if (!item) {
+			// the open trigger window: nobody was asked, so the words themselves say which item is meant
+			const w = controlWord(text);
+			if (w) await this.handleCommand(r, w, session);
+			else await this.unpromptedAnswer(r, text, confidence, session);
+			return;
+		}
 		// The recogniser's first guess is often a near miss on ship terms ("Vet TES" for VTS). When it holds none of the
 		// item's answer words but one of its other guesses does, that guess is what the crew said.
 		if (alternatives?.length && !controlWord(text)) {
@@ -1014,6 +1166,14 @@ export class RunEngine {
 		// option hit is trusted on its own; for parsed values (times, numbers, text) only a really poor score counts.
 		const exact = result.ok && (result.kind === "bool" || result.kind === "option" || result.kind === "now");
 		const sttFactor = confidence === undefined || exact ? 1 : Math.max(0.8, confidence);
+		// "both": the crew answered another item by its trigger words while this one was on the table. Theirs wins.
+		if ((!result.ok || result.confidence * sttFactor < threshold) && this.voiceMode(r) !== "prompt") {
+			const other = this.triggerHit(r, normalizeTranscript(text), item.taskId);
+			if (other) {
+				await this.takeOver(r, other, text, confidence, session);
+				return;
+			}
+		}
 		if (isSideTalk(item, text, result)) {
 			// a sentence that fits nothing on a yes/no, number or time item is the room, not the crew: no retry counted,
 			// no "say yes or no", the mic simply re-arms. Every third one in a row earns a short reminder so a crew
@@ -1072,7 +1232,7 @@ export class RunEngine {
 
 	/** Bound phrases plus the item's answer words: what the on-device grammar recogniser must be able to hear. */
 	private grammarWords(r: RunRecord, item: RunItem): string[] {
-		const answers = (item.expected ?? []).flatMap((a) => [answerLabel(a), ...answerParts(a)]);
+		const answers = [...(this.answersOf(r, item) ?? []), ...(this.triggersOf(r, item)?.words ?? [])].flatMap((a) => [answerLabel(a), ...answerParts(a)]);
 		return [...(this.phrasesFor(r, item) ?? []), ...answers];
 	}
 
@@ -1092,6 +1252,46 @@ export class RunEngine {
 		return result.kind === "bool" ? "none" : "required";
 	}
 
+	/** The open item whose trigger words this transcript holds best, if any. `exclude` = the item already being asked. */
+	private triggerHit(r: RunRecord, normalized: string, exclude?: string): RunItem | undefined {
+		const match = this.matchLevel(r);
+		let best: { item: RunItem; hits: number } | undefined;
+		for (const i of r.items) {
+			if (i.taskId === exclude || !i.voice || (i.state !== "unanswered" && i.state !== "skipped")) continue;
+			const hits = heardTrigger(normalized, this.triggersOf(r, i), match)?.length ?? 0;
+			if (hits && (!best || hits > best.hits)) best = { item: i, hits };
+		}
+		return best?.item;
+	}
+
+	/** Runs whose current utterance already moved to another item: one hand-over per utterance, never a ping-pong. */
+	private readonly takingOver = new Set<string>();
+
+	/** Hand the utterance to another item and answer it there: the crew named that one, whatever was asked. */
+	private async takeOver(r: RunRecord, to: RunItem, text: string, confidence: number | undefined, session?: HubSession): Promise<void> {
+		if (this.takingOver.has(r.runId)) return;
+		this.takingOver.add(r.runId);
+		try {
+			await this.moveAndAnswer(r, to, text, confidence, session);
+		} finally {
+			this.takingOver.delete(r.runId);
+		}
+	}
+
+	private async moveAndAnswer(r: RunRecord, to: RunItem, text: string, confidence: number | undefined, session?: HubSession): Promise<void> {
+		this.clearTimer(r.runId, "listen");
+		this.clearTimer(r.runId, "confirm");
+		this.partial.delete(r.runId);
+		for (const i of r.items) if (i.state === "current") i.state = "unanswered";
+		to.state = "current";
+		r.currentTaskId = to.taskId;
+		r.pendingReadback = undefined;
+		r.attempts = 0;
+		r.exchange = "listening";
+		await this.save(r);
+		await this.onTranscript(r.stationId, text, confidence, session);
+	}
+
 	/** "Pilot on board five minutes ago" said while nothing was asked: bind by phrase to an unanswered item. */
 	private async unpromptedAnswer(r: RunRecord, text: string, confidence: number | undefined, session?: HubSession): Promise<void> {
 		const t = normalizeTranscript(text);
@@ -1102,6 +1302,8 @@ export class RunEngine {
 		const phrasesOf = (i: RunItem) => [...(profile?.bindings.find((x) => x.dataId === i.dataId)?.phrases ?? []), i.name].map((p) => normalizeTranscript(p)).filter((p) => p.length > 3);
 		// the name or a bound phrase as spoken ("pilot on board five minutes ago") wins over the looser matches below
 		const hit =
+			// the item's own trigger words win over its name: they were marked for exactly this ("gångbro" → that item)
+			this.triggerHit(r, t) ??
 			candidates.find((i) => phrasesOf(i).some((p) => t.startsWith(p))) ??
 			// the same words in the crew's own order and wording: "körbro er hivt" answers "Hivt körbro"
 			candidates.find((i) => phrasesOf(i).some((p) => p.includes(" ") && containsAllWords(t, p, match))) ??
@@ -1110,13 +1312,12 @@ export class RunEngine {
 				const combos = (this.answersOf(r, i) ?? []).filter((a) => answerParts(a).length > 1);
 				return !!combos.length && !!heardAnswer(t, combos, match);
 			});
-		if (!hit) return;
-		for (const i of r.items) if (i.state === "current") i.state = "unanswered";
-		hit.state = "current";
-		r.currentTaskId = hit.taskId;
-		r.exchange = "listening";
-		await this.save(r);
-		await this.onTranscript(r.stationId, text, confidence, session);
+		if (!hit) {
+			// trigger mode: the endpoint closed its window when it sent this; nothing matched, so open it again
+			if (this.voiceMode(r) === "trigger" && !r.currentTaskId && r.state === "active") await this.openTriggerListen(r);
+			return;
+		}
+		await this.takeOver(r, hit, text, confidence, session);
 	}
 
 	// ------------------------------------------------------------ commands
@@ -1226,6 +1427,10 @@ export class RunEngine {
 			return;
 		}
 		const now = this.deps.now();
+		// the item already holds another value (the Flow app answered it, or this run did and came back to it):
+		// the voice wins — and says so, so nobody's answer disappears quietly
+		const override = item.value !== undefined && !sameValue(item.value, rb.value);
+		const wasText = item.valueText;
 		item.value = rb.value;
 		item.valueText = rb.valueText;
 		item.transcript = rb.transcript;
@@ -1233,7 +1438,9 @@ export class RunEngine {
 		item.committedAt = iso(now);
 		item.utteredAt = item.utteredAt ?? iso(now);
 		item.state = "unsynced";
+		item.reasking = undefined;
 		this.emit("answer.confirmed", r, { taskId: item.taskId, text: rb.valueText });
+		if (override && this.level(r) !== "silent") await this.say(r, tr(r.language, "item_override", { was: wasText ?? "", value: rb.valueText }));
 		const entry = await this.deps.outbox.enqueue({
 			kind: "value",
 			instanceId: r.instanceId,
@@ -1242,7 +1449,7 @@ export class RunEngine {
 			sessionId: user.sessionId,
 			sub: user.sub,
 			runId: r.runId,
-			payload: { taskRef: item.taskId, value: rb.value, idempotencyKey: `${r.runId}:${item.taskId}:${item.committedAt}`, source, transcript: rb.transcript, confidence: rb.confidence, utteredAt: item.utteredAt },
+			payload: { taskRef: item.taskId, value: rb.value, override: override || undefined, idempotencyKey: `${r.runId}:${item.taskId}:${item.committedAt}`, source, transcript: rb.transcript, confidence: rb.confidence, utteredAt: item.utteredAt },
 		});
 		item.outboxId = entry.id;
 		await this.save(r);
@@ -1268,6 +1475,8 @@ export class RunEngine {
 			await this.finishPrompt(r, item, sent ? "committed" : row?.state === "failed" ? "failed" : "queued_offline", row?.state === "failed" ? row.lastError : undefined);
 			return;
 		}
+		// Flow refused it: it may already hold a value this hub has not seen — read the instance before moving on
+		if (row?.state === "failed") void this.syncNow(r.runId);
 		if (row?.state === "failed") await this.say(r, tr(r.language, "flow_rejected", { name: item.name }));
 		else if (!sent) await this.say(r, tr(r.language, "recorded_locally"));
 		else await this.say(r, tr(r.language, "confirmed")); // the crew hears that the value went in before the next item
@@ -1293,10 +1502,176 @@ export class RunEngine {
 		await this.save(r);
 	}
 
+	// ------------------------------------------------------------ live sync with the Flow app
+
+	/** Start watching Maranics for outside changes (called once the store is recovered at boot). */
+	startWatching(): void {
+		this.watcher.start();
+	}
+
+	stopWatching(): void {
+		this.watcher.stop();
+	}
+
+	/**
+	 * Read Maranics now and apply what changed, ahead of the ticker: an integration said this instance
+	 * moved, a run resumed, an endpoint came back.
+	 */
+	async syncNow(runId: string): Promise<ExternalDiff | undefined> {
+		const r = this.deps.store.get().runs.find((x) => x.runId === runId);
+		if (!r?.instanceId || (r.state !== "active" && r.state !== "paused") || r.runId.startsWith("prun_")) return undefined;
+		try {
+			return await this.watcher.syncNow(r.runId, r.instanceId);
+		} catch (err) {
+			// a sync is never worth failing the caller for: the ticker tries again
+			this.deps.log.warn(`live sync of run ${runId} failed: ${err instanceof Error ? err.message : String(err)}`);
+			return undefined;
+		}
+	}
+
+	/** The same, addressed by Maranics flow id: what `POST /v1/flows/:instanceId/changed` calls. */
+	async syncInstance(instanceId: string): Promise<{ runId: string; changes: number; structureChanged: boolean }[]> {
+		const runs = this.deps.store.get().runs.filter((r) => r.instanceId === instanceId && (r.state === "active" || r.state === "paused"));
+		const out: { runId: string; changes: number; structureChanged: boolean }[] = [];
+		for (const r of runs) {
+			const diff = await this.watcher.syncNow(r.runId, r.instanceId);
+			out.push({ runId: r.runId, changes: diff?.changes.length ?? 0, structureChanged: !!diff?.structureChanged });
+		}
+		return out;
+	}
+
+	/**
+	 * An integration says this instance changed. With `changes` the values are applied at once (no read at
+	 * all — the fastest path there is) and a confirming read follows in the background; without them the
+	 * instance is read now. Nothing here is ever written back to Flow: these values came from Flow.
+	 */
+	async pushChanged(instanceId: string, changes?: { item: string; value?: string; cleared?: boolean }[]): Promise<{ runId: string; changes: number; structureChanged: boolean }[]> {
+		if (!changes?.length) return this.syncInstance(instanceId);
+		const runs = this.deps.store.get().runs.filter((r) => r.instanceId === instanceId && (r.state === "active" || r.state === "paused"));
+		const out: { runId: string; changes: number; structureChanged: boolean }[] = [];
+		for (const r of runs) {
+			const rows: ValueRow[] = [];
+			for (const ch of changes) {
+				const item = this.resolveItem(r.runId, ch.item);
+				if (!item) continue; // unknown here: the confirming read sorts it out
+				const cleared = ch.cleared === true || (ch.value !== undefined && ch.value === "");
+				rows.push({ taskId: item.taskId, dataId: item.dataId, status: cleared ? "Open" : "Done", value: cleared ? undefined : ch.value });
+			}
+			const diff = diffExternal(r.items, rows);
+			if (diff.changes.length) await this.applyExternal(r.runId, diff);
+			out.push({ runId: r.runId, changes: diff.changes.length, structureChanged: false });
+			void this.syncNow(r.runId); // confirm against Flow itself; a matching read produces no second line
+		}
+		return out;
+	}
+
+	/** The line the voice says about changes that came from outside. Silent stations hear nothing. */
+	private externalLine(r: RunRecord, applied: ExternalChange[]): string | undefined {
+		if (this.level(r) === "silent" || !applied.length) return undefined;
+		if (applied.length > 1) return tr(r.language, "items_elsewhere", { n: spokenNumber(applied.length, r.language) });
+		const c = applied[0];
+		if (c.kind === "reopened") return tr(r.language, "item_reopened", { name: c.name });
+		return tr(r.language, "item_elsewhere", { name: c.name, value: c.valueText ?? tr(r.language, "confirmed") });
+	}
+
+	/**
+	 * Someone answered in the Flow app (or a workflow wrote a value) under an open run. The items are
+	 * taken over as they stand in Flow — nothing is written back, so this can never fight the crew — and
+	 * the voice only speaks when it was about to ask something that is now answered:
+	 *
+	 *   the item being asked, or the one held back → one short line, then on to the next item;
+	 *   anything else while a mic window is open   → screen only, never talk over an answer;
+	 *   otherwise                                  → one short line.
+	 */
+	private async applyExternal(runId: string, diff: ExternalDiff): Promise<void> {
+		const r = this.deps.store.get().runs.find((x) => x.runId === runId);
+		if (!r || (r.state !== "active" && r.state !== "paused")) return;
+
+		if (diff.structureChanged) {
+			// a task was added (or a visibility rule opened a section): only a rebuild can place it
+			const session = this.actingSession(runId);
+			const api = session ? await this.deps.credentials.apiSettings(session) : undefined;
+			const station = this.deps.store.get().stations.find((x) => x.stationId === r.stationId);
+			if (api && station) {
+				await this.refreshItems(r, api, station);
+				await this.save(r);
+				this.emit("run.item.external", r, { text: "checklist changed", data: { structureChanged: true } });
+				await this.audit(r, "item.external", { text: "structure" });
+			}
+			return;
+		}
+
+		const now = this.deps.now();
+		const applied: ExternalChange[] = [];
+		let currentTaken: RunItem | undefined;
+		let heldTaken: RunItem | undefined;
+		for (const c of diff.changes) {
+			const item = r.items.find((i) => i.taskId === c.taskId);
+			if (!item || item.state === "unsynced") continue; // our own write is in flight: the outbox owns it
+			if (c.kind === "reopened") {
+				item.state = item.voice ? "unanswered" : "needs_screen";
+				item.value = undefined;
+				item.valueText = undefined;
+				item.committedAt = undefined;
+				item.outboxId = undefined;
+			} else {
+				item.state = "answered";
+				item.value = c.value;
+				item.valueText = c.valueText;
+				item.committedAt = c.at ?? iso(now);
+				item.transcript = undefined;
+				item.confidence = undefined;
+				item.skipReason = undefined;
+				item.outboxId = undefined;
+				item.reasking = undefined;
+				r.skipped = r.skipped.filter((x) => x !== item.taskId);
+			}
+			applied.push(c);
+			this.emit("run.item.external", r, { taskId: item.taskId, text: c.valueText, data: { kind: c.kind, value: c.value, was: c.was } });
+			await this.audit(r, "item.external", { taskId: item.taskId, dataId: item.dataId, value: c.value, was: c.was, text: c.kind });
+			if (r.currentTaskId === item.taskId) currentTaken = item;
+			if (r.waiting?.taskId === item.taskId) heldTaken = item;
+		}
+		if (!applied.length) return;
+		this.deps.log.info(`run ${r.runId} (${r.templateName}): ${applied.length} item(s) taken over from Flow — ${applied.map((c) => `${c.name} ${c.kind}`).join("; ")}`);
+		await this.save(r);
+		if (r.state !== "active") return; // paused: the screen is level with Flow, the voice stays out of it
+
+		const line = this.externalLine(r, applied);
+		const answeredNow = (i: RunItem) => i.state === "answered";
+		if (currentTaken && answeredNow(currentTaken)) {
+			// the question on the floor was answered elsewhere: stop the window, say so, move on
+			this.clearTimers(r.runId);
+			this.deps.io.stopListening(r.stationId);
+			r.pendingReadback = undefined;
+			await this.save(r);
+			if (line) await this.say(r, line);
+			await this.advance(r, currentTaken);
+			return;
+		}
+		if (heldTaken && answeredNow(heldTaken)) {
+			if (line) await this.say(r, line);
+			r.waiting = undefined;
+			await this.save(r);
+			await this.advance(r, heldTaken); // the item after it takes over the hold
+			return;
+		}
+		if (r.exchange === "listening" || r.exchange === "confirming" || r.exchange === "interpreting" || r.exchange === "speaking") return;
+		if (line) await this.say(r, line);
+		// nothing was being asked: in trigger mode the open mic has to be re-armed with the words that are left
+		if (r.exchange === "idle" && !r.waiting && this.voiceMode(r) === "trigger" && !r.sweepOffered && nextItem(r.items)) await this.openTriggerListen(r);
+	}
+
 	private async advance(r: RunRecord, from: RunItem): Promise<void> {
 		const current = this.record(r.runId);
 		if (current.state !== "active") return;
 		if (from.state === "current") from.state = "unanswered";
+		// trigger mode: items are set in the crew's order, so "anything left" is asked of the whole list
+		if (this.voiceMode(r) === "trigger" && !r.sweepOffered) {
+			if (nextItem(r.items)) await this.openTriggerListen(r);
+			else await this.offerSweepOrComplete(r);
+			return;
+		}
 		const next = nextItem(r.items, from.index);
 		if (next) {
 			const step = this.stepMode(r);
@@ -1330,6 +1705,31 @@ export class RunEngine {
 		else await this.say(r, tr(r.language, "step_external"));
 		this.deps.io.status(r.stationId, "idle", `waiting for the next item (${step.mode})`);
 		if (until) this.armStep(r);
+		await this.openWaitListen(r);
+	}
+
+	/**
+	 * Step mode "ask": the hub just said "say next when you are ready", so the mic must be open for it. The window
+	 * carries the control words plus the held item's own words (an answer given ahead of time still counts) and is
+	 * re-armed on silence until the item is released. Timer / external holds stay silent: nothing is asked of the crew.
+	 */
+	private async openWaitListen(r: RunRecord): Promise<void> {
+		const current = this.record(r.runId);
+		if (current.state !== "active" || current.exchange !== "waiting" || current.waiting?.mode !== "ask") return;
+		if (current.pendingAction || this.speaking.has(r.runId)) return;
+		const next = current.items.find((i) => i.taskId === current.waiting?.taskId);
+		const maxMs = this.deps.policy.listenMs;
+		this.deps.io.listen(r.stationId, `${r.runId}:waiting`, {
+			maxMs,
+			bias: next ? this.biasFor(current, next) : undefined,
+			expect: "Command",
+			grammar: next ? grammarFor(current.language, next, this.grammarWords(current, next)) : undefined,
+			language: current.language,
+		});
+		this.clearTimer(r.runId, "listen");
+		const t = setTimeout(() => void this.onListenTimeout(r.runId), maxMs + 1500);
+		t.unref?.();
+		this.timerSet(r.runId).listen = t;
 	}
 
 	private armStep(r: RunRecord): void {
@@ -1801,7 +2201,10 @@ export class RunEngine {
 		if (r.state !== "active") throw new EngineError(409, "RUN_NOT_ACTIVE", "run is not active");
 		this.clearTimers(r.runId);
 		this.deps.io.stopListening(r.stationId);
-		if (item.state === "answered" || item.state === "unsynced") item.state = "unanswered";
+		if (item.state === "answered" || item.state === "unsynced") {
+			item.state = "unanswered";
+			item.reasking = true; // asked again on purpose: live sync must not hand the old value back
+		}
 		if (r.waiting) {
 			r.waiting = undefined;
 			this.emit("run.proceeded", r, { taskId: item.taskId, text: "external", data: { by: "external", jump: true } });
@@ -1842,6 +2245,7 @@ export class RunEngine {
 		r.state = "active";
 		await this.save(r);
 		this.emit("run.resumed", r);
+		await this.syncNow(r.runId); // whatever happened in the Flow app while this run was paused
 		const next = nextItem(r.items);
 		if (next) await this.speakItem(r, next);
 		else await this.offerSweepOrComplete(r);
@@ -1863,6 +2267,7 @@ export class RunEngine {
 		this.deps.io.stopListening(r.stationId);
 		r.state = "completed";
 		r.exchange = "idle";
+		this.watcher.forget(r.runId);
 		r.completedAt = iso(this.deps.now());
 		await this.save(r);
 		this.emit("run.completed", r, { text: `${p.answered} of ${p.total}` });
@@ -1898,6 +2303,7 @@ export class RunEngine {
 		this.deps.io.stopListening(r.stationId);
 		r.state = "abandoned";
 		r.exchange = "idle";
+		this.watcher.forget(r.runId);
 		r.pendingReadback = undefined;
 		r.completedAt = iso(this.deps.now());
 		await this.save(r);
@@ -1938,6 +2344,7 @@ export class RunEngine {
 				this.deps.log.info(`run ${r.runId} (${r.templateName}) recovered; it continues when the station's endpoint reconnects`);
 			}
 		}
+		this.startWatching();
 	}
 
 	/** The station's endpoint (re)connected: continue an active run from the next item. */
@@ -1960,14 +2367,19 @@ export class RunEngine {
 			await this.say(r, r.pendingReason ?? tr(r.language, "ready", { name: r.templateName }));
 			return;
 		}
+		// the endpoint was away: whatever the Flow app did meanwhile lands before the voice says anything
+		if (r.state === "active") await this.syncNow(r.runId);
 		if (r.state === "active" && r.exchange === "waiting" && r.waiting) {
 			if (r.waiting.until && Date.parse(r.waiting.until) <= this.deps.now()) await this.proceed(r.runId, "timer");
 			else if (r.waiting.until) this.armStep(r);
+			else await this.openWaitListen(r);
 			return;
 		}
 		if (r.state === "active" && r.exchange === "idle" && !this.speaking.has(r.runId)) {
 			const next = nextItem(r.items);
-			if (next) await this.speakItem(r, next);
+			if (!next) return;
+			if (this.voiceMode(r) === "trigger" && !r.sweepOffered) await this.openTriggerListen(r);
+			else await this.speakItem(r, next);
 		}
 	}
 

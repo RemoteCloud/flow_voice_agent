@@ -1,13 +1,13 @@
 /** HTTP view types shared with the web app (relative import from web/src). */
 import type { StepMode } from "./store/HubStore.js";
 import type { AuthErrorCode, AuthProviderView } from "./http/auth.js";
-import type { ChecklistPick, RunView } from "./protocol.js";
+import type { ChecklistPick, RunView, TriggerSpec } from "./protocol.js";
 import type { AuditEntry, Device, LibraryTemplate, EventMapping, OutboxEntry, PendingEnrollment, Station, StationJoin, VoiceProfile } from "./store/HubStore.js";
 
 export type { LibraryTemplate };
 /** `GET /api/library`: the central checklist register with its language and trigger words. */
 export interface LibraryView {
-	templates: (LibraryTemplate & { language?: string; words: Record<string, string[]>; /** Only the marked words count: no plain yes / confirm / no on items that have words. */ wordsOnly: boolean; /** How close a heard word must be to a marked one. */ wordMatch: "exact" | "normal" | "loose"; /** How the run moves to the next item. */ step: StepMode })[];
+	templates: (LibraryTemplate & { language?: string; words: Record<string, string[]>; /** Item key → the words that name and set that item when the crew says them out of turn. */ triggers: Record<string, TriggerSpec>; /** Only the marked words count: no plain yes / confirm / no on items that have words. */ wordsOnly: boolean; /** How close a heard word must be to a marked one. */ wordMatch: "exact" | "normal" | "loose"; /** How the run moves to the next item. */ step: StepMode })[];
 }
 /** `GET /api/library/available`: what the Templates app offers, flagged when already in the register. */
 export interface LibraryAvailable {

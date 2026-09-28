@@ -5,7 +5,7 @@
  */
 import { mkdirSync, readFileSync, readdirSync, renameSync, statSync, writeFileSync, existsSync } from "node:fs";
 import path from "node:path";
-import type { RunItem, RunState, ExchangeState } from "../protocol.js";
+import type { RunItem, RunState, ExchangeState, TriggerSpec, VoiceMode } from "../protocol.js";
 
 export interface HubUser {
 	sub: string;
@@ -63,6 +63,19 @@ export interface Station {
 	/** Noisy place: on phones / tablets the mic opens only while the button is held (the app has no switch of its own). */
 	holdToAnswer?: boolean;
 	/**
+	 * How the crew answers here. `prompt` (default) = the hub reads an item and waits for the answer, as always.
+	 * `trigger` = the hub stays quiet and the crew sets items by speaking their trigger words, in any order.
+	 * `both` = the hub reads item by item and trigger words also work for any other item at any time.
+	 */
+	voiceMode?: VoiceMode;
+	/** The crew may change `voiceMode` from the run screen. Off (default) = admin decides. */
+	voiceModeCrew?: boolean;
+	/**
+	 * Record the crew's answers for training: every prompt window's audio is kept with the flow and item it belongs
+	 * to and sent to the training store (`server/speech/capture.ts`). Off by default; the run screen shows it is on.
+	 */
+	recordVoice?: boolean;
+	/**
 	 * What this station may do per template id. `start` = start new ones and work on open ones, `use` = only work on
 	 * open ones (started elsewhere), `off` = not shown here. A station with entries offers only those templates; no entries at all → the hub-wide Start buttons list decides.
 	 * `language` = the language the checklist is run in on this station (wins over the hub-wide template language).
@@ -78,6 +91,16 @@ export interface RunWaiting {
 	mode: "ask" | "timer" | "external";
 	/** timer: when the next item is read (ISO). */
 	until?: string;
+}
+
+/**
+ * Central switch for voice recording (main hub's hub.json, set in `/central`). A station records only while this is
+ * on, its core is not in `off`, and the station itself ticks `recordVoice`. Absent = off everywhere.
+ */
+export interface CentralRecording {
+	enabled: boolean;
+	/** Cores ("main" or a tenant entry id) where recording stays off while it is on hub-wide. */
+	off?: string[];
 }
 
 export interface TenantEntry {
@@ -291,9 +314,11 @@ export interface HubData {
 	library?: Record<string, LibraryTemplate>;
 	/** Main hub only: other Maranics tenants to try with a pasted access token (`server/tenants.ts`). */
 	tenants?: TenantEntry[];
+	/** Main hub only: central switch for recording answers for training (`/central`). */
+	recording?: CentralRecording;
 	/** Portable file → modification time it had when it was last imported; a file is imported again only after it changed. */
 	portableSeen?: Record<string, number>;
-	settings: { readNotices: boolean; tzMode: "utc" | "local"; confirmation: "required" | "optional"; /** Template ids that get a start button on the phone/tablet home screen and in the voice menu; empty or absent → every template. */ startable?: string[]; /** Template id → language the checklist is written in (en/sv/no/fr/de); wins over the station language. */ templateLanguages?: Record<string, string>; /** Template id → item key (`answerKey`) → words that count as that item's answer ("up", "closed"); "a + b" = every part must be heard, in any order. */ itemAnswers?: Record<string, Record<string, string[]>>; /** Template ids where only the marked answer words count: items with words refuse a plain yes / confirm / no. */ wordsOnly?: string[]; /** Template id → how close a heard word must be to a marked answer word; absent = normal. */ wordMatch?: Record<string, "exact" | "normal" | "loose">; /** Template id → how the run moves to the next item; absent = at once. */ stepMode?: Record<string, StepMode> };
+	settings: { readNotices: boolean; tzMode: "utc" | "local"; confirmation: "required" | "optional"; /** Template ids that get a start button on the phone/tablet home screen and in the voice menu; empty or absent → every template. */ startable?: string[]; /** Template id → language the checklist is written in (en/sv/no/fr/de); wins over the station language. */ templateLanguages?: Record<string, string>; /** Template id → item key (`answerKey`) → words that count as that item's answer ("up", "closed"); "a + b" = every part must be heard, in any order. */ itemAnswers?: Record<string, Record<string, string[]>>; /** Template id → item key (`answerKey`) → the trigger words that name and set that item when spoken out of turn. */ itemTriggers?: Record<string, Record<string, TriggerSpec>>; /** Template ids where only the marked answer words count: items with words refuse a plain yes / confirm / no. */ wordsOnly?: string[]; /** Template id → how close a heard word must be to a marked answer word; absent = normal. */ wordMatch?: Record<string, "exact" | "normal" | "loose">; /** Template id → how the run moves to the next item; absent = at once. */ stepMode?: Record<string, StepMode> };
 }
 
 export function emptyData(): HubData {

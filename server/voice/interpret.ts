@@ -6,6 +6,7 @@
  * Understands English, Swedish, Norwegian, French and German at once: crews mix languages and the
  * STT locale is only a hint. Messages back to the user come from i18n.ts in the run's language.
  */
+import type { TriggerSpec } from "../protocol.js";
 import { normLang, t as tr, type Lang } from "./i18n.js";
 
 export interface InterpretContext {
@@ -23,6 +24,11 @@ export interface InterpretContext {
 	answersOnly?: boolean;
 	/** How close a heard word must be to a marked one (checklist setting): exact = 1, normal = 0.75, loose = 0.6. */
 	answerMatch?: number;
+	/**
+	 * The item's trigger words (Checklist setup), set only while the station answers in `trigger` or `both` mode.
+	 * Hearing enough of them is an answer in itself: the crew named the item, which is how it is set.
+	 */
+	triggers?: TriggerSpec;
 }
 
 export type Interpretation =
@@ -645,6 +651,24 @@ export function containsAllWords(normalized: string, phrase: string, match: numb
 	return parts.every((p) => containsWord(normalized, hay, p) || nearWord(words, p, match) !== undefined);
 }
 
+/** How many trigger words must be heard: 1 = any one of them, `words.length` = all of them. Order never matters. */
+export function triggerNeed(spec: TriggerSpec | undefined): number {
+	if (!spec?.words.length) return 0;
+	return Math.min(Math.max(1, Math.round(spec.need || 1)), spec.words.length);
+}
+
+/**
+ * The trigger words of an item that the transcript holds, in the order they are marked, or undefined when fewer than
+ * `need` of them are there. Each word is looked up like an answer word (compounds, near misses, combinations with
+ * "+"), so "körbro er hivt" holds both "hivt" and "körbro" however the crew says it. A negation never triggers.
+ */
+export function heardTrigger(normalized: string, spec: TriggerSpec | undefined, match: number = ANSWER_MATCH.normal): string[] | undefined {
+	const need = triggerNeed(spec);
+	if (!need || !spec || NEGATION.test(normalized)) return undefined;
+	const hit = spec.words.filter((w) => !!heardAnswer(normalized, [w], match));
+	return hit.length >= need ? hit : undefined;
+}
+
 /**
  * A recogniser's first guess is often a near miss on ship terms ("Vet TES" for VTS). When it holds none of the item's
  * answer words but another guess of the same utterance does, that guess is what the crew said.
@@ -694,7 +718,9 @@ export function interpret(type: string, transcript: string, ctx: InterpretContex
 	const raw = transcript.trim();
 	const normalized = normalizeTranscript(raw);
 	if (!normalized) return { ok: false, reason: "empty", message: msg("m_empty"), confidence: 0 };
-	const heard = heardAnswer(normalized, ctx.answers, ctx.answerMatch);
+	// the item's own answer word decides the value; failing that, its trigger words are the answer (the crew named it)
+	const trigger = heardTrigger(normalized, ctx.triggers, ctx.answerMatch);
+	const heard = heardAnswer(normalized, ctx.answers, ctx.answerMatch) ?? (trigger ? trigger.join(" + ") : undefined);
 	if (heard) {
 		const said = answerLabel(heard); // a combination is read back as its parts, without the "+"
 

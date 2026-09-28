@@ -74,6 +74,12 @@ export function App() {
 		})();
 	}, [probe, joinToken]);
 
+	// a station link opened while the app is already running (a second poster, "Change station" on a PC) must
+	// still count: the token is read once on boot, so load the page again with it
+	useEffect(() => {
+		if (rawRoute.page === "join" && rawRoute.token !== joinToken) location.reload();
+	}, [rawRoute, joinToken]);
+
 	const sessionLost = useCallback(
 		(text?: string) => {
 			setNotice(text ?? "Your session has ended. Sign in again.");
@@ -149,7 +155,7 @@ export function App() {
 		<AppContext.Provider value={ctx}>
 			<VoiceProvider>
 				<Shell route={route} mobile={mobile}>
-					{route.page === "run" && route.id ? <RunPage runId={route.id} mobile={mobile} /> : route.page === "admin" && !mobile ? <AdminPage /> : <HomePage mobile={mobile} onOpenRun={(id) => navigate({ page: "run", id })} />}
+					{route.page === "run" && route.id ? <RunPage runId={route.id} mobile={mobile} /> : route.page === "admin" && !mobile ? <AdminPage tab={route.tab} /> : <HomePage mobile={mobile} onOpenRun={(id) => navigate({ page: "run", id })} />}
 				</Shell>
 			</VoiceProvider>
 		</AppContext.Provider>

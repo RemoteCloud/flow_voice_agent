@@ -188,6 +188,32 @@ function flowDetail(f, template) {
 	return { ...flowSummary(f), sections, tasks: f.tasks.map(taskDto) };
 }
 
+/** Rows of `GET /flows/{flowId}/values`: one per control, in section + task order like the real API. */
+function valueRows(f) {
+	return [...f.tasks]
+		.sort((a, b) => (a.sectionId ?? "").localeCompare(b.sectionId ?? "") || (a.order ?? 0) - (b.order ?? 0))
+		.flatMap((t) =>
+			(t.controls ?? []).map((c) => {
+				const v = t.values?.find((x) => x.controlId === c.controlId) ?? t.values?.[0];
+				return {
+					taskId: t.taskId,
+					controlId: c.controlId,
+					dataId: c.dataId,
+					sectionId: t.sectionId,
+					name: t.name,
+					type: c.type,
+					status: t.status === "Done" ? "Done" : "Open",
+					value: v?.value,
+					displayValue: c.quickSelectValues?.find((o) => o.value === v?.value)?.title ?? v?.value,
+					time: v?.time,
+					source: v?.source,
+					confirmed: t.status === "Done",
+					overridden: false,
+				};
+			}),
+		);
+}
+
 function flowFixtures(templates) {
 	const byId = new Map(templates.map((t) => [t.id, t]));
 	const mk = (flowId, name, templateId, createdAt, status, done) => ({
@@ -517,6 +543,19 @@ export async function startFakeMaranics({ token = "t0k3n", tenant = "demo", port
 			if (!f) return problem(res, 404, "FLOW_NOT_FOUND");
 			return json(res, 200, page(f.tasks.map(taskDto), url.searchParams));
 		}
+		// flat value query: one row per control, `fields` picks the columns, pageSize=0 = stats only (the hub's live-sync tick)
+		if ((m = /^\/app\/flows\/v3\/flows\/([^/]+)\/values$/.exec(url.pathname)) && method === "GET") {
+			const f = flows.find((x) => x.flowId === decodeURIComponent(m[1]));
+			if (!f) return problem(res, 404, "FLOW_NOT_FOUND");
+			const rows = valueRows(f);
+			const stats = { matched: rows.length, withValue: rows.filter((r) => r.value !== undefined && r.value !== "").length, overridden: rows.filter((r) => r.overridden).length };
+			const size = Math.min(500, Math.max(0, Number(url.searchParams.get("pageSize") ?? 50)));
+			if (size === 0) return json(res, 200, { total: rows.length, page: 1, pageSize: 0, items: [], stats });
+			const fields = (url.searchParams.get("fields") ?? "").split(",").map((s) => s.trim()).filter(Boolean);
+			const pick = (r) => (fields.length ? Object.fromEntries(Object.entries(r).filter(([k]) => fields.includes(k))) : r);
+			const p = Math.max(1, Number(url.searchParams.get("page") ?? 1));
+			return json(res, 200, { total: rows.length, page: p, pageSize: size, items: rows.slice((p - 1) * size, p * size).map(pick), stats });
+		}
 		if ((m = /^\/app\/flows\/v3\/flows\/([^/]+)\/tasks\/values$/.exec(url.pathname)) && method === "PUT") {
 			const body = await readBody(req);
 			const f = flows.find((x) => x.flowId === decodeURIComponent(m[1]));
@@ -640,6 +679,22 @@ export async function startFakeMaranics({ token = "t0k3n", tenant = "demo", port
 			const t = flows.find((x) => x.flowId === flowId)?.tasks.find((x) => x.taskId === taskId);
 			if (!t) throw new Error(`unknown task ${flowId}/${taskId}`);
 			t.status = status;
+		},
+		/** Set (or with `value === undefined` clear) a task's value the way the Flow app does. `ref` = task id or DataId. */
+		setTaskValue(flowId, ref, value) {
+			const f = flows.find((x) => x.flowId === flowId);
+			if (!f) throw new Error(`unknown flow ${flowId}`);
+			const t = f.tasks.find((x) => x.taskId === ref || x.controls?.some((c) => c.dataId === ref));
+			if (!t) throw new Error(`unknown task ${flowId}/${ref}`);
+			const c = t.controls[0];
+			if (value === undefined) {
+				t.values = [];
+				t.status = "Open";
+			} else {
+				t.values = [{ controlId: c.controlId, dataId: c.dataId, value: String(value), time: new Date().toISOString(), source: "app" }];
+				t.status = "Done";
+			}
+			return { taskId: t.taskId, dataId: c.dataId, status: t.status };
 		},
 		/** Add an Active flow of `templateId` (tasks generated from the template unless given). */
 		addFlow({ flowId, name, templateId, createdAt = new Date().toISOString(), status = "Active", tasks }) {

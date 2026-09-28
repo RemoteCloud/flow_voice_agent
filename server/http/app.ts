@@ -8,9 +8,10 @@ import { Hono, type Context } from "hono";
 import QRCode from "qrcode";
 import { deleteCookie, getCookie, setCookie } from "hono/cookie";
 import type { ApiError, EnrollPollResponse, EnrollRequest, EnrollResponse, HealthResponse, JoinRequest, JoinResponse, JoinTokenResponse, LibraryView, LogoutResponse, MeResponse, SessionProbeResponse, StationView, StatusResponse } from "../api.js";
-import { isJoinToken } from "../protocol.js";
+import { isJoinToken, type TriggerSpec, type VoiceMode } from "../protocol.js";
 import type { HubEnv } from "../env.js";
 import type { Logger } from "../core/log.js";
+import type { VoiceRecorder } from "../speech/capture.js";
 import type { SttAdapter } from "../speech/stt.js";
 import { MAX_TTS_CHARS, type HttpTts } from "../speech/tts.js";
 import { ANSWER_MATCH, type AnswerMatch } from "../voice/interpret.js";
@@ -38,6 +39,10 @@ export interface AppDeps {
 	stt: SttAdapter;
 	/** Backup recogniser for windows the device could not transcribe (STT_BACKUP_ENDPOINT); absent → POST /api/stt answers 404. */
 	sttBackup?: SttAdapter;
+	/** Voice recording for training (stations with `recordVoice`). */
+	recorder?: VoiceRecorder;
+	/** Central switch (`/central`): recording allowed on this hub at all. */
+	recordingAllowed?(): boolean;
 	tts?: HttpTts;
 	log: Logger;
 	version: string;
@@ -461,6 +466,8 @@ export function createApp(deps: AppDeps): Hono {
 		});
 	};
 
+	const voiceMode = (v: unknown): VoiceMode => (v === "trigger" || v === "both" ? v : "prompt");
+
 	api.get("/stations", async (c) => {
 		if (isAdminCtx(c)) await ensureJoins(c.get("sessionRow").sub);
 		return c.json(stationViews(isAdminCtx(c)));
@@ -471,11 +478,34 @@ export function createApp(deps: AppDeps): Hono {
 		const body = (await c.req.json().catch(() => undefined)) as Station[] | undefined;
 		if (!Array.isArray(body) || !body.every((s) => isObj(s) && str(s.stationId) && str(s.name))) return fail(c, 400, "BAD_REQUEST", "array of stations expected");
 		await store.update((d) => {
-			d.stations = body.map((s) => ({ stationId: s.stationId, name: s.name, location: str(s.location), defaultProfile: s.defaultProfile ?? null, language: s.language || "en", audioPolicy: s.audioPolicy === "open" ? "open" : "ptt", autoStartAllowed: !!s.autoStartAllowed, verbosity: s.verbosity ?? "full", voiceActions: s.voiceActions !== false, holdToAnswer: s.holdToAnswer === true, templates: templateRules(s.templates) }));
+			d.stations = body.map((s) => ({ stationId: s.stationId, name: s.name, location: str(s.location), defaultProfile: s.defaultProfile ?? null, language: s.language || "en", audioPolicy: s.audioPolicy === "open" ? "open" : "ptt", autoStartAllowed: !!s.autoStartAllowed, verbosity: s.verbosity ?? "full", voiceActions: s.voiceActions !== false, holdToAnswer: s.holdToAnswer === true, voiceMode: voiceMode(s.voiceMode), voiceModeCrew: s.voiceModeCrew === true, recordVoice: s.recordVoice === true, templates: templateRules(s.templates) }));
 			for (const id of Object.keys(d.stationJoins)) if (!d.stations.some((s) => s.stationId === id)) delete d.stationJoins[id];
 		});
 		await ensureJoins(c.get("sessionRow").sub);
 		return c.json(stationViews(true));
+	});
+
+	/**
+	 * How this station answers (`prompt` / `trigger` / `both`). Admins always; the crew on the station only when
+	 * an admin ticked "the crew may change this", and only for the station their own session is bound to.
+	 */
+	api.put("/stations/:id/voice-mode", async (c) => {
+		const id = c.req.param("id");
+		const station = store.get().stations.find((s) => s.stationId === id);
+		if (!station) return fail(c, 404, "STATION_NOT_FOUND", "unknown station");
+		const session = c.get("sessionRow");
+		if (!isAdminCtx(c) && !(station.voiceModeCrew && session?.stationId === id)) return fail(c, 403, "FORBIDDEN", "not allowed to change how this station answers");
+		const body = (await c.req.json().catch(() => ({}))) as { mode?: unknown };
+		if (body.mode !== "prompt" && body.mode !== "trigger" && body.mode !== "both") return fail(c, 400, "BAD_REQUEST", "mode must be prompt, trigger or both");
+		const mode = body.mode;
+		await store.update((d) => {
+			const st = d.stations.find((s) => s.stationId === id);
+			if (st) st.voiceMode = mode;
+			d.audit.push({ at: new Date(deps.now()).toISOString(), kind: "station.voice_mode", stationId: id, sub: session?.sub, text: mode });
+		});
+		// the run screens of that station follow at once
+		for (const r of store.get().runs) if (r.stationId === id && (r.state === "active" || r.state === "paused")) deps.gateway.pushRun(id, engine.toView(r));
+		return c.json(stationViews(isAdminCtx(c)).find((s) => s.stationId === id));
 	});
 
 	// ----- station QR join tokens (admin). The token is returned once; only its hash is kept.
@@ -641,6 +671,24 @@ export function createApp(deps: AppDeps): Hono {
 		}
 	});
 
+	// admin: how the training recordings are doing (queued on the hub, sent to the bucket, last error)
+	api.get("/captures", async (c) => {
+		const denied = requireAdmin(c);
+		if (denied) return denied;
+		if (!deps.recorder) return fail(c, 404, "CAPTURE_OFF", "voice recording is not available on this hub");
+		const stations = store.get().stations.filter((s) => s.recordVoice).map((s) => s.stationId);
+		return c.json({ ...(await deps.recorder.status()), stations, allowed: deps.recordingAllowed?.() ?? true });
+	});
+
+	// admin: try to upload what is queued now instead of waiting for the next pass
+	api.post("/captures/flush", async (c) => {
+		const denied = requireAdmin(c);
+		if (denied) return denied;
+		if (!deps.recorder) return fail(c, 404, "CAPTURE_OFF", "voice recording is not available on this hub");
+		await deps.recorder.flush(true);
+		return c.json(await deps.recorder.status());
+	});
+
 	api.post("/stt", async (c) => {
 		const backup = deps.sttBackup;
 		if (!backup) return fail(c, 404, "STT_BACKUP_OFF", "no backup recogniser is configured on this hub");
@@ -679,7 +727,7 @@ export function createApp(deps: AppDeps): Hono {
 	// ----- central checklist register (Admin → Checklist setup); template ids may contain "/" so they travel in the body / query
 	const libraryView = (): LibraryView => {
 		const d = store.get();
-		return { templates: Object.values(d.library ?? {}).sort((a, b) => a.name.localeCompare(b.name)).map((t) => ({ ...t, language: d.settings.templateLanguages?.[t.templateId], words: d.settings.itemAnswers?.[t.templateId] ?? {}, wordsOnly: !!d.settings.wordsOnly?.includes(t.templateId), wordMatch: d.settings.wordMatch?.[t.templateId] ?? "normal", step: d.settings.stepMode?.[t.templateId] ?? { mode: "auto" } })) };
+		return { templates: Object.values(d.library ?? {}).sort((a, b) => a.name.localeCompare(b.name)).map((t) => ({ ...t, language: d.settings.templateLanguages?.[t.templateId], words: d.settings.itemAnswers?.[t.templateId] ?? {}, triggers: d.settings.itemTriggers?.[t.templateId] ?? {}, wordsOnly: !!d.settings.wordsOnly?.includes(t.templateId), wordMatch: d.settings.wordMatch?.[t.templateId] ?? "normal", step: d.settings.stepMode?.[t.templateId] ?? { mode: "auto" } })) };
 	};
 	api.get("/library", (c) => c.json(libraryView()));
 	api.get("/library/available", (c) => handle(c, async () => c.json({ templates: await engine.availableTemplates(c.get("sessionRow")) })));
@@ -711,7 +759,7 @@ export function createApp(deps: AppDeps): Hono {
 	api.put("/library/entry", async (c) => {
 		const denied = requireAdmin(c);
 		if (denied) return denied;
-		const body = (await c.req.json().catch(() => ({}))) as { templateId?: unknown; language?: unknown; words?: unknown; wordsOnly?: unknown; wordMatch?: unknown; step?: unknown };
+		const body = (await c.req.json().catch(() => ({}))) as { templateId?: unknown; language?: unknown; words?: unknown; triggers?: unknown; wordsOnly?: unknown; wordMatch?: unknown; step?: unknown };
 		const id = str(body.templateId);
 		if (!id || !store.get().library?.[id]) return fail(c, 404, "NOT_FOUND", "checklist is not in the register");
 		await store.update((d) => {
@@ -744,6 +792,21 @@ export function createApp(deps: AppDeps): Hono {
 					if (/^[dn]:/.test(key) && list.length) per[key] = list;
 				}
 				const all = (d.settings.itemAnswers ??= {});
+				if (Object.keys(per).length) all[id] = per;
+				else delete all[id];
+			}
+			// trigger words: item key → { words, need }. need is clamped to the list, so "all words" survives an edit.
+			if (isObj(body.triggers)) {
+				const per: Record<string, TriggerSpec> = {};
+				for (const [key, spec] of Object.entries(body.triggers)) {
+					if (!/^[dn]:/.test(key) || !isObj(spec)) continue;
+					const raw = (spec as { words?: unknown }).words;
+					const words = Array.isArray(raw) ? [...new Set(raw.filter((w): w is string => typeof w === "string").map((w) => w.toLowerCase().replace(/\s*\+\s*/g, " + ").replace(/^\s*\+\s*|\s*\+\s*$/g, "").trim().slice(0, 60)).filter(Boolean))].slice(0, 12) : [];
+					if (!words.length) continue;
+					const need = Math.min(words.length, Math.max(1, Math.round(Number((spec as { need?: unknown }).need) || 1)));
+					per[key] = { words, need };
+				}
+				const all = (d.settings.itemTriggers ??= {});
 				if (Object.keys(per).length) all[id] = per;
 				else delete all[id];
 			}
@@ -1061,6 +1124,47 @@ export function createApp(deps: AppDeps): Hono {
 			}
 			const v = await engine.missedStation(c.req.param("id"), str(body.item) ?? str(body.dataId) ?? str(body.taskId), body.value === undefined ? undefined : String(body.value));
 			return v ? c.json(runItemView(v.runId)) : fail(c, 404, "NO_RUN", "no open run on that station");
+		}),
+	);
+	/**
+	 * Live sync push: "this checklist changed in Flow". The lowest-latency path there is — an automation
+	 * subscribed to the checklist event stream calls this and the voice knows within a breath.
+	 *
+	 *   POST /v1/flows/{instanceId}/changed            → the hub reads the instance now and takes over what moved
+	 *   POST /v1/flows/{instanceId}/changed  {items:[{item, value}]}   → applied at once, then confirmed by a read
+	 *
+	 * `item` is a DataId or a task id; `value` absent (or `cleared: true`) means the value was cleared.
+	 * Values sent here are never written back to Flow — they came from Flow.
+	 */
+	v1.post("/flows/:id/changed", (c) =>
+		handle(c, async () => {
+			const a = await integrationAuth(c);
+			if (!a.ok) return a.res;
+			let body: Record<string, unknown> = {};
+			if (a.raw.trim()) {
+				try {
+					body = JSON.parse(a.raw) as Record<string, unknown>;
+				} catch {
+					return fail(c, 400, "BAD_REQUEST", "body must be JSON");
+				}
+			}
+			const list = Array.isArray(body.items) ? body.items : Array.isArray(body.changes) ? body.changes : undefined;
+			const changes = list
+				?.filter((x): x is Record<string, unknown> => typeof x === "object" && x !== null)
+				.map((x) => {
+					const item = str(x.item) ?? str(x.dataId) ?? str(x.taskId) ?? str(x.task);
+					return item ? { item, value: x.value === undefined || x.value === null ? undefined : String(x.value), cleared: x.cleared === true } : undefined;
+				})
+				.filter((x): x is { item: string; value: string | undefined; cleared: boolean } => !!x);
+			const runs = await engine.pushChanged(c.req.param("id"), changes);
+			return c.json({ instanceId: c.req.param("id"), runs });
+		}),
+	);
+	/** The same for one run: read Maranics now (what a screen's "refresh" would do). */
+	v1.post("/runs/:id/sync", (c) =>
+		withRun(c, async (runId) => {
+			const diff = await engine.syncNow(runId);
+			return c.json({ changes: diff?.changes.length ?? 0, structureChanged: !!diff?.structureChanged, run: runItemView(runId) });
 		}),
 	);
 	v1.post("/runs/:id/skip",(c) => withRun(c, async (runId, body) => c.json(await engine.skip(runId, str(body.taskId) ?? str(body.dataId), str(body.reason) ?? "skipped by API").then(() => runItemView(runId)))));

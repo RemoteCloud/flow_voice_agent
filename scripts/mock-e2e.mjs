@@ -49,9 +49,21 @@ const ttsServer = http.createServer(async (req, res) => {
 await new Promise((r) => ttsServer.listen(0, "127.0.0.1", r));
 const ttsUrl = `http://127.0.0.1:${ttsServer.address().port}`;
 
+// fake S3 (path style): keeps every signed PUT of the training recorder
+const s3Puts = [];
+const s3Server = http.createServer(async (req, res) => {
+	const chunks = [];
+	for await (const c of req) chunks.push(c);
+	s3Puts.push({ method: req.method, url: req.url, auth: req.headers.authorization ?? "", sha: req.headers["x-amz-content-sha256"], type: req.headers["content-type"], body: Buffer.concat(chunks) });
+	res.writeHead(200);
+	res.end();
+});
+await new Promise((r) => s3Server.listen(0, "127.0.0.1", r));
+const s3Url = `http://127.0.0.1:${s3Server.address().port}`;
+
 const hub = spawn(process.execPath, ["dist/server.mjs"], {
 	cwd: root,
-	env: { ...process.env, HUB_SECRET: "e2e-secret-0123456789abcdef", HUB_PORT: String(port), HUB_DATA_DIR: dataDir, HUB_PUBLIC_DIR: path.join(root, "dist", "public"), HUB_PUBLIC_URL: `http://127.0.0.1:${port}`, HUB_TENANT: "demo", HUB_MARANICS_HOST: fake.url, DEV_USER: "Bridge Officer", DEV_MARANICS_TOKEN: "t0k3n", CENTRAL_PASSWORD: "central-pass-e2e", SERVICE_TOKENS: "svc-token", STT_BACKUP_ENDPOINT: sttUrl, TTS_ENDPOINT: ttsUrl, LOG_LEVEL: "debug", LISTEN_MS: "1500", CONFIRM_MS: "1500", EXCHANGE_MS: "20000" },
+	env: { ...process.env, HUB_SECRET: "e2e-secret-0123456789abcdef", HUB_PORT: String(port), HUB_DATA_DIR: dataDir, HUB_PUBLIC_DIR: path.join(root, "dist", "public"), HUB_PUBLIC_URL: `http://127.0.0.1:${port}`, HUB_TENANT: "demo", HUB_MARANICS_HOST: fake.url, DEV_USER: "Bridge Officer", DEV_MARANICS_TOKEN: "t0k3n", CENTRAL_PASSWORD: "central-pass-e2e", SERVICE_TOKENS: "svc-token", STT_BACKUP_ENDPOINT: sttUrl, TTS_ENDPOINT: ttsUrl, CAPTURE_S3_BUCKET: "voice", CAPTURE_S3_ENDPOINT: s3Url, CAPTURE_S3_PREFIX: "fv-e2e", CAPTURE_S3_ACCESS_KEY_ID: "e2e-key", CAPTURE_S3_SECRET_ACCESS_KEY: "e2e-s3-secret", LOG_LEVEL: "debug", LISTEN_MS: "1500", CONFIRM_MS: "1500", EXCHANGE_MS: "20000", SYNC_POLL_MS: "500" },
 	stdio: ["ignore", "pipe", "pipe"],
 });
 hub.stdout.on("data", (d) => log.push(String(d)));
@@ -577,6 +589,12 @@ try {
 	assert.equal(held.exchange, "waiting");
 	assert.equal(held.waiting.mode, "ask");
 	assert.ok(!spoken.slice(mark).some((s) => s.includes("Check cooling water temp")), "second item not read yet");
+	// the hub said "say next": the mic must be open for it
+	await waitFor(() => listenOpen?.promptId === `${askRun.runId}:waiting`, "listen window open while waiting for \"next\"");
+	listenOpen = undefined;
+	send({ type: "transcript", text: "hello there", confidence: 0.9, final: true });
+	await waitFor(() => listenOpen?.promptId === `${askRun.runId}:waiting`, "listen window re-opened after something else was said");
+	assert.equal((await api("GET", `runs/${askRun.runId}`)).body.exchange, "waiting", "still held");
 	send({ type: "transcript", text: "next", confidence: 0.9, final: true });
 	await waitFor(() => spoken.slice(mark).some((s) => s.includes("Check cooling water temp")), "second item read on \"next\"");
 	await api("POST", `runs/${askRun.runId}/abandon`);
@@ -658,6 +676,191 @@ try {
 	assert.equal(comboAfter.items.find((i) => i.dataId === "ER/Main/CoolingTemp").state, "unanswered", "the items in between are left alone");
 	await api("POST", `runs/${comboRun.runId}/abandon`);
 	await api("PUT", "library/entry", { templateId: "tpl-engine", step: { mode: "auto" } });
+
+	// trigger words: the crew names an item and that alone sets it, with the hub quiet ("trigger") or asking too ("both")
+	step = "trigger words";
+	const trigSaved = (await api("PUT", "library/entry", {
+		templateId: "tpl-engine",
+		triggers: { "d:ER/Aux/Gen1": { words: ["generator", "one"], need: 1 }, "d:ER/Aux/Gen2": { words: ["generator", "two"], need: 2 } },
+	})).body.templates[0].triggers;
+	assert.deepEqual(trigSaved["d:ER/Aux/Gen1"], { words: ["generator", "one"], need: 1 });
+	assert.deepEqual(trigSaved["d:ER/Aux/Gen2"], { words: ["generator", "two"], need: 2 });
+	assert.deepEqual((await api("PUT", "library/entry", { templateId: "tpl-engine", triggers: { "d:ER/Aux/Gen1": { words: ["generator", "one"], need: 9 }, "d:ER/Aux/Gen2": { words: ["generator", "two"], need: 2 } } })).body.templates[0].triggers["d:ER/Aux/Gen1"], { words: ["generator", "one"], need: 2 }, "need never exceeds the list");
+	await api("PUT", "library/entry", { templateId: "tpl-engine", triggers: { "d:ER/Aux/Gen1": { words: ["generator", "one"], need: 1 }, "d:ER/Aux/Gen2": { words: ["generator", "two"], need: 2 } } });
+	assert.equal((await api("PUT", "stations/bridge-01/voice-mode", { mode: "sideways" })).status, 400, "only the three modes");
+	assert.equal((await api("PUT", "stations/nope/voice-mode", { mode: "trigger" })).status, 404);
+	assert.equal((await api("PUT", "stations/bridge-01/voice-mode", { mode: "trigger" })).body.voiceMode, "trigger");
+
+	mark = spoken.length;
+	listenOpen = undefined;
+	const trigRun = (await api("POST", "runs", { templateId: "tpl-engine", stationId: "bridge-01" })).body;
+	assert.equal(trigRun.voiceMode, "trigger", "the run view carries the mode for the run screen");
+	const trigGen1 = trigRun.items.find((i) => i.dataId === "ER/Aux/Gen1").taskId;
+	const trigGen2 = trigRun.items.find((i) => i.dataId === "ER/Aux/Gen2").taskId;
+	await waitFor(() => spoken.slice(mark).some((s) => s.includes("Say the words")), "the hub invites the crew and then goes quiet");
+	assert.ok(!spoken.slice(mark).some((s) => s.includes("Check lube oil pressure?")), "no item is read out in trigger mode");
+	await waitFor(() => listenOpen, "the mic is open with nobody asked");
+	assert.ok(listenOpen.bias.includes("generator") && listenOpen.bias.includes("two"), "every open item's words are on the bias list");
+	assert.equal((await api("GET", `runs/${trigRun.runId}`)).body.currentTaskId, undefined, "no item is on the table");
+	// nothing marked is in this sentence: it changes nothing and the mic simply re-arms
+	listenOpen = undefined;
+	send({ type: "transcript", text: "the engine room is warm today", confidence: 0.9, final: true });
+	await waitFor(() => listenOpen, "the mic re-arms after a sentence that named nothing");
+	assert.equal((await api("GET", `runs/${trigRun.runId}`)).body.answered, 0);
+	// both words of two beat the one word the other item needs: the crew named generator two
+	send({ type: "transcript", text: "generator two", confidence: 0.9, final: true });
+	await waitFor(() => fake.values.some((v) => v.task === trigGen2), "the item whose words fit best was set");
+	assert.ok(!fake.values.some((v) => v.task === trigGen1), "the other generator is left alone");
+	const trigAfter = (await api("GET", `runs/${trigRun.runId}`)).body;
+	assert.equal(trigAfter.items.find((i) => i.dataId === "ER/Aux/Gen2").state, "answered");
+	assert.equal(trigAfter.items.find((i) => i.dataId === "ER/Main/LubeOil").state, "unanswered", "the items before it are left alone");
+	assert.ok(!spoken.slice(mark).some((s) => s.includes("Check bilge")), "the hub still reads nothing on its own");
+	// one word is enough for the other one
+	listenOpen = undefined;
+	await waitFor(() => listenOpen, "the mic re-arms after a set");
+	send({ type: "transcript", text: "generator checked", confidence: 0.9, final: true });
+	await waitFor(() => fake.values.some((v) => v.task === trigGen1), "one of its two words was enough");
+	await api("POST", `runs/${trigRun.runId}/abandon`);
+
+	// "both": the hub asks item by item and a trigger word still answers another item
+	assert.equal((await api("PUT", "stations/bridge-01/voice-mode", { mode: "both" })).body.voiceMode, "both");
+	mark = spoken.length;
+	listenOpen = undefined;
+	const before = fake.values.length;
+	const bothRun = (await api("POST", "runs", { templateId: "tpl-engine", stationId: "bridge-01" })).body;
+	const bothGen2 = bothRun.items.find((i) => i.dataId === "ER/Aux/Gen2").taskId;
+	await waitFor(() => spoken.slice(mark).some((s) => s.includes("Check lube oil pressure?")), "in both mode the hub asks as usual");
+	await say("generator two");
+	await waitFor(() => fake.values.slice(before).some((v) => v.task === bothGen2), "the item the crew named was answered, not the one asked");
+	assert.equal((await api("GET", `runs/${bothRun.runId}`)).body.items.find((i) => i.dataId === "ER/Main/LubeOil").state, "unanswered", "the asked item is still open");
+	await api("POST", `runs/${bothRun.runId}/abandon`);
+	assert.equal((await api("PUT", "stations/bridge-01/voice-mode", { mode: "prompt" })).body.voiceMode, "prompt");
+	await api("PUT", "library/entry", { templateId: "tpl-engine", triggers: {} });
+
+	// live sync: someone answers in the Flow app while the voice run is open. The hub notices (stats tick, then
+	// rows), takes the item over, says one short line and moves on — and never writes the value back.
+	step = "live sync";
+	const flowApp = (flowId, items) =>
+		fetch(`${fake.url}/app/flows/v3/flows/${encodeURIComponent(flowId)}/tasks/values`, {
+			method: "PUT",
+			headers: { "content-type": "application/json", authorization: "Bearer t0k3n", tenant: "demo" },
+			body: JSON.stringify({ items }),
+		});
+	mark = spoken.length;
+	listenOpen = undefined;
+	const lsRun = (await api("POST", "runs", { templateId: "tpl-engine", stationId: "bridge-01" })).body;
+	await waitFor(() => spoken.slice(mark).some((s) => s.includes("Check lube oil pressure?")), "live sync run: first item read");
+	// the crew on the bridge ticks the very item the voice is asking
+	assert.equal((await flowApp(lsRun.instanceId, [{ task: "ER/Main/LubeOil", value: "OK" }])).status, 200);
+	let writes = fake.values.length; // counted after the app's own write: from here nothing more may be written
+	await waitFor(() => spoken.slice(mark).some((s) => /answered in the app/.test(s)), "the voice says the item was answered in the app");
+	await waitFor(() => spoken.slice(mark).some((s) => s.includes("Check cooling water temp?")), "and the run moves on by itself");
+	let lsView = (await api("GET", `runs/${lsRun.runId}`)).body;
+	assert.equal(lsView.items.find((i) => i.dataId === "ER/Main/LubeOil").state, "answered", "item taken over from Flow");
+	assert.equal(lsView.items.find((i) => i.dataId === "ER/Main/LubeOil").valueText, "OK");
+	assert.equal(fake.values.length, writes, "the hub never wrote that value back to Flow");
+	assert.ok((await api("GET", "audit?limit=30")).body.some((a) => a.kind === "item.external"), "the takeover is audited");
+	// an item further down the list: the screen follows, the open question is not talked over
+	await waitFor(() => listenOpen, "window open on the second item");
+	assert.equal((await flowApp(lsRun.instanceId, [{ task: "ER/Aux/Bilge", value: "High" }])).status, 200);
+	writes = fake.values.length;
+	await waitFor(async () => (await api("GET", `runs/${lsRun.runId}`)).body.items.find((i) => i.dataId === "ER/Aux/Bilge").state === "answered", "a later item lands on the screen");
+	assert.equal(fake.values.length, writes, "still nothing written back");
+	// the voice answers an item the app had already set: the voice wins, and says the old value out loud
+	const overrideMark = spoken.length;
+	assert.equal((await svc("POST", `runs/${lsRun.runId}/proceed`, { item: "ER/Aux/Bilge" })).status, 200);
+	await waitFor(() => spoken.slice(overrideMark).some((s) => /bilge level\?$/i.test(s)), "voice goes to the item the app answered");
+	await say("alarm");
+	await waitFor(() => spoken.slice(overrideMark).some((s) => /Confirm\?$/.test(s) || /That was/.test(s)), "read-back or override line");
+	if (/Confirm\?$/.test(lastSpoken())) await say("confirm");
+	await waitFor(() => spoken.slice(overrideMark).some((s) => s === "That was High. Setting Alarm."), "the voice names the value it overwrites");
+	await waitFor(() => fake.values.some((v) => v.value === "Alarm"), "and the new value went to Flow");
+	// push path: an integration says what changed and the hub applies it without reading first
+	writes = fake.values.length;
+	fake.setTaskValue(lsRun.instanceId, "ER/Aux/Gen2", "completed");
+	const pushed = await svc("POST", `flows/${encodeURIComponent(lsRun.instanceId)}/changed`, { items: [{ item: "ER/Aux/Gen2", value: "completed" }] });
+	assert.equal(pushed.status, 200, await pushed.text());
+	await waitFor(async () => (await api("GET", `runs/${lsRun.runId}`)).body.items.find((i) => i.dataId === "ER/Aux/Gen2").state === "answered", "pushed change applied");
+	assert.equal(fake.values.length, writes, "a pushed value is never written back either");
+	// cleared in the app: the item opens again
+	fake.setTaskValue(lsRun.instanceId, "ER/Aux/Gen2", undefined);
+	const resynced = await svc("POST", `runs/${lsRun.runId}/sync`);
+	assert.equal(resynced.status, 200, await resynced.text());
+	await waitFor(async () => (await api("GET", `runs/${lsRun.runId}`)).body.items.find((i) => i.dataId === "ER/Aux/Gen2").state === "unanswered", "a cleared value reopens the item");
+	assert.equal((await svc("POST", `flows/no-such-flow/changed`)).status, 200, "an unknown instance is simply nobody's business");
+	await api("POST", `runs/${lsRun.runId}/abandon`);
+
+	// recording for training: a station that records gets `record` on its windows, streams PCM next to its own
+	// recogniser, and the hub uploads the window as WAV + JSON (flow, item, transcript, outcome) to the bucket
+	step = "voice recording";
+	assert.equal(s3Puts.length, 0, "nothing is recorded on a station that does not record");
+	const recOn = (await api("GET", "stations")).body.map(({ endpoint: _e, activeRun: _r, join: _j, ...s }) => (s.stationId === "bridge-01" ? { ...s, recordVoice: true } : s));
+	assert.equal((await api("PUT", "stations", recOn)).status, 200);
+	// the station tick alone does nothing: recording is off centrally until the central admin allows it
+	assert.equal((await api("GET", "central/recording")).status, 403, "only the central admin area switches recording");
+	assert.equal((await api("GET", "captures")).body.allowed, false, "off centrally by default");
+	const offRun = (await api("POST", "runs", { templateId: "tpl-engine", stationId: "bridge-01" })).body;
+	assert.equal(offRun.recording, undefined, "no recording notice while it is off centrally");
+	listenOpen = undefined;
+	await waitFor(() => listenOpen, "listen window while off centrally");
+	assert.equal(listenOpen.record, undefined, "no record flag while off centrally");
+	await api("POST", `runs/${offRun.runId}/abandon`);
+	const centralJar = new Map();
+	assert.equal((await api("POST", "central/login", { password: "central-pass-e2e" }, centralJar)).status, 200);
+	const recView = (await api("PUT", "central/recording", { enabled: true }, centralJar)).body;
+	assert.equal(recView.enabled, true);
+	assert.deepEqual(recView.cores.map((c) => [c.id, c.allowed, c.stations]), [["main", true, 1]], "the main hub row, one station ticked");
+	assert.equal((await api("PUT", "central/recording", { core: "nope", allowed: false }, centralJar)).status, 404);
+	assert.equal((await api("GET", "captures")).body.allowed, true);
+	mark = spoken.length;
+	listenOpen = undefined;
+	const recRun = (await api("POST", "runs", { templateId: "tpl-engine", stationId: "bridge-01" })).body;
+	assert.equal(recRun.recording, true, "the run screen shows that answers are recorded");
+	await waitFor(() => spoken.slice(mark).some((s) => s.includes("Check lube oil pressure?")), "first item asked");
+	await waitFor(() => listenOpen, "listen window on a recording station");
+	assert.equal(listenOpen.record, true, "the window asks the endpoint to stream its audio");
+	listenOpen = undefined;
+	ws.send(Buffer.alloc(16000 * 2)); // one second of PCM, then the device's own transcript
+	send({ type: "transcript", text: "yes", confidence: 0.9, final: true, alternatives: ["yes sir"] });
+	await waitFor(() => s3Puts.some((p) => p.url.endsWith(".json")), "clip uploaded to the bucket");
+	const wavPut = s3Puts.find((p) => p.url.endsWith(".wav"));
+	const jsonPut = s3Puts.find((p) => p.url.endsWith(".json"));
+	assert.equal(wavPut.method, "PUT");
+	assert.match(wavPut.url, /^\/voice\/fv-e2e\/main\/tpl-engine\/\d{4}-\d\d-\d\d\/[^/]+\.wav$/, wavPut.url);
+	assert.equal(wavPut.body.subarray(0, 4).toString(), "RIFF");
+	assert.equal(wavPut.body.length, 44 + 32000);
+	assert.match(wavPut.auth, /^AWS4-HMAC-SHA256 Credential=e2e-key\/\d{8}\/us-east-1\/s3\/aws4_request, SignedHeaders=content-type;host;x-amz-content-sha256;x-amz-date, Signature=[0-9a-f]{64}$/);
+	assert.equal(jsonPut.url.replace(/\.json$/, ""), wavPut.url.replace(/\.wav$/, ""), "sidecar next to the audio");
+	const clip = JSON.parse(jsonPut.body.toString());
+	assert.equal(clip.schema, "flow-voice.capture/1");
+	assert.equal(clip.audio.durationMs, 1000);
+	assert.equal(clip.flow.templateId, "tpl-engine");
+	assert.equal(clip.flow.runId, recRun.runId);
+	assert.equal(clip.item.dataId, "ER/Main/LubeOil");
+	assert.equal(clip.item.type, "Checkbox");
+	assert.equal(clip.window.prompt.includes("Check lube oil pressure?"), true);
+	assert.deepEqual(clip.recognition, { text: "yes", confidence: 0.9, alternatives: ["yes sir"], by: "endpoint", language: clip.recognition.language });
+	assert.ok(clip.outcome.changed.some((c) => c.dataId === "ER/Main/LubeOil" && c.state !== "unanswered"), "the outcome says what the answer set");
+	assert.match(clip.speaker, /^[0-9a-f]{16}$/, "the speaker is a pseudonym");
+	assert.ok(!jsonPut.body.toString().includes("Bridge Officer") && !jsonPut.body.toString().includes("dev:bridge-officer"), "no name or user id in the clip");
+	assert.ok(!log.join("").includes("e2e-s3-secret"), "the bucket secret never reaches the log");
+	const capStatus = (await api("GET", "captures")).body;
+	assert.equal(capStatus.target, "s3");
+	assert.equal(capStatus.queued, 0, "uploaded clips leave the hub");
+	assert.ok(capStatus.uploaded >= 1);
+	assert.deepEqual(capStatus.stations, ["bridge-01"]);
+	await api("POST", `runs/${recRun.runId}/abandon`);
+	// switched off for this hub (core) while still on hub-wide: windows stop asking for audio at once
+	assert.equal((await api("PUT", "central/recording", { core: "main", allowed: false }, centralJar)).body.cores[0].allowed, false);
+	listenOpen = undefined;
+	const offAgain = (await api("POST", "runs", { templateId: "tpl-engine", stationId: "bridge-01" })).body;
+	await waitFor(() => listenOpen, "listen window after the central switch-off");
+	assert.equal(listenOpen.record, undefined, "switched off per hub in central");
+	await api("POST", `runs/${offAgain.runId}/abandon`);
+	await api("PUT", "central/recording", { core: "main", allowed: true }, centralJar);
+	await api("PUT", "central/recording", { enabled: false }, centralJar);
+	const recOff = (await api("GET", "stations")).body.map(({ endpoint: _e, activeRun: _r, join: _j, ...s }) => (s.stationId === "bridge-01" ? { ...s, recordVoice: false } : s));
+	await api("PUT", "stations", recOff);
 
 	assert.equal((await api("DELETE", `library?templateId=${encodeURIComponent("tpl-engine")}`)).body.templates.length, 0);
 	await api("PUT", "settings", { itemAnswers: {}, templateLanguages: {} });
@@ -856,6 +1059,7 @@ try {
 	ws.close();
 	sttServer.close();
 	ttsServer.close();
+	s3Server.close();
 	console.log("mock-e2e: OK —", spoken.length, "utterances,", fake.values.length, "values written to Flow");
 	console.log(spoken.map((s) => `  APP  ${s}`).join("\n"));
 } catch (err) {

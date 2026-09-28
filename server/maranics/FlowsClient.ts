@@ -116,6 +116,29 @@ export interface PageEnvelope<T> {
 	items: T[];
 }
 
+/**
+ * One row of the flat value query (`GET /flows/{flowId}/values`): one row per control, a form control
+ * expands to one row per input. Only the columns asked for in `fields` are serialized.
+ */
+export interface FlowValueRow {
+	taskId: string;
+	dataId?: string;
+	/** `Open` | `Done` | `Overridden`; unknown names must be tolerated. */
+	status?: string;
+	value?: string;
+	/** The user-facing label (a dropdown stores "3" and displays "Severe"). */
+	displayValue?: string;
+	time?: string;
+	type?: string;
+}
+
+/** `stats` of the same query. With `pageSize=0` nothing but this is transferred. */
+export interface FlowValueStats {
+	matched: number;
+	withValue: number;
+	overridden: number;
+}
+
 export function flowsRoot(baseUrl: string): string | undefined {
 	const b = normalizeBaseUrl(baseUrl);
 	if (!b) return undefined;
@@ -223,6 +246,21 @@ function toTask(raw: unknown, i: number): TaskDetail | undefined {
 	options = options ?? parseOptions(raw.options) ?? parseOptions(raw.quickSelectValues);
 	const state = isObj(raw.state) ? { status: str(raw.state.status), processingState: str(raw.state.processingState), confirmed: raw.state.confirmed === true, overridden: raw.state.overridden === true } : undefined;
 	return { taskId, name: str(raw.name), status: str(raw.status) ?? state?.status, sectionId: str(raw.sectionId), controls, state, values, options, order: num(raw.order, i) };
+}
+
+/** One row of `GET /flows/{flowId}/values`. `str` keeps "false" and "0" — both are answers. */
+function toValueRow(raw: Record<string, unknown>): FlowValueRow | undefined {
+	const taskId = str(raw.taskId) ?? str(raw.id);
+	if (!taskId) return undefined;
+	return {
+		taskId,
+		dataId: str(raw.dataId),
+		status: str(raw.status),
+		value: typeof raw.value === "boolean" ? String(raw.value) : str(raw.value),
+		displayValue: typeof raw.displayValue === "boolean" ? String(raw.displayValue) : str(raw.displayValue),
+		time: str(raw.time),
+		type: taskTypeName(raw.type),
+	};
 }
 
 export function toFlowDetail(raw: unknown): FlowDetail | undefined {
@@ -366,6 +404,34 @@ export class FlowsClient {
 			if (r.data.items.length < 200 || out.length >= r.data.total) break;
 		}
 		return { ok: true, data: out };
+	}
+
+	/**
+	 * Flat value query — the cheap way to ask "did anything change?" while a run is open.
+	 * `statsOnly` sends `pageSize=0`: the answer is a few hundred bytes with no rows at all, so the hub can
+	 * tick often and only pull rows once the counts move. Rows come back over at most 5 pages of 500.
+	 */
+	async queryValues(s: ApiSettings, flowId: string, opts: { statsOnly?: boolean } = {}): Promise<ClientResult<{ rows: FlowValueRow[]; stats: FlowValueStats; total: number }>> {
+		const root = flowsRoot(s.flowsBaseUrl);
+		if (!root) return { ok: false, kind: "invalidConfig", message: "invalid flows base URL" };
+		const url = (page: number, pageSize: number) =>
+			`${root}/flows/${encodeURIComponent(flowId)}/values${query({ fields: "taskId,dataId,status,value,displayValue,time,type", includeHidden: false, page, pageSize })}`;
+		const map = (b: unknown) => {
+			const o = isObj(b) ? b : {};
+			const st = isObj(o.stats) ? o.stats : {};
+			const rows = (Array.isArray(o.items) ? o.items : []).filter(isObj).map(toValueRow).filter((r): r is FlowValueRow => !!r);
+			return { rows, stats: { matched: num(st.matched, 0), withValue: num(st.withValue, 0), overridden: num(st.overridden, 0) }, total: num(o.total, rows.length) };
+		};
+		if (opts.statsOnly) return this.call(url(1, 0), { headers: this.headers(s) }, map);
+
+		const first = await this.call(url(1, 500), { headers: this.headers(s) }, map);
+		if (!first.ok || first.data.total <= first.data.rows.length) return first;
+		for (let page = 2; page <= 5 && first.data.rows.length < first.data.total; page++) {
+			const more = await this.call(url(page, 500), { headers: this.headers(s) }, map);
+			if (!more.ok || !more.data.rows.length) break;
+			first.data.rows.push(...more.data.rows);
+		}
+		return first;
 	}
 
 	createFlow(s: ApiSettings, templateId: string, name?: string): Promise<ClientResult<{ flowId: string }>> {

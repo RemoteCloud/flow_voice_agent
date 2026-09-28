@@ -1,6 +1,7 @@
 import { useCallback, useEffect, useState } from "react";
 import type { TenantsResponse } from "../../../server/tenants.js";
 import { api, toApiError } from "../api.js";
+import { RecordingSwitch } from "./CentralRecording.js";
 
 /** Leave or enter a tenant, then load the app again so every screen belongs to the new tenant. */
 export async function switchTenant(id: string | undefined): Promise<void> {
@@ -66,6 +67,7 @@ export function TenantsTab() {
 	return (
 		<div className="space-y-4">
 			{err && <p className="text-sm text-danger">{err}</p>}
+			{data.canManage && <RecordingSwitch />}
 			<section className="card">
 				<div className="card-head">
 					<div>

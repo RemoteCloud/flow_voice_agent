@@ -125,6 +125,15 @@ last spoken line), `GET /v1/runs/{id}/items[/{ref}]`, `POST /v1/runs/{id}/items/
 `POST /v1/runs/{id}/answer` (`{transcript}` as if spoken), `POST /v1/runs/{id}/next|skip|repeat|pause|resume|complete|discard|abandon`.
 `ref` is a task id or a DataId. Silence never moves a run on: only "next item", "skip", or these calls do.
 
+Live sync (same auth): the hub keeps every open run level with Maranics by itself — a stats-only read per run
+every `SYNC_POLL_MS` (default 3000, `0` = off) and the rows only once the counts move — so an item ticked in the
+Flow app reaches the voice within seconds. For the fast path, push instead of waiting for the tick:
+`POST /v1/flows/{instanceId}/changed` (optionally `{items:[{item, value}]}`, `item` = task id or DataId, no `value`
+or `cleared: true` = the value was cleared) applies the change at once and confirms it with one read;
+`POST /v1/runs/{id}/sync` reads one run now. Values arriving this way are never written back to Flow.
+The voice says one short line for the item it was asking (or holding) and moves on; a spoken answer still wins over a
+value the app already holds, and says which one it replaces.
+
 WebSockets: `/v1/audio` (Audio Endpoint Protocol — `hello`, `ptt`, `audio.end`, `transcript`, `spoken`,
 `command`, `takeover` ↔ `speak`, `listen.open`, `listen.close`, `status`, `run`, `event`, `released`)
 and `/v1/events`. The contract lives in [`server/protocol.ts`](server/protocol.ts).

@@ -28,7 +28,10 @@ export function StationsTab({ s, reload, canEdit }: { s: StatusResponse; reload:
 	const [templates, setTemplates] = useState<ChecklistPick[] | undefined>();
 	const [openIds, setOpenIds] = useState<Set<string>>(() => new Set());
 	const toggleOpen = (id: string) => setOpenIds((o) => { const n = new Set(o); if (n.has(id)) n.delete(id); else n.add(id); return n; });
+	/** Central switch (`/central`): false = recording is off for this hub, whatever the stations tick. */
+	const [recordingAllowed, setRecordingAllowed] = useState(true);
 	useEffect(() => {
+		api.get<{ allowed?: boolean }>("captures").then((r) => setRecordingAllowed(r.allowed !== false), () => undefined);
 		api.get<VoiceProfile[]>("profiles").then(setProfiles, () => setProfiles([]));
 		// stations pick from the central register; an empty register falls back to everything the Templates app offers
 		api.get<LibraryView>("library").then(
@@ -225,6 +228,11 @@ export function StationsTab({ s, reload, canEdit }: { s: StatusResponse; reload:
 										<input type="checkbox" className="h-5 w-5" checked={!!st.holdToAnswer} disabled={!canEdit} onChange={(e) => pick(i, { holdToAnswer: e.target.checked })} />
 										Noisy place: hold the button while answering
 									</label>
+									<label className="flex items-center gap-2" title="The voice of every answer is kept with the checklist and item it belongs to and sent to the training store. The run screen shows it is on.">
+										<input type="checkbox" className="h-5 w-5" checked={!!st.recordVoice} disabled={!canEdit} onChange={(e) => pick(i, { recordVoice: e.target.checked })} />
+										Record answers for training
+									</label>
+									{!recordingAllowed && st.recordVoice && <p className="help">Turned off in the central admin area: nothing is recorded until it is allowed there.</p>}
 								</div>
 								<div className="sm:col-span-2">
 									<label className="label">How much the voice says</label>
@@ -234,6 +242,19 @@ export function StationsTab({ s, reload, canEdit }: { s: StatusResponse; reload:
 										<option value="silent">Least: only the question</option>
 									</select>
 									<p className="help">Applies at once, also to a checklist that is open.</p>
+								</div>
+								<div className="sm:col-span-2">
+									<label className="label">How the crew answers here</label>
+									<select className="input" value={st.voiceMode ?? "prompt"} disabled={!canEdit} onChange={(e) => pick(i, { voiceMode: e.target.value as Station["voiceMode"] })}>
+										<option value="prompt">One item at a time: the hub asks, the crew answers</option>
+										<option value="trigger">Crew says the words: the hub stays quiet</option>
+										<option value="both">Both: the hub asks and the words work at any time</option>
+									</select>
+									<p className="help">"Crew says the words" needs say-to-set words on the items (Checklist setup). The hub reads nothing, the microphone stays open, and each word heard sets its item. What is left over is asked at the end.</p>
+									<label className="mt-2 flex items-center gap-2 text-sm">
+										<input type="checkbox" className="h-5 w-5" checked={!!st.voiceModeCrew} disabled={!canEdit} onChange={(e) => pick(i, { voiceModeCrew: e.target.checked })} />
+										The crew may change this on the run screen
+									</label>
 								</div>
 								<div className="sm:col-span-2">
 									<TemplateRules rules={st.templates} templates={templates} canEdit={canEdit} onChange={(t) => pick(i, { templates: t })} />
