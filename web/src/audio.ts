@@ -5,6 +5,8 @@
  *   - STT: the Web Speech API (`SpeechRecognition`) when the hub says STT runs on the endpoint;
  *     otherwise the microphone is captured with an AudioWorklet, downsampled to 16 kHz PCM16 and
  *     streamed as binary frames only while a listen window is open.
+ *   - Recording for training (`listen.open.record`): the same PCM stream runs next to the browser's own recogniser
+ *     for that window, so the hub can keep the audio with the item it answers (not in the Android agent yet).
  *   - Push-to-talk: the big button, a bound media key, or the Android hardware button.
  *
  * Browsers need a user gesture before audio; `start()` must be called from a tap.
@@ -153,6 +155,8 @@ export class AudioEndpoint {
 	/** Android: the utterance in flight; resolved by flowVoiceBridge.onSpoken (or a safety timeout). */
 	private pendingSpoken: { promptId: string; finish: () => void } | undefined;
 	private lastSpokenText = "";
+	/** Browser utterance in flight (a strong reference, see speakBrowser). */
+	private utterance: SpeechSynthesisUtterance | undefined;
 	private lastSpokenAt = 0;
 	readonly capabilities: EndpointCapabilities;
 
@@ -226,14 +230,20 @@ export class AudioEndpoint {
 	private grammar: string[] | undefined;
 	/** Language of the current run, from the hub's listen window: the checklist decides what is recognised, not the phone. */
 	private runLanguage: string | undefined;
+	/** The station records answers for training: this window's audio also goes to the hub while the device recognises. */
+	private recordWindow = false;
+	/** The microphone is streamed to the hub next to the device's own recogniser (recording only). */
+	private tapping = false;
 
 	private startArmed(): void {
 		const a = this.armed;
 		if (!a || !this.listenPromptId) return;
 		this.armed = undefined;
 		this.cb.onState("listening");
-		if (this.capabilities.localStt) this.startRecognition(a.maxMs);
-		else void this.startStreaming(a.maxMs);
+		if (this.capabilities.localStt) {
+			this.startRecognition(a.maxMs);
+			void this.startTap();
+		} else void this.startStreaming(a.maxMs);
 	}
 
 	setHandsFree(on: boolean): void {
@@ -411,6 +421,7 @@ export class AudioEndpoint {
 				if (this.role !== "endpoint") return;
 				this.bias = m.bias ?? [];
 				this.grammar = m.grammar;
+				this.recordWindow = !!m.record;
 				if (m.language && m.language !== this.runLanguage) {
 					this.runLanguage = m.language;
 					window.FlowVoiceAndroid?.prepareGrammarStt?.(this.opts.answerLanguage || m.language);
@@ -476,35 +487,87 @@ export class AudioEndpoint {
 				window.speechSynthesis.addEventListener("voiceschanged", () => (window.clearTimeout(t), ready()), { once: true });
 			});
 		}
-		return new Promise((resolve) => {
-			if (!("speechSynthesis" in window)) {
-				this.send({ type: "spoken", promptId });
-				resolve();
-				return;
+		if (!("speechSynthesis" in window)) {
+			this.send({ type: "spoken", promptId });
+			return;
+		}
+		const lang = language.length === 2 ? { en: "en-GB", no: "nb-NO", nb: "nb-NO", sv: "sv-SE", de: "de-DE", fr: "fr-FR", da: "da-DK" }[language] ?? language : language;
+		// a language tag alone is not enough: Chrome and Safari on a Mac keep the default (English) voice unless one is set
+		const voice = pickVoice(lang);
+		if (!voice && window.speechSynthesis.getVoices().length && !this.warnedVoice.has(lang)) {
+			this.warnedVoice.add(lang);
+			this.cb.onError(`This device has no ${lang} voice, so the text is read with another voice. Add one in the system settings (Mac: System Settings → Accessibility → Spoken Content → System voice → Manage voices).`);
+		}
+		let outcome = await this.speakBrowser(text, lang, voice);
+		if (outcome === "failed" && voice) {
+			// Windows: a Microsoft voice (often an "Online (Natural)" one) fails now and then; read it with the default voice rather than stay silent
+			if (!this.warnedVoice.has(`fail:${voice.name}`)) {
+				this.warnedVoice.add(`fail:${voice.name}`);
+				this.cb.onError(`The voice "${voice.name}" failed; reading with the default voice instead.`);
 			}
+			outcome = await this.speakBrowser(text, lang, undefined);
+		}
+		if (outcome === "stuck") {
+			// the engine never started: reset it (Chrome / Edge on Windows get stuck after cancel()) and try once more
 			window.speechSynthesis.cancel();
+			await new Promise((r) => window.setTimeout(r, 250));
+			window.speechSynthesis.resume();
+			outcome = await this.speakBrowser(text, lang, voice);
+		}
+		this.send({ type: "spoken", promptId });
+	}
+
+	/**
+	 * One utterance with the Web Speech API. "ok" = spoken (or at least ended), "stuck" = the engine never started it,
+	 * "failed" = the engine reported an error. Works around the Chrome / Edge quirks that leave a station silent after
+	 * the first sentence: cancel() right before speak() drops the new utterance, a paused engine never plays, an
+	 * utterance without a live reference is garbage-collected before onend, and onend sometimes never fires.
+	 */
+	private speakBrowser(text: string, lang: string, voice: SpeechSynthesisVoice | undefined): Promise<"ok" | "stuck" | "failed"> {
+		return new Promise((resolve) => {
+			const synth = window.speechSynthesis;
 			const u = new SpeechSynthesisUtterance(text);
-			u.lang = language.length === 2 ? { en: "en-GB", no: "nb-NO", nb: "nb-NO", sv: "sv-SE", de: "de-DE", fr: "fr-FR", da: "da-DK" }[language] ?? language : language;
-			// a language tag alone is not enough: Chrome and Safari on a Mac keep the default (English) voice unless one is set
-			const voice = pickVoice(u.lang);
+			u.lang = lang;
 			if (voice) u.voice = voice;
-			else if (window.speechSynthesis.getVoices().length && !this.warnedVoice.has(u.lang)) {
-				this.warnedVoice.add(u.lang);
-				this.cb.onError(`This device has no ${u.lang} voice, so the text is read with another voice. Add one in the system settings (Mac: System Settings → Accessibility → Spoken Content → System voice → Manage voices).`);
-			}
 			u.rate = 0.95;
+			this.utterance = u; // keep it alive: Chrome collects it otherwise and never fires onend
+			let started = false;
 			let finished = false;
-			const done = () => {
+			let startWatch: number | undefined;
+			let endWatch: number | undefined;
+			let keepAlive: number | undefined;
+			const done = (result: "ok" | "stuck" | "failed") => {
 				if (finished) return;
 				finished = true;
-				this.send({ type: "spoken", promptId });
-				resolve();
+				for (const t of [startWatch, endWatch, keepAlive]) if (t) window.clearTimeout(t), window.clearInterval(t);
+				if (this.utterance === u) this.utterance = undefined;
+				resolve(result);
 			};
-			u.onend = done;
-			u.onerror = done;
-			window.speechSynthesis.speak(u);
-			// Chrome sometimes never fires onend for long utterances
-			window.setTimeout(done, 3000 + text.length * 120);
+			u.onstart = () => {
+				started = true;
+				if (startWatch) window.clearTimeout(startWatch);
+				// Chrome stops network voices after ~15 s of one utterance unless the engine is nudged
+				if (voice && !voice.localService) keepAlive = window.setInterval(() => (synth.pause(), synth.resume()), 10_000);
+			};
+			u.onend = () => done("ok");
+			u.onerror = (ev) => {
+				console.warn(`[voice] tts error: ${ev.error} (voice ${voice?.name ?? "default"}, ${lang})`);
+				done(ev.error === "interrupted" || ev.error === "canceled" ? "ok" : "failed");
+			};
+			const go = () => {
+				synth.resume(); // a paused engine (tab hidden, earlier pause()) plays nothing and reports nothing
+				synth.speak(u);
+				startWatch = window.setTimeout(() => {
+					if (!started) done("stuck");
+				}, 2500);
+				// Chrome sometimes never fires onend for long utterances
+				endWatch = window.setTimeout(() => done("ok"), 3000 + text.length * 120);
+			};
+			if (synth.speaking || synth.pending) {
+				// clear what is left of the last sentence, then give Windows a moment: speak() straight after cancel() is dropped there
+				synth.cancel();
+				window.setTimeout(go, 80);
+			} else go();
 		});
 	}
 
@@ -559,8 +622,34 @@ export class AudioEndpoint {
 		}
 		this.armed = undefined;
 		this.cb.onState("listening");
-		if (this.capabilities.localStt) this.startRecognition(maxMs);
-		else void this.startStreaming(maxMs);
+		if (this.capabilities.localStt) {
+			this.startRecognition(maxMs);
+			if (promptId !== IDLE && promptId !== "ptt") void this.startTap();
+		} else void this.startStreaming(maxMs);
+	}
+
+	/**
+	 * Recording for training while the browser recognises: stream the same window to the hub as PCM. The Android
+	 * agent's recogniser owns the microphone, so the phone app does not record (yet).
+	 */
+	private async startTap(): Promise<void> {
+		if (!this.recordWindow || hasAndroid() || this.tapping) return;
+		const promptId = this.listenPromptId;
+		try {
+			await this.ensureMic();
+			await this.audioCtx?.resume();
+		} catch {
+			return; // no second microphone handle here: answering still works, only the recording is lost
+		}
+		if (!promptId || this.listenPromptId !== promptId) return; // the window closed while the microphone opened
+		this.tapping = true;
+		this.worklet?.port.postMessage({ type: "start" });
+	}
+
+	private stopTap(): void {
+		if (!this.tapping) return;
+		this.tapping = false;
+		this.worklet?.port.postMessage({ type: "stop" });
 	}
 
 	private stopListen(reason: "silence" | "ptt" | "timeout" | "cancel"): void {
@@ -575,6 +664,7 @@ export class AudioEndpoint {
 			return;
 		}
 		if (this.capabilities.localStt) {
+			this.stopTap();
 			if (hasAndroid()) window.FlowVoiceAndroid!.stopListening();
 			else {
 				try {
@@ -611,6 +701,7 @@ export class AudioEndpoint {
 		if (final) {
 			this.lastFinal = text;
 			this.listenPromptId = undefined;
+			this.stopTap();
 			if (this.listenTimer) window.clearTimeout(this.listenTimer);
 			this.cb.onState("thinking");
 		}
