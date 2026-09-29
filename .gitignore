@@ -12,3 +12,4 @@ android/app/build/
 android/local.properties
 android/*.keystore
 !android/app/debug.keystore
+deploy/models/

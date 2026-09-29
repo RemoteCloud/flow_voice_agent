@@ -7,7 +7,11 @@ ARG WHISPER_REF=v1.8.2
 RUN apt-get update && apt-get install -y --no-install-recommends build-essential cmake git ca-certificates && rm -rf /var/lib/apt/lists/*
 RUN git clone --depth 1 --branch ${WHISPER_REF} https://github.com/ggml-org/whisper.cpp /src
 WORKDIR /src
-RUN cmake -B build -DCMAKE_BUILD_TYPE=Release -DGGML_NATIVE=OFF -DGGML_BACKEND_DL=ON -DGGML_CPU_ALL_VARIANTS=ON \
+# x86: every kernel variant, picked at start. ARM (Mac, Pi, Graviton): one portable build — bookworm's GCC 12 does not
+# know the armv9.2+sme variant the all-variants build asks for.
+ARG TARGETARCH
+RUN if [ "$TARGETARCH" = "amd64" ]; then V="-DGGML_BACKEND_DL=ON -DGGML_CPU_ALL_VARIANTS=ON"; else V="-DGGML_BACKEND_DL=OFF"; fi \
+ && cmake -B build -DCMAKE_BUILD_TYPE=Release -DGGML_NATIVE=OFF $V \
       -DWHISPER_BUILD_TESTS=OFF -DWHISPER_BUILD_EXAMPLES=ON -DCMAKE_INSTALL_PREFIX=/opt/whisper \
  && cmake --build build -j"$(nproc)" --target whisper-server \
  && mkdir -p /opt/whisper/bin /opt/whisper/lib \
