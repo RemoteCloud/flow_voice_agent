@@ -63,6 +63,11 @@ export interface Station {
 	/** Noisy place: on phones / tablets the mic opens only while the button is held (the app has no switch of its own). */
 	holdToAnswer?: boolean;
 	/**
+	 * A checklist held in "ask" step mode says "say next when you are ready" before it waits. Off = the hub waits
+	 * quietly; the mic stays open and "next" still moves on. Default true. Read live, so it applies to an open run.
+	 */
+	askNext?: boolean;
+	/**
 	 * How the crew answers here. `prompt` (default) = the hub reads an item and waits for the answer, as always.
 	 * `trigger` = the hub stays quiet and the crew sets items by speaking their trigger words, in any order.
 	 * `both` = the hub reads item by item and trigger words also work for any other item at any time.

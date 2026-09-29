@@ -759,6 +759,11 @@ export class RunEngine {
 		return this.deps.store.get().stations.find((x) => x.stationId === r.stationId)?.verbosity ?? r.verbosity;
 	}
 
+	/** Whether an "ask" hold is announced ("say next when you are ready"); station setting, read live. Prompt runs never hold. */
+	private askNext(r: RunRecord): boolean {
+		return this.deps.store.get().stations.find((x) => x.stationId === r.stationId)?.askNext !== false;
+	}
+
 	private stationLang(stationId: string): string {
 		return this.deps.io.endpointLanguage(stationId) ?? this.deps.store.get().stations.find((x) => x.stationId === stationId)?.language ?? this.deps.policy.defaultLanguage;
 	}
@@ -1075,7 +1080,8 @@ export class RunEngine {
 				return;
 			}
 			if (w === "repeat") {
-				await this.say(r, r.waiting?.mode === "ask" ? tr(r.language, "step_ask") : tr(r.language, "step_external"));
+				if (r.waiting?.mode !== "ask") await this.say(r, tr(r.language, "step_external"));
+				else if (this.askNext(r)) await this.say(r, tr(r.language, "step_ask"));
 				await this.openWaitListen(r);
 				return;
 			}
@@ -1707,8 +1713,9 @@ export class RunEngine {
 		r.waiting = { taskId: next.taskId, mode: step.mode, until };
 		await this.save(r);
 		this.emit("run.waiting", r, { taskId: next.taskId, text: step.mode, data: { mode: step.mode, until } });
-		if (step.mode === "ask") await this.say(r, tr(r.language, "step_ask"));
-		else if (step.mode === "timer") await this.say(r, step.delaySec >= 90 ? tr(r.language, "step_timer_min", { n: spokenNumber(Math.round(step.delaySec / 60), r.language) }) : tr(r.language, "step_timer_sec", { n: spokenNumber(step.delaySec, r.language) }));
+		if (step.mode === "ask") {
+			if (this.askNext(r)) await this.say(r, tr(r.language, "step_ask"));
+		} else if (step.mode === "timer") await this.say(r, step.delaySec >= 90 ? tr(r.language, "step_timer_min", { n: spokenNumber(Math.round(step.delaySec / 60), r.language) }) : tr(r.language, "step_timer_sec", { n: spokenNumber(step.delaySec, r.language) }));
 		else await this.say(r, tr(r.language, "step_external"));
 		this.deps.io.status(r.stationId, "idle", `waiting for the next item (${step.mode})`);
 		if (until) this.armStep(r);

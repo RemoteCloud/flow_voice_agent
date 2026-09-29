@@ -228,6 +228,10 @@ export function StationsTab({ s, reload, canEdit }: { s: StatusResponse; reload:
 										<input type="checkbox" className="h-5 w-5" checked={!!st.holdToAnswer} disabled={!canEdit} onChange={(e) => pick(i, { holdToAnswer: e.target.checked })} />
 										Noisy place: hold the button while answering
 									</label>
+									<label className="flex items-center gap-2" title="Only when a checklist waits for “next” between items (Checklist setup → When to read the next item → Ask). Off: the hub waits quietly, and “next” still moves on.">
+										<input type="checkbox" className="h-5 w-5" checked={st.askNext !== false} disabled={!canEdit} onChange={(e) => pick(i, { askNext: e.target.checked })} />
+										Say “say next when you are ready” while waiting
+									</label>
 									<label className="flex items-center gap-2" title="The voice of every answer is kept with the checklist and item it belongs to and sent to the training store. The run screen shows it is on.">
 										<input type="checkbox" className="h-5 w-5" checked={!!st.recordVoice} disabled={!canEdit} onChange={(e) => pick(i, { recordVoice: e.target.checked })} />
 										Record answers for training

@@ -623,6 +623,26 @@ try {
 	send({ type: "transcript", text: "next", confidence: 0.9, final: true });
 	await waitFor(() => spoken.slice(mark).some((s) => s.includes("Check cooling water temp")), "second item read on \"next\"");
 	await api("POST", `runs/${askRun.runId}/abandon`);
+	// the station may hold quietly: nothing is said, the mic is still open and "next" still moves on
+	const quiet = (await api("GET", "stations")).body.map(({ endpoint: _e, activeRun: _r, join: _j, ...s }) => (s.stationId === "bridge-01" ? { ...s, askNext: false } : s));
+	assert.equal((await api("PUT", "stations", quiet)).status, 200);
+	assert.equal((await api("GET", "stations")).body.find((st) => st.stationId === "bridge-01").askNext, false, "quiet hold saved");
+	mark = spoken.length;
+	listenOpen = undefined;
+	const quietRun = (await api("POST", "runs", { templateId: "tpl-engine", stationId: "bridge-01" })).body;
+	await waitFor(() => spoken.slice(mark).some((s) => s.includes("Check lube oil pressure")), "quiet run first item");
+	await say("Checked.");
+	await waitFor(async () => (await api("GET", `runs/${quietRun.runId}`)).body.exchange === "waiting", "hub waits after the answer");
+	await waitFor(() => listenOpen?.promptId === `${quietRun.runId}:waiting`, "mic open although nothing was said");
+	assert.ok(!spoken.slice(mark).some((s) => s === "Say next when you are ready."), "the hub said nothing about \"next\"");
+	send({ type: "transcript", text: "repeat", confidence: 0.9, final: true });
+	await waitFor(() => listenOpen?.promptId === `${quietRun.runId}:waiting`, "still waiting after \"repeat\"");
+	assert.ok(!spoken.slice(mark).some((s) => s === "Say next when you are ready."), "\"repeat\" stays quiet too");
+	send({ type: "transcript", text: "next", confidence: 0.9, final: true });
+	await waitFor(() => spoken.slice(mark).some((s) => s.includes("Check cooling water temp")), "quiet hold released on \"next\"");
+	await api("POST", `runs/${quietRun.runId}/abandon`);
+	const loud = (await api("GET", "stations")).body.map(({ endpoint: _e, activeRun: _r, join: _j, ...s }) => (s.stationId === "bridge-01" ? { ...s, askNext: true } : s));
+	await api("PUT", "stations", loud);
 	// timer: a short delay, then the item comes by itself
 	assert.deepEqual((await api("PUT", "library/entry", { templateId: "tpl-engine", step: { mode: "timer", delaySec: 2 } })).body.templates[0].step, { mode: "timer", delaySec: 2 });
 	mark = spoken.length;
