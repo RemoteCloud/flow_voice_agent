@@ -71,6 +71,13 @@ export interface Station {
 	/** The crew may change `voiceMode` from the run screen. Off (default) = admin decides. */
 	voiceModeCrew?: boolean;
 	/**
+	 * Where a browser on this station recognises speech. `device` (default) = the browser's own recogniser
+	 * (Chrome / Edge: a cloud service, weak on ship terms and slow to fail on Windows). `hub` = the microphone is
+	 * streamed to the hub while a question is open and the hub's backup recogniser (STT_BACKUP_ENDPOINT) transcribes it.
+	 * Needs that recogniser; without it the browser keeps its own. Phones keep the agent's recogniser.
+	 */
+	speech?: "device" | "hub";
+	/**
 	 * Record the crew's answers for training: every prompt window's audio is kept with the flow and item it belongs
 	 * to and sent to the training store (`server/speech/capture.ts`). Off by default; the run screen shows it is on.
 	 */

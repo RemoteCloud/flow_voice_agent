@@ -161,7 +161,7 @@ export interface EndpointCapabilities {
 export type EndpointMessage =
 	| { type: "hello"; endpointId: string; stationId: string; capabilities: EndpointCapabilities; language?: string; observer?: boolean }
 	| { type: "ptt"; state: "down" | "up" }
-	| { type: "audio.end"; reason: "silence" | "ptt" | "timeout" | "cancel" }
+	| { type: "audio.end"; reason: "silence" | "ptt" | "timeout" | "cancel" | /** the window closed without any speech in it (the endpoint's own silence detector): nothing to transcribe */ "empty" }
 	| { type: "transcript"; text: string; confidence?: number; final?: boolean; /** Other guesses of the recogniser for the same words, best first (browsers give up to five). */ alternatives?: string[] }
 	| { type: "spoken"; promptId?: string }
 	| { type: "command"; name: string }
@@ -266,7 +266,7 @@ export function parseEndpointMessage(raw: string): EndpointMessage | undefined {
 		case "ptt":
 			return v.state === "down" || v.state === "up" ? { type: "ptt", state: v.state } : undefined;
 		case "audio.end":
-			return { type: "audio.end", reason: (["silence", "ptt", "timeout", "cancel"] as const).find((r) => r === v.reason) ?? "silence" };
+			return { type: "audio.end", reason: (["silence", "ptt", "timeout", "cancel", "empty"] as const).find((r) => r === v.reason) ?? "silence" };
 		case "transcript":
 			return typeof v.text === "string" ? { type: "transcript", text: v.text, confidence: typeof v.confidence === "number" ? v.confidence : undefined, final: v.final !== false, alternatives: Array.isArray(v.alternatives) ? v.alternatives.filter((a): a is string => typeof a === "string" && a.length <= 300).slice(0, 5) : undefined } : undefined;
 		case "spoken":

@@ -267,9 +267,10 @@ export class Gateway implements EngineIo {
 		ep.listening = undefined;
 		this.send(ep, { type: "listen.close" });
 		if (reason === "cancel") return;
-		// a device that recognises itself streams audio only to have it recorded: its silence stays silence
+		// a device that recognises itself streams audio only to have it recorded: its silence stays silence;
+		// a window the endpoint's own silence detector found empty is not sent through the recogniser either
 		const stt = this.deps.stt.kind === "http" ? this.deps.stt : ep.caps.localStt ? undefined : this.deps.sttBackup;
-		if (stt && l.bytes > 3200) {
+		if (stt && l.bytes > 3200 && reason !== "empty") {
 			const full = Buffer.concat(l.chunks);
 			let pcm = full;
 			// the backup recogniser encodes short windows only (cheap on CPU): keep the last 8 s, where the answer is

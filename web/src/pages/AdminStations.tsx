@@ -244,6 +244,18 @@ export function StationsTab({ s, reload, canEdit }: { s: StatusResponse; reload:
 									<p className="help">Applies at once, also to a checklist that is open.</p>
 								</div>
 								<div className="sm:col-span-2">
+									<label className="label">Where speech is recognised (computers)</label>
+									<select className="input" value={st.speech ?? "device"} disabled={!canEdit || !s.speech.sttBackup} onChange={(e) => pick(i, { speech: e.target.value === "hub" ? "hub" : undefined })}>
+										<option value="device">On the computer: the browser's own recogniser</option>
+										<option value="hub">On the hub: the microphone is sent to the hub while a question is open</option>
+									</select>
+									<p className="help">
+										{s.speech.sttBackup
+											? "On the hub: the same recogniser on every computer, on the ship, tuned to the answer words. Use it when a Windows PC hears badly or gets stuck. Phones keep their own. Takes effect the next time voice is started."
+											: "The hub has no recogniser of its own (STT_BACKUP_ENDPOINT is not set), so every computer uses its browser's."}
+									</p>
+								</div>
+								<div className="sm:col-span-2">
 									<label className="label">How the crew answers here</label>
 									<select className="input" value={st.voiceMode ?? "prompt"} disabled={!canEdit} onChange={(e) => pick(i, { voiceMode: e.target.value as Station["voiceMode"] })}>
 										<option value="prompt">One item at a time: the hub asks, the crew answers</option>

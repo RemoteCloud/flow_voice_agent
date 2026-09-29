@@ -102,6 +102,8 @@ export interface EndpointOptions {
 	holdToAnswer?: boolean;
 	/** Hub boot info: a backup recogniser is configured (POST /api/stt). */
 	serverBackup?: boolean;
+	/** Station setting "speech is recognised on the hub": stream the microphone instead of using the browser's recogniser (needs `serverBackup`). */
+	hubStt?: boolean;
 	/** Hub boot info: the hub has a voice server (GET /api/tts): the same voice on every computer, in the checklist's language. */
 	serverTts?: boolean;
 }
@@ -168,7 +170,9 @@ export class AudioEndpoint {
 	) {
 		// Browsers (Mac, Windows, Raspberry Pi): the built-in recogniser when there is a working one; otherwise — no API at all
 		// (Chromium on a Pi, Firefox), or it failed before on this machine (no internet on board) — the mic is streamed to the hub.
-		const browserStt = !!(window.SpeechRecognition ?? window.webkitSpeechRecognition) && !(opts.serverBackup && hubSttPreferred());
+		// The station may also say so (Admin → Stations: "speech is recognised on the hub"): Windows Chrome / Edge send audio to
+		// a cloud recogniser that is weak on ship terms and slow to give up, the hub's own is on the ship and hears the bias words.
+		const browserStt = !!(window.SpeechRecognition ?? window.webkitSpeechRecognition) && !(opts.serverBackup && (opts.hubStt || hubSttPreferred()));
 		const localStt = opts.sttOnEndpoint && (hasAndroid() ? window.FlowVoiceAndroid!.hasLocalStt() : browserStt);
 		this.handsFree = !!opts.handsFree;
 		this.capabilities = { input: [hasAndroid() ? "android-mic" : "browser-mic"], sampleRate: 16000, aec: false, pushToTalk: opts.pushToTalk && !this.handsFree, wakeWord: false, localTts: true, localStt };
@@ -585,8 +589,10 @@ export class AudioEndpoint {
 	private async speakFromHub(text: string, language: string): Promise<boolean> {
 		this.stopServerVoice();
 		let url: string | undefined;
+		const ctrl = new AbortController();
+		const abort = window.setTimeout(() => ctrl.abort(), 6000); // a slow or stuck voice server must not hold the dialogue: the browser voice takes over
 		try {
-			const res = await fetch(`/api/tts?lang=${encodeURIComponent(language)}&text=${encodeURIComponent(text)}`, { credentials: "same-origin" });
+			const res = await fetch(`/api/tts?lang=${encodeURIComponent(language)}&text=${encodeURIComponent(text)}`, { credentials: "same-origin", signal: ctrl.signal }).finally(() => window.clearTimeout(abort));
 			if (res.status === 404) this.noServerVoice.add(language);
 			if (!res.ok) return false;
 			url = URL.createObjectURL(await res.blob());
@@ -654,7 +660,7 @@ export class AudioEndpoint {
 		this.worklet?.port.postMessage({ type: "stop" });
 	}
 
-	private stopListen(reason: "silence" | "ptt" | "timeout" | "cancel"): void {
+	private stopListen(reason: "silence" | "ptt" | "timeout" | "cancel" | "empty"): void {
 		if (this.listenTimer) window.clearTimeout(this.listenTimer);
 		this.listenTimer = undefined;
 		if (!this.listenPromptId) return;
@@ -680,7 +686,7 @@ export class AudioEndpoint {
 		void reason;
 	}
 
-	private endListen(reason: "silence" | "ptt" | "timeout" | "cancel"): void {
+	private endListen(reason: "silence" | "ptt" | "timeout" | "cancel" | "empty"): void {
 		if (!this.listenPromptId) return;
 		if (this.listenPromptId === IDLE) {
 			this.stopListen(reason);
@@ -835,13 +841,16 @@ export class AudioEndpoint {
 		const src = this.audioCtx.createMediaStreamSource(this.stream);
 		this.worklet = new AudioWorkletNode(this.audioCtx, "pcm16k");
 		this.worklet.port.onmessage = (e) => {
-			if (this.listenPromptId && this.ws?.readyState === WebSocket.OPEN) this.ws.send(e.data as ArrayBuffer);
+			if (!this.listenPromptId || this.ws?.readyState !== WebSocket.OPEN) return;
+			this.ws.send(e.data as ArrayBuffer);
+			if (!this.capabilities.localStt) this.onPcm(e.data as ArrayBuffer);
 		};
 		src.connect(this.worklet);
 		this.worklet.connect(this.audioCtx.destination);
 	}
 
 	private async startStreaming(maxMs: number): Promise<void> {
+		const promptId = this.listenPromptId;
 		try {
 			await this.ensureMic();
 			await this.audioCtx?.resume();
@@ -849,7 +858,39 @@ export class AudioEndpoint {
 			this.cb.onError(`microphone: ${err instanceof Error ? err.message : String(err)}`);
 			return;
 		}
+		if (!promptId || this.listenPromptId !== promptId) return; // the window closed while the microphone opened
+		this.vad = { floor: 0.01, speech: 0, silenceMs: 0, spoke: false };
 		this.worklet?.port.postMessage({ type: "start" });
-		this.listenTimer = window.setTimeout(() => this.endListen("timeout"), maxMs);
+		// nobody spoke in the whole window → "empty": the hub closes it as silence without running the recogniser on room noise
+		this.listenTimer = window.setTimeout(() => this.endListen(this.vad.spoke ? "timeout" : "empty"), maxMs);
+	}
+
+	/** Silence detector for a streamed window (recognition on the hub): noise floor, speech onset, end of speech. */
+	private vad = { floor: 0.01, speech: 0, silenceMs: 0, spoke: false };
+
+	/**
+	 * One 20 ms chunk of the streamed window. The window ends 800 ms after the crew stops talking instead of at the
+	 * timeout, so the hub's recogniser answers as fast as an on-device one; the threshold follows the room's noise floor
+	 * (quickly down, slowly up) so a fan or an engine does not count as speech and a quiet speaker still does.
+	 */
+	private onPcm(buf: ArrayBuffer): void {
+		const s = new Int16Array(buf);
+		if (!s.length) return;
+		let sum = 0;
+		for (let i = 0; i < s.length; i++) sum += s[i]! * s[i]!;
+		const rms = Math.sqrt(sum / s.length) / 32768;
+		const v = this.vad;
+		v.floor = rms < v.floor ? v.floor * 0.8 + rms * 0.2 : v.floor * 0.995 + rms * 0.005;
+		const threshold = Math.max(0.012, v.floor * 3);
+		if (rms > threshold) {
+			v.speech += 1;
+			v.silenceMs = 0;
+			if (v.speech >= 4) v.spoke = true; // 80 ms above the floor: speech, not a click
+			return;
+		}
+		v.speech = 0;
+		if (!v.spoke) return;
+		v.silenceMs += 20;
+		if (v.silenceMs >= 800) this.endListen("silence");
 	}
 }

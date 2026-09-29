@@ -501,7 +501,7 @@ export function createApp(deps: AppDeps): Hono {
 		const body = (await c.req.json().catch(() => undefined)) as Station[] | undefined;
 		if (!Array.isArray(body) || !body.every((s) => isObj(s) && str(s.stationId) && str(s.name))) return fail(c, 400, "BAD_REQUEST", "array of stations expected");
 		await store.update((d) => {
-			d.stations = body.map((s) => ({ stationId: s.stationId, name: s.name, location: str(s.location), defaultProfile: s.defaultProfile ?? null, language: s.language || "en", audioPolicy: s.audioPolicy === "open" ? "open" : "ptt", autoStartAllowed: !!s.autoStartAllowed, verbosity: s.verbosity ?? "full", voiceActions: s.voiceActions !== false, holdToAnswer: s.holdToAnswer === true, voiceMode: voiceMode(s.voiceMode), voiceModeCrew: s.voiceModeCrew === true, recordVoice: s.recordVoice === true, templates: templateRules(s.templates) }));
+			d.stations = body.map((s) => ({ stationId: s.stationId, name: s.name, location: str(s.location), defaultProfile: s.defaultProfile ?? null, language: s.language || "en", audioPolicy: s.audioPolicy === "open" ? "open" : "ptt", autoStartAllowed: !!s.autoStartAllowed, verbosity: s.verbosity ?? "full", voiceActions: s.voiceActions !== false, holdToAnswer: s.holdToAnswer === true, voiceMode: voiceMode(s.voiceMode), voiceModeCrew: s.voiceModeCrew === true, recordVoice: s.recordVoice === true, speech: s.speech === "hub" ? "hub" : undefined, templates: templateRules(s.templates) }));
 			for (const id of Object.keys(d.stationJoins)) if (!d.stations.some((s) => s.stationId === id)) delete d.stationJoins[id];
 		});
 		await ensureJoins(c.get("sessionRow").sub);

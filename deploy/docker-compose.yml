@@ -34,16 +34,30 @@ services:
       retries: 3
       start_period: 10s
 
-  # Optional server-side speech-to-text (OpenAI-compatible API). Set STT_ENDPOINT=http://stt:8000 in .env.
-  # stt:
-  #   image: fedirz/faster-whisper-server:latest-cpu
-  #   container_name: flow-voice-stt
-  #   restart: unless-stopped
-  #   environment:
-  #     WHISPER__MODEL: Systran/faster-whisper-base
-  #   volumes:
-  #     - stt-models:/root/.cache/huggingface
+  # Speech on the hub ("server side sound"), profile `speech`:
+  #   docker compose -f deploy/docker-compose.yml --profile speech up -d --build
+  # plus in .env:  STT_BACKUP_ENDPOINT=http://stt:8080   TTS_ENDPOINT=http://tts:5000
+  # The hub then reads every checklist with the same Piper voice on every computer, and a station set to
+  # "speech is recognised on the hub" (Admin → Stations) streams the microphone to whisper.cpp instead of
+  # using the browser's recogniser. Phones keep the agent's own speech; browsers without one use the hub's anyway.
+  stt:
+    build:
+      context: ./whisper
+    image: maranics/flow-voice-stt:0.1
+    container_name: flow-voice-stt
+    restart: unless-stopped
+    profiles: ["speech"]
+    volumes:
+      # ggml-small-q5_1.bin (~190 MB) from https://huggingface.co/ggerganov/whisper.cpp/tree/main
+      - ./models:/models:ro
+    command: ["-m", "/models/ggml-small-q5_1.bin", "-t", "4"]
+  tts:
+    build:
+      context: ./piper
+    image: maranics/flow-voice-tts:0.1
+    container_name: flow-voice-tts
+    restart: unless-stopped
+    profiles: ["speech"]
 
 volumes:
   flowvoice-data: {}
-  # stt-models: {}
