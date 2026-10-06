@@ -81,6 +81,13 @@ export function RunPage({ runId, mobile = false }: { runId: string; mobile?: boo
 
 	return (
 		<div className={`grid grid-cols-[minmax(0,1fr)] gap-4 md:grid-cols-[minmax(0,1fr)_minmax(0,1.1fr)] ${mobile ? "pb-32" : ""}`}>
+			{/* tablet / phone: one large, obvious way back to the checklist list, above everything else */}
+			{mobile && (
+				<button type="button" className="btn btn-lg h-16 w-full justify-start gap-3 border-2 border-fg bg-panel text-base font-semibold md:col-span-2" onClick={() => navigate({ page: "picker" })}>
+					<Icon name="chevron" size={26} className="rotate-180" />
+					Back to checklists
+				</button>
+			)}
 			<div className="space-y-4">
 				{/* current item */}
 				<section className="card">
