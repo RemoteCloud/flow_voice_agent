@@ -10,8 +10,13 @@
     <uses-permission android:name="android.permission.FOREGROUND_SERVICE_MICROPHONE" />
     <uses-permission android:name="android.permission.POST_NOTIFICATIONS" />
     <uses-permission android:name="android.permission.BLUETOOTH_CONNECT" />
+    <!-- Android 11 and older: connecting to a Bluetooth push-to-talk button (BleButton.kt) -->
+    <uses-permission android:name="android.permission.BLUETOOTH" android:maxSdkVersion="30" />
 
     <uses-feature android:name="android.hardware.microphone" android:required="false" />
+    <uses-feature android:name="android.hardware.bluetooth_le" android:required="false" />
+    <!-- the system chooser that picks the Bluetooth button -->
+    <uses-feature android:name="android.software.companion_device_setup" android:required="false" />
 
     <queries>
         <intent>

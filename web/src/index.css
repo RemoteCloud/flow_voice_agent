@@ -1,63 +1,71 @@
 @import "tailwindcss";
 
-/* Light is the default: plain white, hairline borders. Dark follows the OS, and the header
-   toggle pins either one via data-theme on <html> (remembered per device). */
+/* Maranics brand palette (Brand Guidelines v1.0, 2026): navy is the machine, cyan is the data.
+   Light is the ground (surface #F6F7F8), navy is the weight. The dark theme is for light-sensitive
+   places (a bridge at night): navy ground, white type, cyan only as a data mark. The header toggle pins
+   either one via data-theme on <html> (remembered per device); otherwise dark follows the OS. */
 :root {
 	color-scheme: light;
-	--c-bg: #ffffff;
+	--c-bg: #f6f7f8; /* surface */
 	--c-panel: #ffffff;
-	--c-panel-2: #f4f4f4;
-	--c-line: #e6e6e6;
-	--c-line-strong: #c9c9c9;
-	--c-fg: #0a0a0a;
-	--c-fg-muted: #555555;
-	--c-fg-faint: #8a8a8a;
-	--c-accent: #0a0a0a;
+	--c-panel-2: #e9edf1; /* surface muted */
+	--c-line: #dde3ea;
+	--c-line-strong: #ccd6e0; /* border */
+	--c-fg: #06182d; /* text = brand navy */
+	--c-fg-muted: #5e6b78;
+	--c-fg-faint: #8794a1;
+	--c-accent: #06182d; /* primary buttons: the brand navy */
 	--c-accent-fg: #ffffff;
+	--c-link: #007d8f; /* the cyan that may be read on light */
 	--c-ok: #0b7a3b;
 	--c-warn: #a65c00;
 	--c-danger: #c62828;
-	--c-info: #00708f;
-	--c-key: #ededed;
+	--c-info: #007d8f; /* "to do" on the ECAM list: readable cyan, never #00BBD6 as text on light */
+	--c-data: #00bbd6; /* brand cyan: graphics only (dots, marks, rings) */
+	--c-key: #e9edf1;
 	--c-shadow: none;
 }
 :root[data-theme="dark"] {
 	color-scheme: dark;
-	--c-bg: #000000;
-	--c-panel: #0b0b0b;
-	--c-panel-2: #161616;
-	--c-line: #242424;
-	--c-line-strong: #3a3a3a;
-	--c-fg: #f2f2f2;
-	--c-fg-muted: #a3a3a3;
-	--c-fg-faint: #6f6f6f;
-	--c-accent: #f2f2f2;
-	--c-accent-fg: #000000;
+	--c-bg: #06182d; /* brand navy */
+	--c-panel: #0b2038;
+	--c-panel-2: #132b47;
+	--c-line: #1d3552;
+	--c-line-strong: #2d4868;
+	--c-fg: #ffffff;
+	--c-fg-muted: #ccd6e0;
+	--c-fg-faint: #8a9bac;
+	--c-accent: #ffffff;
+	--c-accent-fg: #06182d;
+	--c-link: #5fd6e8;
 	--c-ok: #2fe06d;
 	--c-warn: #ffb000;
 	--c-danger: #ff5252;
-	--c-info: #27e0ff;
-	--c-key: #1c1c1c;
+	--c-info: #00bbd6; /* cyan on navy: 9:1, the data colour where it belongs */
+	--c-data: #00bbd6;
+	--c-key: #132b47;
 	--c-shadow: none;
 }
 @media (prefers-color-scheme: dark) {
 	:root:not([data-theme="light"]) {
 		color-scheme: dark;
-		--c-bg: #000000;
-		--c-panel: #0b0b0b;
-		--c-panel-2: #161616;
-		--c-line: #242424;
-		--c-line-strong: #3a3a3a;
-		--c-fg: #f2f2f2;
-		--c-fg-muted: #a3a3a3;
-		--c-fg-faint: #6f6f6f;
-		--c-accent: #f2f2f2;
-		--c-accent-fg: #000000;
+		--c-bg: #06182d;
+		--c-panel: #0b2038;
+		--c-panel-2: #132b47;
+		--c-line: #1d3552;
+		--c-line-strong: #2d4868;
+		--c-fg: #ffffff;
+		--c-fg-muted: #ccd6e0;
+		--c-fg-faint: #8a9bac;
+		--c-accent: #ffffff;
+		--c-accent-fg: #06182d;
+		--c-link: #5fd6e8;
 		--c-ok: #2fe06d;
 		--c-warn: #ffb000;
 		--c-danger: #ff5252;
-		--c-info: #27e0ff;
-		--c-key: #1c1c1c;
+		--c-info: #00bbd6;
+		--c-data: #00bbd6;
+		--c-key: #132b47;
 		--c-shadow: none;
 	}
 }
@@ -77,9 +85,12 @@
 	--color-warn: var(--c-warn);
 	--color-danger: var(--c-danger);
 	--color-info: var(--c-info);
+	--color-data: var(--c-data);
+	--color-link: var(--c-link);
 	--color-key: var(--c-key);
-	--font-sans: ui-sans-serif, system-ui, -apple-system, "Segoe UI", Roboto, "Helvetica Neue", Arial, sans-serif;
-	--font-mono: ui-monospace, SFMono-Regular, Menlo, Consolas, "Liberation Mono", monospace;
+	/* two families, no third: Archivo for words, IBM Plex Mono for numbers and the ECAM list (bundled, work offline) */
+	--font-sans: "Archivo Variable", Archivo, "Helvetica Neue", Arial, sans-serif;
+	--font-mono: "IBM Plex Mono", ui-monospace, "SF Mono", Menlo, Consolas, monospace;
 }
 
 @layer base {
@@ -101,7 +112,33 @@
 		@apply outline-2 outline-offset-2 outline-accent;
 	}
 	dialog::backdrop {
-		background: rgb(0 0 0 / 0.6);
+		background: rgb(6 24 45 / 0.6);
+	}
+	a {
+		@apply text-link;
+	}
+	/* brandmark per ground: the theme shows one file and hides the other */
+	.logo-dark {
+		display: none;
+	}
+	:root[data-theme="dark"] .logo-light {
+		display: none;
+	}
+	:root[data-theme="dark"] .logo-dark {
+		display: block;
+	}
+	@media (prefers-color-scheme: dark) {
+		:root:not([data-theme="light"]) .logo-light {
+			display: none;
+		}
+		:root:not([data-theme="light"]) .logo-dark {
+			display: block;
+		}
+	}
+	h1,
+	h2,
+	h3 {
+		line-height: 1.1;
 	}
 }
 
@@ -231,6 +268,23 @@
 	}
 	.section-sticky {
 		@apply sticky top-0 z-[1] bg-panel-2/95 backdrop-blur;
+	}
+	/* the brand dot pattern (20 px cell, 1.3 px dot, 28 %): one dot = one observation, denser right of centre.
+	   Drawn in cyan, kept away from type, never a glow. */
+	.dots-page {
+		position: relative;
+		isolation: isolate;
+	}
+	.dots-page::before {
+		content: "";
+		position: absolute;
+		inset: 0;
+		z-index: -1;
+		pointer-events: none;
+		background-image: radial-gradient(circle, var(--c-data) 0.65px, transparent 0.8px);
+		background-size: 20px 20px;
+		-webkit-mask-image: radial-gradient(ellipse 70% 90% at 72% 50%, rgb(0 0 0 / 0.28) 0%, rgb(0 0 0 / 0.1) 55%, transparent 100%);
+		mask-image: radial-gradient(ellipse 70% 90% at 72% 50%, rgb(0 0 0 / 0.28) 0%, rgb(0 0 0 / 0.1) 55%, transparent 100%);
 	}
 	.mic-ring {
 		box-shadow: 0 0 0 0 var(--c-danger);

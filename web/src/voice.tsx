@@ -8,7 +8,11 @@
 import { createContext, useCallback, useContext, useEffect, useMemo, useRef, useState, type ReactNode } from "react";
 import type { RunView } from "../../server/api.js";
 import type { HubEvent } from "../../server/protocol.js";
+import type { ButtonAction } from "../../server/protocol.js";
+import { api as http, toApiError } from "./api.js";
 import { AudioEndpoint, type EndpointState } from "./audio.js";
+import { useStationButtons } from "./buttons.js";
+import { BleButtonLink } from "./components/BleButtonLink.js";
 import { useApp } from "./context.js";
 import { navigate } from "./router.js";
 import { isMobileClient } from "./platform.js";
@@ -68,7 +72,7 @@ function endpointId(): string {
 }
 
 export function VoiceProvider({ children }: { children: ReactNode }) {
-	const { me, boot, stations, setStation } = useApp();
+	const { me, boot, stations, setStation, saveButtons } = useApp();
 	const ep = useRef<AudioEndpoint | undefined>(undefined);
 	const wakeLock = useRef<WakeLockSentinel | undefined>(undefined);
 	const [state, setState] = useState<EndpointState>("disconnected");
@@ -194,6 +198,35 @@ export function VoiceProvider({ children }: { children: ReactNode }) {
 			window.removeEventListener("keyup", up);
 		};
 	}, []);
+
+	// The station's hardware buttons (Admin → Stations → Buttons). The hub decides what a press means for the run
+	// that is open on this station; hold-to-talk is the one thing the device does itself.
+	const runRef = useRef(run);
+	runRef.current = run;
+	const pressed = useRef<Partial<Record<ButtonAction, number>>>({});
+	const buttonStation = stationId ?? me.stationId;
+	useStationButtons(stations.find((s) => s.stationId === buttonStation)?.buttons, (action, down) => {
+		if (action === "talk") {
+			if (down) ep.current?.pttStart();
+			else ep.current?.pttEnd();
+			return;
+		}
+		// one press = one action: a bouncing button, or a second press while the first is still on its way, is dropped
+		if (!down || !buttonStation || pressed.current[action]) return;
+		pressed.current[action] = Date.now();
+		void (async () => {
+			try {
+				const open = (r: RunView) => r.stationId === buttonStation && (r.state === "active" || r.state === "paused" || r.state === "pending");
+				const known = runRef.current && open(runRef.current) ? runRef.current : (await http.get<RunView[]>("runs")).find(open);
+				if (known) setRun(await http.post<RunView>(`runs/${encodeURIComponent(known.runId)}/button`, { action }));
+			} catch (e) {
+				setError(toApiError(e).message);
+			} finally {
+				const wait = 400 - (Date.now() - (pressed.current[action] ?? 0));
+				window.setTimeout(() => delete pressed.current[action], Math.max(0, wait));
+			}
+		})();
+	}, buttonStation ? (next) => saveButtons(buttonStation, next) : undefined);
 
 	const api = useMemo<VoiceApi>(
 		() => ({
@@ -326,6 +359,7 @@ export function VoiceBar({ compact }: { compact?: boolean }) {
 				</>
 			)}
 			{!mobile && <LanguageSelect compact />}
+			<BleButtonLink buttons={station?.buttons} />
 		</div>
 	);
 }

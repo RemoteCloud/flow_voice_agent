@@ -11,7 +11,7 @@
 import type { Logger } from "../core/log.js";
 import type { PolicyEnv } from "../env.js";
 import type { DiscardReason, FlowDetail, FlowsClient, TemplateDetail } from "../maranics/FlowsClient.js";
-import type { ChecklistPick, ExchangeState, HubEvent, HubEventType, RunItem, RunView, TriggerSpec, VoiceMode } from "../protocol.js";
+import type { ButtonAction, ChecklistPick, ExchangeState, HubEvent, HubEventType, RunItem, RunView, TriggerSpec, VoiceMode } from "../protocol.js";
 import type { CaptureContext, CaptureOutcome } from "../speech/capture.js";
 import type { Credentials } from "../store/credentials.js";
 import type { HubSession, HubStore, PromptRecord, RunRecord, Station, StepMode, VoiceProfile } from "../store/HubStore.js";
@@ -2230,6 +2230,79 @@ export class RunEngine {
 	async repeat(runId: string): Promise<RunView> {
 		const r = this.record(runId);
 		await this.handleCommand(r, "repeat");
+		return this.view(runId);
+	}
+
+	/**
+	 * A hardware button of the station was pressed (`Station.buttons`). The press is deliberate, so it needs no
+	 * read-back and is never refused for not being "the word":
+	 *   accept   → confirm the read-back / start a pending run / resume a paused one / release a held item; on an open
+	 *              item: its answer word, else checked / Yes / now. An item with no such answer (a number, free text,
+	 *              options without a marked word) gets the short hint and stays open.
+	 *   no       → what a spoken "no" does: the read-back is asked again, a checkbox stays open, yes/no gets No.
+	 *   override → the item is skipped (also a held one: the hold moves to the one after it); it comes back in the sweep.
+	 *   next     → release a held item, otherwise move on like a spoken "next".
+	 *   back / repeat → as spoken. pause → pause, or resume a paused run. talk is push-to-talk: the device does it.
+	 */
+	async button(runId: string, action: ButtonAction, session: HubSession): Promise<RunView> {
+		const r = this.record(runId);
+		if (r.state === "completed" || r.state === "abandoned") throw new EngineError(409, "RUN_ENDED", "run has ended");
+		await this.audit(r, "button", { taskId: r.currentTaskId ?? r.waiting?.taskId, sub: session.sub, text: action });
+		if (action === "talk") return this.view(runId);
+		if (action === "pause") return r.state === "paused" ? this.resume(runId, session) : this.pause(runId);
+		if (r.state === "paused") return action === "accept" ? this.resume(runId, session) : this.view(runId);
+		if (r.state === "pending" || r.pendingAction) {
+			// the hub is waiting for "start" / a yes or no to complete or discard: the button is that word.
+			// Discard is the exception: a button can call it off, never confirm it.
+			if (action === "no" || (action === "accept" && r.pendingAction?.kind !== "discard")) await this.onTranscript(r.stationId, action === "accept" ? "confirm" : "no", 1, session);
+			return this.view(runId);
+		}
+		const item = r.items.find((i) => i.taskId === r.currentTaskId);
+		const open = item && (item.state === "current" || item.state === "unanswered") ? item : undefined;
+		switch (action) {
+			case "accept": {
+				if (r.exchange === "waiting") return this.proceed(runId, "screen");
+				if (!open) return this.view(runId);
+				if (r.pendingReadback) {
+					if (!r.users.some((u) => u.sessionId === session.id)) r.users.push({ sub: session.sub, name: this.deps.store.get().users.find((u) => u.sub === session.sub)?.name, sessionId: session.id });
+					await this.commit(r, open, r.pendingReadback, "manual");
+					return this.view(runId);
+				}
+				const ctx = { ...this.interpretCtx(r, open, new Date(this.deps.now())), answersOnly: false };
+				const word = ctx.answers?.[0];
+				let result = word ? interpret(open.type, answerLabel(word), ctx, this.phrasesFor(r, open)) : undefined;
+				if (!result?.ok) result = interpret(open.type, "yes", ctx);
+				if (!result.ok && (open.type === "DateAndTime" || open.type === "Time")) result = interpret(open.type, "now", ctx);
+				if (result.ok) {
+					this.clearTimers(r.runId);
+					this.deps.io.stopListening(r.stationId);
+					// nobody said anything, so the value is spoken once: the crew hears what the press put in
+					if (this.level(r) !== "silent") await this.say(r, tr(r.language, "echo_short", { value: result.valueText }));
+					return this.answerManual(runId, open.taskId, result.value, session, result.valueText);
+				}
+				// nothing a button can stand for: say what the item needs and keep it open
+				await this.say(r, `${result.message}.`);
+				await this.openListen(r, open);
+				return this.view(runId);
+			}
+			case "no":
+				if (open) await this.onTranscript(r.stationId, "no", 1, session);
+				return this.view(runId);
+			case "override": {
+				const held = r.exchange === "waiting" ? r.items.find((i) => i.taskId === r.waiting?.taskId) : undefined;
+				if (held) {
+					await this.skip(runId, held.taskId, "overridden by button");
+					if (r.state === "active" && r.waiting?.taskId === held.taskId) await this.advance(r, held); // hold the one after it instead
+				} else if (open) await this.skip(runId, open.taskId, "overridden by button");
+				return this.view(runId);
+			}
+			case "next":
+			case "back":
+			case "repeat":
+				if (action === "repeat" && r.exchange === "waiting") await this.onTranscript(r.stationId, "repeat", 1, session);
+				else if (action !== "back" || item) await this.handleCommand(r, action, session);
+				return this.view(runId);
+		}
 		return this.view(runId);
 	}
 

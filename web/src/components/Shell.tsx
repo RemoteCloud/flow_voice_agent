@@ -2,6 +2,7 @@ import { useEffect, useState, type ReactNode } from "react";
 import type { TenantsResponse } from "../../../server/tenants.js";
 import { api } from "../api.js";
 import { Icon } from "../icons.js";
+import { Logo } from "./Logo.js";
 import { useDayNight, useTheme } from "../theme.js";
 import { useApp } from "../context.js";
 import { navigate, type Route } from "../router.js";
@@ -40,7 +41,7 @@ export function Shell({ route, mobile = false, children }: { route: Route; mobil
 				<header className="sticky top-0 z-10 border-b border-line bg-bg/95 backdrop-blur">
 					<div className="flex items-center gap-2 px-3 py-2">
 						<button type="button" className="flex items-center gap-2" onClick={() => navigate({ page: "picker" })} aria-label="Checklists">
-							<img src="/icon.svg" width={24} height={24} alt="" />
+							<Logo mark height={22} />
 						</button>
 						<span className="pill min-w-0 truncate border-line-strong text-fg-muted" title="Station">
 							{tenantName ? `${tenantName} · ` : ""}
@@ -65,8 +66,8 @@ export function Shell({ route, mobile = false, children }: { route: Route; mobil
 			<header className="sticky top-0 z-10 border-b border-line bg-bg/95 backdrop-blur">
 				<div className="mx-auto flex max-w-5xl items-center gap-3 px-4 py-2">
 					<button type="button" className="flex items-center gap-2" onClick={() => navigate({ page: "picker" })}>
-						<img src="/icon.svg" width={26} height={26} alt="" />
-						<span className="font-semibold tracking-tight">Flow Voice</span>
+						<Logo height={22} />
+						<span className="border-l border-line-strong pl-3 font-semibold tracking-tight">Flow Voice</span>
 					</button>
 					<span className="hidden text-xs text-fg-faint sm:inline">{boot.vesselId}</span>
 					{tenantName && (

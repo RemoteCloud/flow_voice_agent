@@ -13,13 +13,13 @@ export default defineConfig({
 		tailwindcss(),
 		VitePWA({
 			registerType: "autoUpdate",
-			includeAssets: ["icon.svg"],
+			includeAssets: ["icon.svg", "mark.svg", "mark-on-dark.svg", "logo.svg", "logo-on-dark.svg"],
 			manifest: {
-				name: "Flow Voice",
-				short_name: "Flow Voice",
+				name: "Flow Voice by Maranics",
+				short_name: "Flow Voice by Maranics",
 				description: "Run Maranics Flow checklists by voice",
-				theme_color: "#ffffff",
-				background_color: "#ffffff",
+				theme_color: "#f6f7f8",
+				background_color: "#f6f7f8",
 				display: "standalone",
 				orientation: "portrait",
 				start_url: "/",

@@ -1,6 +1,7 @@
 import { useEffect, useState } from "react";
 import type { ChecklistPick, JoinTokenResponse, LibraryView, Station, StationView, StatusResponse, VoiceProfile } from "../../../server/api.js";
 import { encodeQr, qrToSvg } from "../../../server/core/qr.js";
+import { ButtonRules } from "../components/ButtonRules.js";
 import { api, toApiError } from "../api.js";
 import { QrCode } from "../components/QrCode.js";
 import { Icon } from "../icons.js";
@@ -273,6 +274,9 @@ export function StationsTab({ s, reload, canEdit }: { s: StatusResponse; reload:
 									</label>
 								</div>
 								<div className="sm:col-span-2">
+									<ButtonRules buttons={st.buttons} canEdit={canEdit} onChange={(b) => pick(i, { buttons: b })} />
+								</div>
+								<div className="sm:col-span-2">
 									<TemplateRules rules={st.templates} templates={templates} canEdit={canEdit} onChange={(t) => pick(i, { templates: t })} />
 								</div>
 								<details className="rounded-lg border border-line sm:col-span-2">
@@ -440,7 +444,7 @@ function JoinPanel({ station, minted, base, setBase, canEdit, onMint, onRevoke }
 		const w = window.open("", "_blank");
 		if (!w) return;
 		const esc = (t: string) => t.replace(/[&<>]/g, (ch) => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;" })[ch] as string);
-		w.document.write(`<!doctype html><html><head><meta charset="utf-8"><title>${esc(label)}</title><style>@page{margin:2cm}body{font-family:system-ui,sans-serif;text-align:center;color:#000;background:#fff;margin:0;padding:2rem}h1{font-size:2.2rem;margin:0 0 .25rem}p{margin:.25rem 0;color:#333}svg{width:min(80vw,60vh);height:auto;margin:1.5rem auto}code{font-size:.8rem;color:#666;word-break:break-all}</style></head><body><h1>${esc(label)}</h1><p>Scan to open Flow Voice on this station</p>${svg}${codeText ? `<p>Or type the station code in the app</p><p style="font-size:3rem;font-weight:700;letter-spacing:.3em;margin:.5rem 0 1rem">${esc(codeText)}</p>` : ""}<p><code>${esc(url)}</code></p><script>window.onload=function(){window.print()}</script></body></html>`);
+		w.document.write(`<!doctype html><html><head><meta charset="utf-8"><title>${esc(label)}</title><style>@page{margin:2cm}body{font-family:Archivo,"Helvetica Neue",Arial,sans-serif;text-align:center;color:#06182D;background:#fff;margin:0;padding:2rem}h1{font-size:2.2rem;margin:0 0 .25rem}p{margin:.25rem 0;color:#5E6B78}svg{width:min(80vw,60vh);height:auto;margin:1.5rem auto}.logo{display:block;height:28px;width:auto;margin:0 auto 1.5rem}.code{font-family:"IBM Plex Mono",ui-monospace,Menlo,monospace;color:#06182D}code{font-size:.8rem;color:#5E6B78;word-break:break-all}</style></head><body><img class="logo" src="${location.origin}/logo.svg" alt="Maranics"><h1>${esc(label)}</h1><p>Scan to open Flow Voice on this station</p>${svg}${codeText ? `<p>Or type the station code in the app</p><p class="code" style="font-size:3rem;font-weight:600;letter-spacing:.3em;margin:.5rem 0 1rem">${esc(codeText)}</p>` : ""}<p><code>${esc(url)}</code></p><script>window.onload=function(){window.print()}</script></body></html>`);
 		w.document.close();
 	};
 

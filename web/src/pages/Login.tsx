@@ -3,6 +3,7 @@ import type { AuthProviderView, MeResponse } from "../../../server/api.js";
 import { api, AUTH_LOGIN_URL, toApiError, type ApiClientError } from "../api.js";
 import { versionLine } from "../build.js";
 import { navigate } from "../router.js";
+import { Logo } from "../components/Logo.js";
 
 const AUTH_ERROR_TEXT: Record<string, string> = {
 	provider_unavailable: "The identity provider could not be reached. Try again in a moment.",
@@ -46,14 +47,14 @@ export function LoginPage(p: { provider?: AuthProviderView; hubVersion?: string;
 	}, [auto]);
 
 	return (
-		<main className="flex min-h-screen items-center justify-center px-4 py-10">
+		<main className="dots-page flex min-h-screen items-center justify-center px-4 py-10">
 			<div className="w-full max-w-md">
-				<div className="mb-6 flex items-center gap-3">
-					<img src="/icon.svg" width={36} height={36} alt="" />
-					<div>
-						<h1 className="text-xl font-semibold tracking-tight">Flow Voice</h1>
-						<p className="text-sm text-fg-muted">Run Maranics Flow checklists by voice{p.vesselId ? ` — ${p.vesselId}` : ""}</p>
-					</div>
+				<div className="mb-6">
+					<Logo height={28} />
+					<h1 className="mt-5 text-2xl font-semibold tracking-tight">Flow Voice</h1>
+					<p className="mt-1 text-sm text-fg-muted">
+						Maranics Flow checklists, read and answered by voice.{p.vesselId ? <span className="mono"> {p.vesselId}</span> : null}
+					</p>
 				</div>
 				{p.notice && (
 					<p role="status" className="mb-4 rounded-lg border border-info/40 bg-info/10 px-3 py-2 text-sm text-info">

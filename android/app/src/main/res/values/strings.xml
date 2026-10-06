@@ -15,6 +15,16 @@
     <string name="code_help">The code is printed under the QR code on the station poster (Admin → Stations). The hub address must be set first.</string>
     <string name="code_bad">Enter the six digits of the station code.</string>
     <string name="join">Join</string>
+    <string name="menu_button">Bluetooth buttons…</string>
+    <string name="button_slot">Button %1$d: %2$s</string>
+    <string name="button_none">not set</string>
+    <string name="button_connected">%1$s (connected)</string>
+    <string name="button_away">%1$s (not in reach)</string>
+    <string name="button_find">Find the button (short list)</string>
+    <string name="button_find_all">Show all Bluetooth devices</string>
+    <string name="button_forget">Stop using this button</string>
+    <string name="button_failed">Bluetooth button: %1$s</string>
+    <string name="button_denied">The “Nearby devices” permission is needed to use a Bluetooth button.</string>
     <string name="menu_reload">Reload</string>
     <string name="menu_ptt_hint">Push-to-talk: hold the on-screen button, volume-up, or a headset button.</string>
     <string name="notification_channel">Voice session</string>

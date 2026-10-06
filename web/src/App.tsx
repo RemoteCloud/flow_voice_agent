@@ -1,6 +1,8 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import type { JoinResponse, MeResponse, SessionProbeResponse, Station } from "../../server/api.js";
+import type { StationButton } from "../../server/protocol.js";
 import { api, setUnauthorizedHandler, toApiError, type ApiClientError } from "./api.js";
+import { Logo } from "./components/Logo.js";
 import { Shell } from "./components/Shell.js";
 import { AppContext, type AppApi } from "./context.js";
 import { AdminPage } from "./pages/Admin.js";
@@ -130,6 +132,11 @@ export function App() {
 		location.replace(next);
 	}, []);
 
+	const saveButtons = useCallback(async (stationId: string, buttons: StationButton[] | undefined) => {
+		const res = await api.put<{ buttons: StationButton[] }>(`stations/${encodeURIComponent(stationId)}/buttons`, { buttons: buttons ?? [] });
+		setBoot((b) => (b ? { ...b, stations: (b.stations as Station[]).map((s) => (s.stationId === stationId ? { ...s, buttons: res.buttons.length ? res.buttons : undefined } : s)) } : b));
+	}, []);
+
 	const ctx = useMemo<AppApi | null>(
 		() =>
 			me && boot
@@ -139,10 +146,11 @@ export function App() {
 						refreshMe,
 						signOut,
 						setStation,
+						saveButtons,
 						stations: boot.stations as Station[],
 					}
 				: null,
-		[me, boot, refreshMe, signOut, setStation],
+		[me, boot, refreshMe, signOut, setStation, saveButtons],
 	);
 
 	if (route.page === "enroll") return <EnrollPage />;
@@ -180,7 +188,7 @@ function Splash({ text = "Flow Voice — contacting the hub…" }: { text?: stri
 	return (
 		<main className="flex min-h-screen items-center justify-center text-fg-muted" aria-busy="true">
 			<div className="flex items-center gap-3">
-				<img src="/icon.svg" width={28} height={28} alt="" className="motion-safe:animate-pulse" />
+				<Logo mark height={28} className="motion-safe:animate-pulse" />
 				<span>{text}</span>
 			</div>
 		</main>

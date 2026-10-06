@@ -5,6 +5,7 @@ import { api, credentialErrorText, toApiError } from "../api.js";
 import { useApp } from "../context.js";
 import { Icon, iconFor } from "../icons.js";
 import { Alert } from "../components/ui.js";
+import { ButtonSetup } from "../components/ButtonRules.js";
 import { useVoice, VoiceBar } from "../voice.js";
 import { versionLine } from "../build.js";
 
@@ -21,7 +22,7 @@ const OPEN_STATES = new Set<RunView["state"]>(["active", "paused", "pending"]);
  * for every checklist. Station chips only when the phone was not locked to a station by QR.
  */
 export function HomePage({ onOpenRun, mobile = true }: { onOpenRun: (runId: string) => void; mobile?: boolean }) {
-	const { me, stations, boot, refreshMe } = useApp();
+	const { me, stations, boot, refreshMe, saveButtons } = useApp();
 	const v = useVoice();
 	const [picks, setPicks] = useState<ChecklistPick[] | undefined>();
 	const [runs, setRuns] = useState<RunView[]>([]);
@@ -73,6 +74,7 @@ export function HomePage({ onOpenRun, mobile = true }: { onOpenRun: (runId: stri
 	const scan = () => window.FlowVoiceAndroid?.scanStation?.();
 	const station = stations.find((s) => s.stationId === me.stationId);
 	const [changing, setChanging] = useState(false);
+	const [buttonsOpen, setButtonsOpen] = useState(false);
 
 	// every client takes its station from the station link / QR code / six-digit code, never from a picker
 	if (!locked || !me.stationId || changing) {
@@ -100,11 +102,15 @@ export function HomePage({ onOpenRun, mobile = true }: { onOpenRun: (runId: stri
 
 	return (
 		<div className="space-y-4">
-			<div className="flex items-center justify-between gap-2">
+			{buttonsOpen && me.stationId && <ButtonSetup stationId={me.stationId} buttons={station?.buttons} onSave={saveButtons} onClose={() => setButtonsOpen(false)} />}
+			<div className="flex flex-wrap items-center justify-between gap-2">
 				<VoiceBar compact />
-				<div className="flex items-center gap-1">
+				<div className="flex flex-wrap items-center gap-1">
 					<button type="button" className="btn btn-sm btn-ghost" onClick={() => (canScan ? scan() : setChanging(true))}>
 						<Icon name="qr" size={14} /> Change station
+					</button>
+					<button type="button" className="btn btn-sm btn-ghost" onClick={() => setButtonsOpen(true)}>
+						Buttons
 					</button>
 					<button type="button" className="btn btn-sm btn-ghost" onClick={() => void load()} aria-label="Refresh the list">
 						Refresh

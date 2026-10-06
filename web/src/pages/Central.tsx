@@ -1,5 +1,6 @@
 import { useCallback, useEffect, useState } from "react";
 import { api, toApiError } from "../api.js";
+import { Logo } from "../components/Logo.js";
 import { useDayNight } from "../theme.js";
 import { TenantsTab } from "./AdminTenants.js";
 
@@ -45,7 +46,8 @@ export function Central() {
 		<div className="min-h-dvh bg-bg text-fg">
 			<header className="border-b border-line">
 				<div className="mx-auto flex max-w-4xl flex-wrap items-center gap-2 px-4 py-3">
-					<h1 className="min-w-0 flex-1 text-base font-semibold">Flow Voice · Central admin</h1>
+					<Logo height={20} />
+					<h1 className="min-w-0 flex-1 border-l border-line-strong pl-3 text-base font-semibold">Flow Voice · Central admin</h1>
 					<button type="button" className="btn btn-sm" onClick={toggle}>
 						{dark ? "Day" : "Night"}
 					</button>

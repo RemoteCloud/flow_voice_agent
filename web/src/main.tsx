@@ -3,6 +3,9 @@ import { createRoot } from "react-dom/client";
 import { registerSW } from "virtual:pwa-register";
 import { App } from "./App.js";
 import { Central } from "./pages/Central.js";
+import "@fontsource-variable/archivo/index.css";
+import "@fontsource/ibm-plex-mono/400.css";
+import "@fontsource/ibm-plex-mono/600.css";
 import "./index.css";
 import { applyTheme, readTheme } from "./theme.js";
 

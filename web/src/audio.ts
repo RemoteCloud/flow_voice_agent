@@ -45,7 +45,17 @@ declare global {
 			hasLocalStt(): boolean;
 			version(): string;
 			setTheme?(theme: "light" | "dark"): void;
+			/** Keys of the station's hardware buttons (comma-separated DOM `code` names): the app keeps them from the page and reports them through `flowVoiceButton`. */
+			setButtonKeys?(keys: string): void;
+			/** Pick the Bluetooth push-to-talk button for a slot (1–3) in the system chooser; the app remembers it and reconnects by itself. `all` = list every device, not only button-like ones. */
+			connectButtonSlot?(slot: number, all: boolean): void;
+			/** JSON `[{"slot": 1, "name": "...", "connected": true}, …]` of the app's Bluetooth buttons. */
+			buttonState?(): string;
 		};
+		/** A hardware button bound on this station went down / up (Android agent; browsers use key events). */
+		flowVoiceButton?: (key: string, down: boolean) => void;
+		/** One of the Android agent's Bluetooth push-to-talk buttons connected / went away: the new `buttonState()` JSON. */
+		flowVoiceButtonState?: (json: string) => void;
 		flowVoiceBridge?: {
 			onSpoken(promptId: string): void;
 			onTranscript(text: string, confidence: number, final: boolean): void;

@@ -14,6 +14,7 @@ import android.speech.SpeechRecognizer
 import android.speech.tts.TextToSpeech
 import android.speech.tts.UtteranceProgressListener
 import android.text.InputType
+import android.view.KeyCharacterMap
 import android.view.KeyEvent
 import android.view.View
 import android.webkit.CookieManager
@@ -27,12 +28,14 @@ import android.widget.EditText
 import android.widget.LinearLayout
 import android.widget.TextView
 import android.widget.Toast
+import androidx.activity.result.IntentSenderRequest
 import androidx.activity.result.contract.ActivityResultContracts
 import androidx.appcompat.app.AlertDialog
 import androidx.appcompat.app.AppCompatActivity
 import androidx.core.content.ContextCompat
 import com.journeyapps.barcodescanner.ScanContract
 import com.journeyapps.barcodescanner.ScanOptions
+import org.json.JSONArray
 import org.json.JSONObject
 import java.util.Locale
 
@@ -105,6 +108,63 @@ class MainActivity : AppCompatActivity() {
         } else saveHubUrl(url)
     }
 
+    /** Bluetooth push-to-talk buttons that are not keyboards (Zello-type), one per slot 1–3: picked once, remembered, see BleButton.kt. */
+    private val bleButtons by lazy {
+        (1..3).map { slot ->
+            BleButton(
+                this, slot,
+                onKey = { key, down -> js("window.flowVoiceButton&&window.flowVoiceButton(${q(key)},$down)") },
+                onState = { js("window.flowVoiceButtonState&&window.flowVoiceButtonState(${q(buttonStateJson())})") },
+                onError = { message -> runOnUiThread { Toast.makeText(this, getString(R.string.button_failed, message), Toast.LENGTH_LONG).show() } },
+            )
+        }
+    }
+    private fun buttonStateJson(): String = JSONArray(bleButtons.map { JSONObject().put("slot", it.slot).put("name", it.name).put("connected", it.connected) }).toString()
+
+    /** The slot the open chooser is picking for. */
+    private var choosingSlot = 0
+    private val buttonChooser = registerForActivityResult(ActivityResultContracts.StartIntentSenderForResult()) { result ->
+        val button = bleButtons.getOrNull(choosingSlot - 1) ?: return@registerForActivityResult
+        if (result.resultCode == RESULT_OK) button.onChosen(result.data) { mac -> bleButtons.any { it !== button && it.sameDevice(mac) } }
+    }
+    /** What to do once "Nearby devices" is granted: open the chooser (asked from the menu) or just reconnect (app start). */
+    private var buttonPermissionThen: (() -> Unit)? = null
+    private val buttonPermission = registerForActivityResult(ActivityResultContracts.RequestPermission()) { granted ->
+        if (granted) buttonPermissionThen?.invoke() else Toast.makeText(this, R.string.button_denied, Toast.LENGTH_LONG).show()
+        buttonPermissionThen = null
+    }
+
+    private fun withButtonPermission(then: () -> Unit) {
+        if (bleButtons[0].allowed()) then()
+        else {
+            buttonPermissionThen = then
+            buttonPermission.launch(Manifest.permission.BLUETOOTH_CONNECT)
+        }
+    }
+
+    private fun chooseButton(slot: Int, all: Boolean) = withButtonPermission {
+        val button = bleButtons.getOrNull(slot - 1) ?: return@withButtonPermission
+        choosingSlot = slot
+        button.choose(all) { sender -> buttonChooser.launch(IntentSenderRequest.Builder(sender).build()) }
+    }
+
+    /** Menu "Bluetooth buttons…": the three slots, then what to do with the one tapped. */
+    private fun showButtons() {
+        val items = bleButtons.map { b -> getString(R.string.button_slot, b.slot, if (b.name.isEmpty()) getString(R.string.button_none) else if (b.connected) getString(R.string.button_connected, b.name) else getString(R.string.button_away, b.name)) }.toTypedArray()
+        AlertDialog.Builder(this).setTitle(R.string.menu_button).setItems(items) { _, which ->
+            val b = bleButtons[which]
+            val actions = mutableListOf(getString(R.string.button_find), getString(R.string.button_find_all))
+            if (b.name.isNotEmpty()) actions.add(getString(R.string.button_forget))
+            AlertDialog.Builder(this).setTitle(items[which]).setItems(actions.toTypedArray()) { _, a ->
+                when (a) {
+                    0 -> chooseButton(b.slot, all = false)
+                    1 -> chooseButton(b.slot, all = true)
+                    2 -> b.forget()
+                }
+            }.show()
+        }.show()
+    }
+
     @SuppressLint("SetJavaScriptEnabled")
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
@@ -162,6 +222,9 @@ class MainActivity : AppCompatActivity() {
         micGranted = ContextCompat.checkSelfPermission(this, Manifest.permission.RECORD_AUDIO) == PackageManager.PERMISSION_GRANTED
         if (!micGranted) micPermission.launch(Manifest.permission.RECORD_AUDIO)
         if (Build.VERSION.SDK_INT >= 33 && ContextCompat.checkSelfPermission(this, Manifest.permission.POST_NOTIFICATIONS) != PackageManager.PERMISSION_GRANTED) notifPermission.launch(Manifest.permission.POST_NOTIFICATIONS)
+
+        // a button picked earlier is connected again by itself (the permission was granted when it was picked)
+        for (b in bleButtons) if (b.name.isNotEmpty()) b.connect()
 
         if (savedInstanceState == null) load() else web.restoreState(savedInstanceState)
     }
@@ -266,15 +329,70 @@ class MainActivity : AppCompatActivity() {
     }
 
     private fun showMenu() {
-        val items = arrayOf(getString(R.string.menu_hub), getString(R.string.menu_scan), getString(R.string.menu_code), getString(R.string.menu_reload), getString(R.string.menu_ptt_hint))
+        val items = arrayOf(getString(R.string.menu_hub), getString(R.string.menu_scan), getString(R.string.menu_code), getString(R.string.menu_button), getString(R.string.menu_reload), getString(R.string.menu_ptt_hint))
         AlertDialog.Builder(this).setItems(items) { _, which ->
             when (which) {
                 0 -> askHubUrl(first = false)
                 1 -> startScan()
                 2 -> askStationCode()
-                3 -> web.reload()
+                3 -> showButtons()
+                4 -> web.reload()
             }
         }.show()
+    }
+
+    // ---- station buttons (Admin → Stations → Buttons): a Bluetooth / USB button is a keyboard to Android.
+    /** Keys the station bound to an action, by DOM `code` name; set by the page (`setButtonKeys`). */
+    @Volatile private var buttonKeys: Set<String> = emptySet()
+
+    /**
+     * Bound keys go to the page as button presses before the WebView (Enter, arrows) or the push-to-talk keys below
+     * (volume-up) can take them. The on-screen keyboard is left alone, and so is everything while no key is bound.
+     */
+    override fun dispatchKeyEvent(event: KeyEvent): Boolean {
+        if (buttonKeys.isEmpty() || event.deviceId == KeyCharacterMap.VIRTUAL_KEYBOARD) return super.dispatchKeyEvent(event)
+        val name = buttonKeyName(event.keyCode)
+        // "*" = a button is being set up on this device (Home → Buttons): every hardware key goes to the page
+        if (name == null || (name !in buttonKeys && "*" !in buttonKeys)) return super.dispatchKeyEvent(event)
+        if (event.action == KeyEvent.ACTION_DOWN && event.repeatCount == 0) js("window.flowVoiceButton&&window.flowVoiceButton(${q(name)},true)")
+        else if (event.action == KeyEvent.ACTION_UP) js("window.flowVoiceButton&&window.flowVoiceButton(${q(name)},false)")
+        return true
+    }
+
+    /** Android key code → the name a browser gives the same key (`KeyboardEvent.code`), so one station setting fits both. */
+    private fun buttonKeyName(keyCode: Int): String? = when (keyCode) {
+        KeyEvent.KEYCODE_BACK, KeyEvent.KEYCODE_HOME, KeyEvent.KEYCODE_POWER, KeyEvent.KEYCODE_UNKNOWN -> null
+        KeyEvent.KEYCODE_ENTER, KeyEvent.KEYCODE_DPAD_CENTER -> "Enter"
+        KeyEvent.KEYCODE_NUMPAD_ENTER -> "NumpadEnter"
+        KeyEvent.KEYCODE_SPACE -> "Space"
+        KeyEvent.KEYCODE_TAB -> "Tab"
+        KeyEvent.KEYCODE_ESCAPE -> "Escape"
+        KeyEvent.KEYCODE_DEL -> "Backspace"
+        KeyEvent.KEYCODE_FORWARD_DEL -> "Delete"
+        KeyEvent.KEYCODE_DPAD_UP -> "ArrowUp"
+        KeyEvent.KEYCODE_DPAD_DOWN -> "ArrowDown"
+        KeyEvent.KEYCODE_DPAD_LEFT -> "ArrowLeft"
+        KeyEvent.KEYCODE_DPAD_RIGHT -> "ArrowRight"
+        KeyEvent.KEYCODE_PAGE_UP -> "PageUp"
+        KeyEvent.KEYCODE_PAGE_DOWN -> "PageDown"
+        KeyEvent.KEYCODE_MOVE_HOME -> "Home"
+        KeyEvent.KEYCODE_MOVE_END -> "End"
+        KeyEvent.KEYCODE_VOLUME_UP -> "AudioVolumeUp"
+        KeyEvent.KEYCODE_VOLUME_DOWN -> "AudioVolumeDown"
+        KeyEvent.KEYCODE_VOLUME_MUTE -> "AudioVolumeMute"
+        KeyEvent.KEYCODE_MEDIA_PLAY_PAUSE -> "MediaPlayPause"
+        KeyEvent.KEYCODE_MEDIA_PLAY -> "MediaPlay"
+        KeyEvent.KEYCODE_MEDIA_PAUSE -> "MediaPause"
+        KeyEvent.KEYCODE_MEDIA_STOP -> "MediaStop"
+        KeyEvent.KEYCODE_MEDIA_NEXT -> "MediaTrackNext"
+        KeyEvent.KEYCODE_MEDIA_PREVIOUS -> "MediaTrackPrevious"
+        KeyEvent.KEYCODE_HEADSETHOOK -> "HeadsetHook"
+        KeyEvent.KEYCODE_CAMERA -> "Camera"
+        in KeyEvent.KEYCODE_A..KeyEvent.KEYCODE_Z -> "Key${'A' + (keyCode - KeyEvent.KEYCODE_A)}"
+        in KeyEvent.KEYCODE_0..KeyEvent.KEYCODE_9 -> "Digit${keyCode - KeyEvent.KEYCODE_0}"
+        in KeyEvent.KEYCODE_NUMPAD_0..KeyEvent.KEYCODE_NUMPAD_9 -> "Numpad${keyCode - KeyEvent.KEYCODE_NUMPAD_0}"
+        in KeyEvent.KEYCODE_F1..KeyEvent.KEYCODE_F12 -> "F${keyCode - KeyEvent.KEYCODE_F1 + 1}"
+        else -> "Android$keyCode"
     }
 
     // ---- hardware push-to-talk: volume-up or a headset button, held while speaking
@@ -310,6 +428,7 @@ class MainActivity : AppCompatActivity() {
     }
 
     override fun onDestroy() {
+        for (b in bleButtons) b.close()
         vosk.shutdown()
         recognizer?.destroy()
         tts?.shutdown()
@@ -348,6 +467,20 @@ class MainActivity : AppCompatActivity() {
                 window.decorView.systemUiVisibility = if (dark) 0 else View.SYSTEM_UI_FLAG_LIGHT_STATUS_BAR
             }
         }
+
+        /** The station's hardware buttons: the keys (comma-separated DOM `code` names) to hand to the page as `flowVoiceButton(key, down)`. "" = none. */
+        @JavascriptInterface
+        fun setButtonKeys(keys: String) {
+            buttonKeys = keys.split(',').map { it.trim() }.filter { it.isNotEmpty() }.toSet()
+        }
+
+        /** Pick the Bluetooth push-to-talk button for a slot (1–3) in the system chooser; it is remembered and reconnected by itself. */
+        @JavascriptInterface
+        fun connectButtonSlot(slot: Int, all: Boolean) = runOnUiThread { chooseButton(slot, all) }
+
+        /** The remembered Bluetooth buttons, for the page's "Connect button" controls. */
+        @JavascriptInterface
+        fun buttonState(): String = buttonStateJson()
 
         @JavascriptInterface
         fun version(): String = BuildConfig.VERSION_NAME

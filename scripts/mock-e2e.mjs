@@ -698,6 +698,54 @@ try {
 	await api("POST", `runs/${extRun.runId}/abandon`);
 	assert.equal((await api("PUT", "library/entry", { templateId: "tpl-engine", step: { mode: "auto" } })).body.templates[0].step.mode, "auto");
 
+	// hardware buttons (Bluetooth / USB keys): up to three per station, the hub decides what a press means
+	step = "buttons";
+	const withButtons = (await api("GET", "stations")).body.map(({ endpoint: _e, activeRun: _r, join: _j, ...s }) =>
+		s.stationId === "bridge-01" ? { ...s, buttons: [{ key: "Enter", action: "accept" }, { key: "Enter", action: "next" }, { key: "Page Down", action: "override" }, { key: "ArrowRight", action: "pause" }, { key: "KeyX", action: "repeat" }, { key: "KeyY", action: "explode" }] } : s,
+	);
+	assert.equal((await api("PUT", "stations", withButtons)).status, 200);
+	assert.deepEqual((await api("GET", "stations")).body.find((st) => st.stationId === "bridge-01").buttons, [{ key: "Enter", action: "accept" }, { key: "PageDown", action: "override" }, { key: "ArrowRight", action: "pause" }], "three buttons, one action per key, clean key names");
+	mark = spoken.length;
+	listenOpen = undefined;
+	const btnRun = (await api("POST", "runs", { templateId: "tpl-engine", stationId: "bridge-01" })).body;
+	const btnItem = async (dataId) => (await api("GET", `runs/${btnRun.runId}`)).body.items.find((i) => i.dataId === dataId);
+	await waitFor(() => spoken.slice(mark).some((s) => s.includes("Check lube oil pressure")), "button run first item");
+	assert.equal((await api("POST", `runs/${btnRun.runId}/button`, { action: "explode" })).status, 400);
+	// accept on a checkbox: checked, no read-back question, on to the next item
+	assert.equal((await api("POST", `runs/${btnRun.runId}/button`, { action: "accept" })).status, 200);
+	await waitFor(async () => (await btnItem("ER/Main/LubeOil")).state === "answered", "accept button answers the open item");
+	await waitFor(() => spoken.slice(mark).some((s) => s.includes("Check cooling water temp")), "next item read after accept");
+	// accept on a number: a button cannot stand for a value, the item stays open with the hint
+	await api("POST", `runs/${btnRun.runId}/button`, { action: "accept" });
+	await waitFor(() => spoken.slice(mark).some((s) => s.startsWith("Say a number")), "hint when accept has no value to give");
+	assert.notEqual((await btnItem("ER/Main/CoolingTemp")).state, "answered");
+	// override: the item is skipped and the run moves on
+	await api("POST", `runs/${btnRun.runId}/button`, { action: "override" });
+	await waitFor(() => spoken.slice(mark).some((s) => s.includes("Log running hours")), "next item read after override");
+	assert.equal((await btnItem("ER/Main/CoolingTemp")).state, "skipped");
+	// accept confirms a read-back
+	await say("forty two");
+	await waitFor(async () => !!(await api("GET", `runs/${btnRun.runId}`)).body.pendingReadback, "read-back waits for confirm");
+	await api("POST", `runs/${btnRun.runId}/button`, { action: "accept" });
+	await waitFor(async () => (await btnItem("ER/Main/RunningHours")).state === "answered", "accept button confirms the read-back");
+	assert.equal((await btnItem("ER/Main/RunningHours")).value, "42");
+	// pause / resume on one button
+	assert.equal((await api("POST", `runs/${btnRun.runId}/button`, { action: "pause" })).body.state, "paused");
+	assert.equal((await api("POST", `runs/${btnRun.runId}/button`, { action: "pause" })).body.state, "active");
+	assert.ok((await api("GET", "audit?limit=200")).body.some((a) => a.kind === "button" && a.text === "override"), "presses are audited");
+	await api("POST", `runs/${btnRun.runId}/abandon`);
+	// set on the device itself (Home → Buttons): one station's buttons, without touching the rest of the station
+	const devBtn = await api("PUT", "stations/bridge-01/buttons", { buttons: [{ key: "Ble1FFE101", action: "talk" }, { key: "Ble2FFE101", action: "accept" }, { key: "x y", action: "nope" }] });
+	assert.equal(devBtn.status, 200, JSON.stringify(devBtn.body));
+	assert.deepEqual(devBtn.body.buttons, [{ key: "Ble1FFE101", action: "talk" }, { key: "Ble2FFE101", action: "accept" }]);
+	const devSt = (await api("GET", "stations")).body.find((st) => st.stationId === "bridge-01");
+	assert.deepEqual(devSt.buttons, devBtn.body.buttons, "saved on the station");
+	assert.equal(devSt.askNext, true, "the rest of the station is untouched");
+	assert.equal((await api("PUT", "stations/no-such/buttons", { buttons: [] })).status, 404);
+	assert.deepEqual((await api("PUT", "stations/bridge-01/buttons", { buttons: [] })).body.buttons, []);
+	await api("PUT", "stations", withButtons.map(({ buttons: _b, ...s }) => s));
+	assert.equal((await api("GET", "stations")).body.find((st) => st.stationId === "bridge-01").buttons, undefined);
+
 	// answer words that must come together ("a + b"): every part heard, in any order — and they say which item was answered
 	step = "words together";
 	const comboWords = (await api("PUT", "library/entry", { templateId: "tpl-engine", words: { "d:ER/Main/LubeOil": ["normal"], "d:ER/Aux/Gen1": ["running+generator"] } })).body.templates[0].words;

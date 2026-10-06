@@ -1,7 +1,8 @@
 <?xml version="1.0" encoding="utf-8"?>
 <resources>
-    <color name="bg">#FFFFFF</color>
-    <color name="bg_dark">#0A0F19</color>
-    <color name="accent">#5FB0FF</color>
-    <color name="ic_launcher_background">#0A0F19</color>
+    <!-- Maranics brand: surface #F6F7F8 is the ground, navy #06182D the weight, #007D8F the cyan that may be read -->
+    <color name="bg">#F6F7F8</color>
+    <color name="bg_dark">#06182D</color>
+    <color name="accent">#007D8F</color>
+    <color name="ic_launcher_background">#06182D</color>
 </resources>

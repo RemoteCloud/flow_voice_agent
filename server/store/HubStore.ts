@@ -5,7 +5,7 @@
  */
 import { mkdirSync, readFileSync, readdirSync, renameSync, statSync, writeFileSync, existsSync } from "node:fs";
 import path from "node:path";
-import type { RunItem, RunState, ExchangeState, TriggerSpec, VoiceMode } from "../protocol.js";
+import type { RunItem, RunState, ExchangeState, StationButton, TriggerSpec, VoiceMode } from "../protocol.js";
 
 export interface HubUser {
 	sub: string;
@@ -75,6 +75,12 @@ export interface Station {
 	voiceMode?: VoiceMode;
 	/** The crew may change `voiceMode` from the run screen. Off (default) = admin decides. */
 	voiceModeCrew?: boolean;
+	/**
+	 * Hardware buttons (Bluetooth / USB, seen as keyboard keys by the device): up to three, each one key → one action
+	 * (accept the item, override it, next item …). The client listens for the keys, the hub decides what a press means
+	 * (`RunEngine.button`). Portable (stations.json).
+	 */
+	buttons?: StationButton[];
 	/**
 	 * Where a browser on this station recognises speech. `device` (default) = the browser's own recogniser
 	 * (Chrome / Edge: a cloud service, weak on ship terms and slow to fail on Windows). `hub` = the microphone is

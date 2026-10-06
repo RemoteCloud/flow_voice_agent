@@ -8,7 +8,7 @@ import { Hono, type Context } from "hono";
 import QRCode from "qrcode";
 import { deleteCookie, getCookie, setCookie } from "hono/cookie";
 import type { ApiError, EnrollPollResponse, EnrollRequest, EnrollResponse, HealthResponse, JoinRequest, JoinResponse, JoinTokenResponse, LibraryView, LogoutResponse, MeResponse, SessionProbeResponse, StationView, StatusResponse } from "../api.js";
-import { isJoinToken, normalizeJoinCode, type TriggerSpec, type VoiceMode } from "../protocol.js";
+import { BUTTON_ACTIONS, isJoinToken, normalizeJoinCode, stationButtons, type TriggerSpec, type VoiceMode } from "../protocol.js";
 import type { HubEnv } from "../env.js";
 import type { Logger } from "../core/log.js";
 import type { VoiceRecorder } from "../speech/capture.js";
@@ -404,6 +404,15 @@ export function createApp(deps: AppDeps): Hono {
 	api.post("/runs/:id/proceed", (c) => handle(c, async () => c.json(await engine.proceed(c.req.param("id"), "screen"))));
 	api.post("/runs/:id/pause", (c) => handle(c, async () => c.json(await engine.pause(c.req.param("id")))));
 	api.post("/runs/:id/resume", (c) => handle(c, async () => c.json(await engine.resume(c.req.param("id"), c.get("sessionRow")))));
+	// a hardware button of the station was pressed (Admin → Stations → Buttons): the hub decides what it means right now
+	api.post("/runs/:id/button", (c) =>
+		handle(c, async () => {
+			const body = (await c.req.json().catch(() => ({}))) as { action?: unknown };
+			const action = BUTTON_ACTIONS.find((a) => a === body.action);
+			if (!action) return fail(c, 400, "BAD_REQUEST", `action must be one of: ${BUTTON_ACTIONS.join(", ")}`);
+			return c.json(await engine.button(c.req.param("id"), action, c.get("sessionRow")));
+		}),
+	);
 	api.post("/runs/:id/complete", (c) => handle(c, async () => c.json(await engine.complete(c.req.param("id"), c.get("sessionRow")))));
 	api.post("/runs/:id/discard", (c) =>
 		handle(c, async () => {
@@ -501,7 +510,7 @@ export function createApp(deps: AppDeps): Hono {
 		const body = (await c.req.json().catch(() => undefined)) as Station[] | undefined;
 		if (!Array.isArray(body) || !body.every((s) => isObj(s) && str(s.stationId) && str(s.name))) return fail(c, 400, "BAD_REQUEST", "array of stations expected");
 		await store.update((d) => {
-			d.stations = body.map((s) => ({ stationId: s.stationId, name: s.name, location: str(s.location), defaultProfile: s.defaultProfile ?? null, language: s.language || "en", audioPolicy: s.audioPolicy === "open" ? "open" : "ptt", autoStartAllowed: !!s.autoStartAllowed, verbosity: s.verbosity ?? "full", voiceActions: s.voiceActions !== false, holdToAnswer: s.holdToAnswer === true, askNext: s.askNext !== false, voiceMode: voiceMode(s.voiceMode), voiceModeCrew: s.voiceModeCrew === true, recordVoice: s.recordVoice === true, speech: s.speech === "hub" ? "hub" : undefined, templates: templateRules(s.templates) }));
+			d.stations = body.map((s) => ({ stationId: s.stationId, name: s.name, location: str(s.location), defaultProfile: s.defaultProfile ?? null, language: s.language || "en", audioPolicy: s.audioPolicy === "open" ? "open" : "ptt", autoStartAllowed: !!s.autoStartAllowed, verbosity: s.verbosity ?? "full", voiceActions: s.voiceActions !== false, holdToAnswer: s.holdToAnswer === true, askNext: s.askNext !== false, voiceMode: voiceMode(s.voiceMode), voiceModeCrew: s.voiceModeCrew === true, recordVoice: s.recordVoice === true, speech: s.speech === "hub" ? "hub" : undefined, buttons: stationButtons(s.buttons), templates: templateRules(s.templates) }));
 			for (const id of Object.keys(d.stationJoins)) if (!d.stations.some((s) => s.stationId === id)) delete d.stationJoins[id];
 		});
 		await ensureJoins(c.get("sessionRow").sub);
@@ -529,6 +538,25 @@ export function createApp(deps: AppDeps): Hono {
 		// the run screens of that station follow at once
 		for (const r of store.get().runs) if (r.stationId === id && (r.state === "active" || r.state === "paused")) deps.gateway.pushRun(id, engine.toView(r));
 		return c.json(stationViews(isAdminCtx(c)).find((s) => s.stationId === id));
+	});
+
+	/**
+	 * The station's hardware buttons, set on the device itself (Home → Buttons): admins always, and any session that
+	 * is bound to this station — the buttons are connected to that device, so that is where they are set up.
+	 */
+	api.put("/stations/:id/buttons", async (c) => {
+		const id = c.req.param("id");
+		if (!store.get().stations.some((s) => s.stationId === id)) return fail(c, 404, "STATION_NOT_FOUND", "unknown station");
+		const session = c.get("sessionRow");
+		if (!isAdminCtx(c) && session?.stationId !== id) return fail(c, 403, "FORBIDDEN", "only a device on this station can set its buttons");
+		const body = (await c.req.json().catch(() => ({}))) as { buttons?: unknown };
+		const buttons = stationButtons(body.buttons);
+		await store.update((d) => {
+			const st = d.stations.find((s) => s.stationId === id);
+			if (st) st.buttons = buttons;
+			d.audit.push({ at: new Date(deps.now()).toISOString(), kind: "station.buttons", stationId: id, sub: session?.sub, text: (buttons ?? []).map((b) => `${b.key || "?"}=${b.action}`).join(" ") });
+		});
+		return c.json({ stationId: id, buttons: buttons ?? [] });
 	});
 
 	// ----- station QR join tokens (admin). The token is returned once; only its hash is kept.

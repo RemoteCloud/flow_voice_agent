@@ -7,6 +7,7 @@ import { Icon } from "../icons.js";
 import { navigate } from "../router.js";
 import { LanguageSelect, STATE_TEXT, useVoice, type VoiceApi } from "../voice.js";
 import { Alert, joinNames, RUN_STATE_TEXT } from "../components/ui.js";
+import { BleButtonLink } from "../components/BleButtonLink.js";
 
 /** `mobile` (the Android agent): current item, mic, the few run buttons, items behind a toggle. No typed input, no hands-free switch, no event log. */
 export function RunPage({ runId, mobile = false }: { runId: string; mobile?: boolean }) {
@@ -238,6 +239,7 @@ export function RunPage({ runId, mobile = false }: { runId: string; mobile?: boo
 									Voice off
 								</button>
 							)}
+							<BleButtonLink buttons={stations.find((s) => s.stationId === run.stationId)?.buttons} className="btn" />
 							<button type="button" className="btn btn-ghost ml-auto" onClick={() => navigate({ page: "picker" })}>
 								Back to checklists
 							</button>

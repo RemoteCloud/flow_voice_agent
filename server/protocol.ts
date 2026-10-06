@@ -85,6 +85,72 @@ export interface TriggerSpec {
 /** How a station answers: the hub asking item by item, the crew speaking trigger words, or both at once. */
 export type VoiceMode = "prompt" | "trigger" | "both";
 
+/**
+ * Hardware buttons of a station (Admin → Stations → Buttons): a Bluetooth or USB button that the computer or tablet
+ * sees as a keyboard key. Up to three, each bound to one action. `key` is the key the button sends, by its DOM
+ * `KeyboardEvent.code` name ("Enter", "PageDown", "AudioVolumeUp"); the Android agent maps its key codes to the same
+ * names, so one setting works on a laptop and a tablet. "" = not bound to a key yet.
+ */
+export const BUTTON_ACTIONS = ["accept", "no", "override", "next", "back", "repeat", "talk", "pause"] as const;
+export type ButtonAction = (typeof BUTTON_ACTIONS)[number];
+export const MAX_STATION_BUTTONS = 3;
+export interface StationButton {
+	key: string;
+	action: ButtonAction;
+}
+
+/** The key name a button is stored under: letters and digits of the DOM `code` (or `key` when a device sends no code). */
+export function buttonKeyName(code: string | undefined, key?: string): string {
+	return (code || key || "").replace(/[^A-Za-z0-9]/g, "").slice(0, 40);
+}
+
+/**
+ * Bluetooth push-to-talk buttons (Zello-type) are not keyboards: they report a press as a notification on one of
+ * their own GATT characteristics. Such a press gets a key name too: "Ble" + the slot the button is connected in on
+ * that device (1–3; three buttons of the same make send the same bytes, the slot tells them apart) + the
+ * characteristic's short id (16-bit "FFE1", else the first eight hex digits) + the first bytes as hex, e.g.
+ * "Ble1FFE101". The browser (Web Bluetooth) and the Android agent build the same name, so a button learned on a
+ * laptop works on a tablet when it sits in the same slot there. Whatever the same characteristic sends next
+ * (usually "00") is the release.
+ */
+export const BLE_KEY_PREFIX = "Ble";
+export const BLE_BUTTON_SLOTS = 3;
+export function bleKeyName(slot: number, characteristicUuid: string, bytes: ArrayLike<number>): string {
+	const u = characteristicUuid.toLowerCase();
+	const short = /^0000[0-9a-f]{4}-0000-1000-8000-00805f9b34fb$/.test(u) ? u.slice(4, 8) : u.replace(/[^0-9a-f]/g, "").slice(0, 8);
+	let hex = "";
+	for (let i = 0; i < Math.min(bytes.length, 6); i++) hex += (bytes[i]! & 0xff).toString(16).padStart(2, "0");
+	return `${BLE_KEY_PREFIX}${slot}${`${short}${hex}`.toUpperCase()}`;
+}
+/** A payload of only zero bytes is the button being let go ("01" down, "00" up), never a key of its own. */
+export function bleIsRelease(bytes: ArrayLike<number>): boolean {
+	if (!bytes.length) return false;
+	for (let i = 0; i < bytes.length; i++) if (bytes[i] !== 0) return false;
+	return true;
+}
+/** The slot (1–3) a Bluetooth key belongs to; undefined for a keyboard key. */
+export function bleKeySlot(key: string): number | undefined {
+	const m = /^Ble([1-3])/.exec(key);
+	return m ? Number(m[1]) : undefined;
+}
+
+/** What the hub keeps of a station's buttons: known actions, clean key names, a key bound only once, at most three. */
+export function stationButtons(v: unknown): StationButton[] | undefined {
+	if (!Array.isArray(v)) return undefined;
+	const out: StationButton[] = [];
+	for (const b of v) {
+		if (typeof b !== "object" || b === null) continue;
+		const { key, action } = b as { key?: unknown; action?: unknown };
+		const a = BUTTON_ACTIONS.find((x) => x === action);
+		if (!a) continue;
+		const k = buttonKeyName(typeof key === "string" ? key : "");
+		if (k && out.some((o) => o.key === k)) continue;
+		out.push({ key: k, action: a });
+		if (out.length >= MAX_STATION_BUTTONS) break;
+	}
+	return out.length ? out : undefined;
+}
+
 export interface RunView {
 	runId: string;
 	stationId: string;
