@@ -102,6 +102,8 @@ npm run dev:maranics  # the fake alone
 npm run mock          # end-to-end (needs npm run build first)
 npm run check         # typecheck + smoke + build
 cd android && ./gradlew assembleDebug   # APK → android/app/build/outputs/apk/debug/
+# GitHub Actions (.github/workflows/android.yml) builds the APK on every push to main touching android/ and
+# keeps it on the rolling pre-release "android-latest"; a tag android-<ver> makes its own release.
 docker compose -f deploy/docker-compose.yml up -d --build
 ```
 
