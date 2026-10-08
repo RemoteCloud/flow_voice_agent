@@ -7,7 +7,7 @@
  * over Bluetooth LE (`ble.ts`) under a key name of their own ("BleFFE101").
  */
 import { useEffect, useRef } from "react";
-import { BLE_KEY_PREFIX, bleKeySlot, buttonKeyName, type ButtonAction, type StationButton } from "../../server/protocol.js";
+import { BLE_KEY_PREFIX, bleKeySlot, buttonKeyName, buttonPresses, type ButtonAction, type StationButton } from "../../server/protocol.js";
 import { onBleKey } from "./ble.js";
 import { parseRoute } from "./router.js";
 
@@ -93,22 +93,14 @@ export function useStationButtons(buttons: StationButton[] | undefined, onButton
 		});
 	}, [waiting]);
 	const bound = (buttons ?? []).filter((b) => b.key);
-	const sig = bound.map((b) => `${b.key}=${b.action}`).join(",");
+	const sig = JSON.stringify(bound);
 	useEffect(() => {
-		if (!sig) return;
-		const map = new Map(sig.split(",").map((p) => p.split("=") as [string, ButtonAction]));
+		const list = JSON.parse(sig) as StationButton[];
+		if (!list.length) return;
 		const off = () => learning || parseRoute(location.hash).page === "admin";
-		const held = new Set<string>();
-		const fire = (key: string, down: boolean): boolean => {
-			const action = map.get(key);
-			if (!action) return false;
-			if (down) {
-				if (held.has(key)) return true; // the key repeats while it is held
-				held.add(key);
-			} else if (!held.delete(key)) return true;
-			cb.current(action, down);
-			return true;
-		};
+		// one press, two quick presses or held down: `buttonPresses` tells them apart and runs the action for each
+		const reader = buttonPresses(list, (action, down) => cb.current(action, down), { set: (fn, ms) => window.setTimeout(fn, ms), clear: (t) => window.clearTimeout(t as number), now: () => Date.now() });
+		const fire = reader.press;
 		const onKey = (e: KeyboardEvent) => {
 			if (off() || typing() || e.ctrlKey || e.altKey || e.metaKey) return;
 			if (!fire(buttonKeyName(e.code, e.key), e.type === "keydown")) return;
@@ -123,12 +115,13 @@ export function useStationButtons(buttons: StationButton[] | undefined, onButton
 		const offBle = onBleKey((key, down) => {
 			if (!off()) fire(key, down);
 		});
-		boundKeys = [...map.keys()].filter((k) => !k.startsWith(BLE_KEY_PREFIX)).join(",");
+		boundKeys = list.map((b) => b.key).filter((k) => !k.startsWith(BLE_KEY_PREFIX)).join(",");
 		pushKeys();
 		return () => {
 			window.removeEventListener("keydown", onKey, true);
 			window.removeEventListener("keyup", onKey, true);
 			offBle();
+			reader.stop();
 			boundKeys = "";
 			pushKeys();
 		};

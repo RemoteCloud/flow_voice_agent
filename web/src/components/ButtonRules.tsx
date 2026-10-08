@@ -1,8 +1,9 @@
 import { useEffect, useRef, useState } from "react";
-import { BUTTON_ACTIONS, MAX_STATION_BUTTONS, buttonKeyName, type ButtonAction, type StationButton } from "../../../server/protocol.js";
-import { onBleKey } from "../ble.js";
+import { BUTTON_ACTIONS, BUTTON_HOLD_MS, MAX_STATION_BUTTONS, bleKeySlot, buttonKeyName, type ButtonAction, type StationButton } from "../../../server/protocol.js";
+import { onBleKey, useBleButton } from "../ble.js";
 import { BUTTON_ACTION_TEXT, COMMON_BUTTON_KEYS, buttonKeyText, buttonPanelOpen, setButtonLearning } from "../buttons.js";
 import { BleButtonLink } from "./BleButtonLink.js";
+import { plural } from "./ui.js";
 
 /**
  * Per station: up to three hardware buttons (Bluetooth or USB). A button shows up as a keyboard key on the computer
@@ -11,8 +12,26 @@ import { BleButtonLink } from "./BleButtonLink.js";
 export function ButtonRules({ buttons, canEdit, onChange, device = false }: { buttons: StationButton[] | undefined; canEdit: boolean; onChange: (b: StationButton[] | undefined) => void; /** Shown on the device itself (Home → Buttons) instead of in Admin. */ device?: boolean }) {
 	const list = buttons ?? [];
 	const [learning, setLearning] = useState<number | undefined>();
+	// On the device (Home → Buttons) only the buttons that are added to this device: a Bluetooth button whose slot has
+	// nothing paired here belongs to another tablet. Keyboard-type keys and rows still waiting for a press always show.
+	const ble = useBleButton();
+	const [showAll, setShowAll] = useState(false);
+	const here = (b: StationButton) => {
+		const slot = b.key ? bleKeySlot(b.key) : undefined;
+		const s = slot ? ble.slots[slot - 1] : undefined;
+		return !device || showAll || !slot || !!s?.name || !!s?.connected;
+	};
+	const elsewhere = list.filter((b) => !here(b)).length;
 	const put = (next: StationButton[]) => onChange(next.length ? next : undefined);
-	const set = (i: number, patch: Partial<StationButton>) => put(list.map((b, k) => (k === i ? { ...b, ...patch } : b)));
+	const set = (i: number, patch: Partial<StationButton>) =>
+		put(
+			list.map((b, k) => {
+				if (k !== i) return b;
+				const { double, hold, ...rest } = { ...b, ...patch };
+				// hold to talk takes the whole press: such a button does nothing else
+				return rest.action === "talk" ? rest : { ...rest, ...(double && { double }), ...(hold && { hold }) };
+			}),
+		);
 	// A connected push-to-talk button pressed while a row still has no key: that row takes it, no "Press the button" needed
 	const fill = useRef<(key: string) => void>(() => {});
 	fill.current = (key) => {
@@ -122,15 +141,15 @@ export function ButtonRules({ buttons, canEdit, onChange, device = false }: { bu
 				{last ? (
 					<span className={pressed.length ? "font-medium text-ok" : "text-fg-muted"}>
 						{pressed.length ? "Pressed now" : "Last pressed"}: {buttonKeyText(last)}
-						{lastRow >= 0 ? ` → button ${lastRow + 1}, ${BUTTON_ACTION_TEXT[list[lastRow]!.action]}` : " (not set to anything yet)"}
+						{lastRow >= 0 ? ` → button ${lastRow + 1}${list[lastRow]!.double || list[lastRow]!.hold ? "" : `, ${BUTTON_ACTION_TEXT[list[lastRow]!.action]}`}` : " (not set to anything yet)"}
 					</span>
 				) : (
 					<span className="text-fg-muted">Press a button to see it react here.</span>
 				)}
 			</p>
-			{list.length > 0 && (
+			{list.some(here) && (
 				<ul className="divide-y divide-line border-t border-line">
-					{list.map((b, i) => (
+					{list.map((b, i) => !here(b) ? null : (
 						<li key={i} className={`flex flex-wrap items-center gap-2 px-3 py-2 text-sm transition-colors ${b.key && pressed.includes(b.key) ? "bg-ok/25" : ""}`}>
 							<span className={`w-16 shrink-0 ${b.key && pressed.includes(b.key) ? "font-medium text-ok" : "text-fg-muted"}`}>Button {i + 1}</span>
 							<button type="button" className={`btn btn-sm ${learning === i ? "btn-primary" : ""}`} disabled={!canEdit} onClick={() => setLearning(learning === i ? undefined : i)} title="Press the button once so the hub knows which one it is">
@@ -147,16 +166,37 @@ export function ButtonRules({ buttons, canEdit, onChange, device = false }: { bu
 							<select className="input min-w-0 flex-1 basis-56 py-1 text-xs" value={b.action} disabled={!canEdit} aria-label={`What button ${i + 1} does`} onChange={(e) => set(i, { action: e.target.value as ButtonAction })}>
 								{BUTTON_ACTIONS.map((a) => (
 									<option key={a} value={a}>
+										{b.action !== "talk" && (b.double || b.hold) ? "Press: " : ""}
 										{BUTTON_ACTION_TEXT[a]}
 									</option>
 								))}
 							</select>
+							{b.action !== "talk" &&
+								(["double", "hold"] as const).map((g) => (
+									<select key={g} className="input min-w-0 flex-1 basis-56 py-1 text-xs" value={b[g] ?? ""} disabled={!canEdit} aria-label={`Button ${i + 1}, ${g === "double" ? "two quick presses" : "held down"}`} onChange={(e) => set(i, { [g]: (e.target.value || undefined) as ButtonAction | undefined })}>
+										<option value="">{g === "double" ? "Two quick presses: nothing" : `Hold ${BUTTON_HOLD_MS / 1000} seconds: nothing`}</option>
+										{BUTTON_ACTIONS.filter((a) => a !== "talk").map((a) => (
+											<option key={a} value={a}>
+												{g === "double" ? "Two quick presses: " : `Hold ${BUTTON_HOLD_MS / 1000} s: `}
+												{BUTTON_ACTION_TEXT[a]}
+											</option>
+										))}
+									</select>
+								))}
 							<button type="button" className="btn btn-sm btn-ghost" disabled={!canEdit} onClick={() => { setLearning(undefined); put(list.filter((_, k) => k !== i)); }}>
 								Remove
 							</button>
 						</li>
 					))}
 				</ul>
+			)}
+			{(elsewhere > 0 || (device && showAll)) && (
+				<p className="flex flex-wrap items-center gap-2 border-t border-line px-3 py-2 text-xs text-fg-muted">
+					{showAll ? "Showing the buttons of every device on this station." : `${plural(elsewhere, "more button")} on this station ${elsewhere === 1 ? "is a Bluetooth button" : "are Bluetooth buttons"} not added to this device.`}
+					<button type="button" className="btn btn-sm btn-ghost" onClick={() => setShowAll(!showAll)}>
+						{showAll ? "Only this device" : "Show all"}
+					</button>
+				</p>
 			)}
 			{list.length > 0 && !device && <p className="border-t border-line px-3 py-2 text-xs text-fg-muted">Works on computers and in the Android app. A push-to-talk button has to be connected on every device that uses it, under the same number as here: "Connect button 1" on the checklist screen (a computer asks each time the page is opened, the Android app remembers it). A button that sends a volume key only works on a tablet or phone. Devices that are already open pick the buttons up after a reload.</p>}
 		</div>

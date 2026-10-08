@@ -96,8 +96,15 @@ export type ButtonAction = (typeof BUTTON_ACTIONS)[number];
 export const MAX_STATION_BUTTONS = 3;
 export interface StationButton {
 	key: string;
+	/** One press. */
 	action: ButtonAction;
+	/** Two quick presses (within `BUTTON_DOUBLE_MS`); setting it makes a single press wait that long. Never "talk". */
+	double?: ButtonAction;
+	/** Held down for `BUTTON_HOLD_MS`: runs while still held, the release then does nothing. Never "talk". */
+	hold?: ButtonAction;
 }
+export const BUTTON_DOUBLE_MS = 350;
+export const BUTTON_HOLD_MS = 2000;
 
 /** The key name a button is stored under: letters and digits of the DOM `code` (or `key` when a device sends no code). */
 export function buttonKeyName(code: string | undefined, key?: string): string {
@@ -140,15 +147,109 @@ export function stationButtons(v: unknown): StationButton[] | undefined {
 	const out: StationButton[] = [];
 	for (const b of v) {
 		if (typeof b !== "object" || b === null) continue;
-		const { key, action } = b as { key?: unknown; action?: unknown };
+		const { key, action, double, hold } = b as { key?: unknown; action?: unknown; double?: unknown; hold?: unknown };
 		const a = BUTTON_ACTIONS.find((x) => x === action);
 		if (!a) continue;
 		const k = buttonKeyName(typeof key === "string" ? key : "");
 		if (k && out.some((o) => o.key === k)) continue;
-		out.push({ key: k, action: a });
+		// hold-to-talk needs the whole press, so a talk button has nothing else, and nothing else is talk
+		const extra = (v: unknown) => (a === "talk" ? undefined : BUTTON_ACTIONS.find((x) => x === v && x !== "talk"));
+		const d = extra(double);
+		const h = extra(hold);
+		out.push({ key: k, action: a, ...(d && { double: d }), ...(h && { hold: h }) });
 		if (out.length >= MAX_STATION_BUTTONS) break;
 	}
 	return out.length ? out : undefined;
+}
+
+/**
+ * Reads the presses of a station's buttons: one press, two quick presses, held down. A button with only a press
+ * action works as before (the action on the way down, "talk" also gets the release). With `double` a single press
+ * runs once no second press follows within `BUTTON_DOUBLE_MS`; with `hold` it runs on the release, and keeping the
+ * button down for `BUTTON_HOLD_MS` runs `hold` instead. A click-only Bluetooth button (it never says it was let go,
+ * so `ble.ts` / the agent release it just before its next press) is recognised by that instant release: from then
+ * on each press counts as a whole click and it cannot be held. Pure apart from the timers it is handed.
+ */
+export interface PressClock {
+	set(fn: () => void, ms: number): unknown;
+	clear(timer: unknown): void;
+	now(): number;
+}
+/** A release this close before the next press of the same key is the click-only button's own, not a person letting go. */
+const INSTANT_RELEASE_MS = 30;
+export function buttonPresses(buttons: StationButton[], run: (action: ButtonAction, down: boolean) => void, clock: PressClock): { press(key: string, down: boolean): boolean; stop(): void } {
+	interface KeyState { down: boolean; done: boolean; clickOnly: boolean; lastUp?: number; hold?: unknown; click?: unknown }
+	const map = new Map(buttons.filter((b) => b.key).map((b) => [b.key, b] as const));
+	const state = new Map<string, KeyState>();
+	const press = (key: string, down: boolean): boolean => {
+		const b = map.get(key);
+		if (!b) return false;
+		let s = state.get(key);
+		if (!s) state.set(key, (s = { down: false, done: false, clickOnly: false }));
+		const st = s;
+		if (!b.double && !b.hold) {
+			if (down === st.down) return true; // the key repeats while it is held, or a release without a press
+			st.down = down;
+			run(b.action, down);
+			return true;
+		}
+		const fire = (a: ButtonAction) => run(a, true);
+		const clicked = () => {
+			if (!b.double) return fire(b.action);
+			st.click = clock.set(() => {
+				st.click = undefined;
+				fire(b.action);
+			}, BUTTON_DOUBLE_MS);
+		};
+		if (down) {
+			if (st.down) return true;
+			st.down = true;
+			if (!st.clickOnly && key.startsWith(BLE_KEY_PREFIX) && st.lastUp !== undefined && clock.now() - st.lastUp < INSTANT_RELEASE_MS) {
+				// that release was the button's own: the press before it was one click, ended just now
+				st.clickOnly = true;
+				clock.clear(st.hold);
+				st.hold = undefined;
+				if (st.click !== undefined) {
+					clock.clear(st.click);
+					st.click = undefined;
+					fire(b.action);
+				}
+			}
+			st.done = false;
+			if (st.click !== undefined) {
+				clock.clear(st.click);
+				st.click = undefined;
+				st.done = true;
+				fire(b.double!);
+			} else if (st.clickOnly) {
+				st.done = true;
+				clicked();
+			} else if (b.hold) {
+				st.hold = clock.set(() => {
+					st.hold = undefined;
+					st.done = true;
+					fire(b.hold!);
+				}, BUTTON_HOLD_MS);
+			}
+			return true;
+		}
+		if (!st.down) return true;
+		st.down = false;
+		st.lastUp = clock.now();
+		clock.clear(st.hold);
+		st.hold = undefined;
+		if (!st.done) clicked();
+		st.done = true;
+		return true;
+	};
+	const stop = () => {
+		for (const s of state.values()) {
+			clock.clear(s.hold);
+			clock.clear(s.click);
+		}
+		state.clear();
+	};
+	return { press, stop };
 }
 
 export interface RunView {

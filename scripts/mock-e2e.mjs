@@ -735,6 +735,10 @@ try {
 	assert.ok((await api("GET", "audit?limit=200")).body.some((a) => a.kind === "button" && a.text === "override"), "presses are audited");
 	await api("POST", `runs/${btnRun.runId}/abandon`);
 	// set on the device itself (Home → Buttons): one station's buttons, without touching the rest of the station
+	// one button, three meanings: press = accept, two quick presses = override, held 2 s = back (read on the device); talk keeps the whole press
+	const multi = await api("PUT", "stations/bridge-01/buttons", { buttons: [{ key: "Ble1FFE101", action: "accept", double: "override", hold: "back" }, { key: "Ble2FFE101", action: "talk", hold: "back" }] });
+	assert.deepEqual(multi.body.buttons, [{ key: "Ble1FFE101", action: "accept", double: "override", hold: "back" }, { key: "Ble2FFE101", action: "talk" }], "press / double / hold kept, nothing on a talk button");
+	assert.deepEqual((await api("GET", "stations")).body.find((st) => st.stationId === "bridge-01").buttons, multi.body.buttons, "double / hold saved on the station");
 	const devBtn = await api("PUT", "stations/bridge-01/buttons", { buttons: [{ key: "Ble1FFE101", action: "talk" }, { key: "Ble2FFE101", action: "accept" }, { key: "x y", action: "nope" }] });
 	assert.equal(devBtn.status, 200, JSON.stringify(devBtn.body));
 	assert.deepEqual(devBtn.body.buttons, [{ key: "Ble1FFE101", action: "talk" }, { key: "Ble2FFE101", action: "accept" }]);
