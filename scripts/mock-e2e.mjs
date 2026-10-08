@@ -343,7 +343,13 @@ try {
 	const resumed = await api("POST", "runs", { instanceId: "flow-arr-1", stationId: "bridge-01" });
 	assert.equal(resumed.status, 201);
 	await waitFor(() => (runView?.answered ?? 0) >= 9, "run refreshed from Flow shows 9/9");
-	const done = await api("POST", `runs/${runId}/complete`);
+	// Complete on screen asks twice: the first press arms it and says "press again", the second completes
+	const tap1 = await api("POST", `runs/${runId}/complete-tap`);
+	assert.equal(tap1.status, 200, JSON.stringify(tap1.body));
+	assert.equal(tap1.body.state, "active");
+	assert.ok(tap1.body.completeArmedUntil, "first press arms complete");
+	await waitFor(() => lastSpoken() === "Press Complete again to confirm.", "press again spoken");
+	const done = await api("POST", `runs/${runId}/complete-tap`);
 	assert.equal(done.status, 200, JSON.stringify(done.body));
 	assert.equal(done.body.state, "completed");
 	assert.equal(fake.statusChanges.at(-1)?.action, "complete");
@@ -427,10 +433,16 @@ try {
 		await waitFor(async () => (await api("GET", `runs/${erRun.runId}`)).body.items.find((x) => x.taskId === cur.taskId).state !== "current", `item ${cur.name} left current`);
 		if ((await api("GET", `runs/${erRun.runId}`)).body.answered >= (await api("GET", `runs/${erRun.runId}`)).body.total) break;
 	}
-	await waitFor(() => /Complete it on screen\.$/.test(lastSpoken()), "all answered");
+	await waitFor(() => /Complete the checklist\? Press Complete\.$/.test(lastSpoken()), "all answered: complete asked");
 	// "Check generator 2" is a checkbox authored as "Done::completed": the option list comes from the template, the key is written
 	assert.ok(spoken.includes("Check generator 2, Done."), "option title read back for a keyed checkbox");
 	assert.ok(fake.values.some((v) => v.task.endsWith(":ft-er-2b") && v.value === "completed"), "keyed checkbox writes the option key, not OK");
+	// every item answered: a hardware "accept" is the Complete button — the first press arms it and answers at once
+	const armed = await api("POST", `runs/${erRun.runId}/button`, { action: "accept" });
+	assert.equal(armed.status, 200, JSON.stringify(armed.body));
+	assert.equal(armed.body.state, "active");
+	assert.ok(armed.body.completeArmedUntil, "button accept arms complete");
+	await waitFor(() => lastSpoken() === "Press Complete again to confirm.", "button: press again spoken");
 	send({ type: "transcript", text: "complete", confidence: 1, final: true });
 	await waitFor(() => /^Complete .*\? Say confirm\.$/.test(lastSpoken()), "complete confirmation asked");
 	await say("confirm");

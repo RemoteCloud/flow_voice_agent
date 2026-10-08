@@ -273,6 +273,8 @@ export interface RunRecord {
 	/** A spoken complete / discard waiting for its confirmation. */
 	pendingAction?: { kind: "complete" | "discard"; reasonCode?: string; reasonTitle?: string; step: "reason" | "confirm"; reasons?: { code: string; title: string; requireComment: boolean }[] };
 	sweepOffered?: boolean;
+	/** Complete pressed once on screen: a second press before this time completes (`RunEngine.completeTap`). */
+	completeArmedUntil?: string;
 	/** Between items: the next item is held until asked ("next"), a timer, or an external trigger. */
 	waiting?: RunWaiting;
 }

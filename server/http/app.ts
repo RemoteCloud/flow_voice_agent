@@ -414,6 +414,7 @@ export function createApp(deps: AppDeps): Hono {
 		}),
 	);
 	api.post("/runs/:id/complete", (c) => handle(c, async () => c.json(await engine.complete(c.req.param("id"), c.get("sessionRow")))));
+	api.post("/runs/:id/complete-tap", (c) => handle(c, async () => c.json(await engine.completeTap(c.req.param("id"), c.get("sessionRow")))));
 	api.post("/runs/:id/discard", (c) =>
 		handle(c, async () => {
 			const body = (await c.req.json().catch(() => ({}))) as { reasonCode?: string; comment?: string };

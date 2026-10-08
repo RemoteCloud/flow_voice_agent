@@ -60,6 +60,12 @@ export function HomePage({ onOpenRun, mobile = true }: { onOpenRun: (runId: stri
 		try {
 			const run = await api.post<RunView>("runs", { instanceId: p.instanceId, templateId: p.instanceId ? undefined : p.templateId, stationId: me.stationId, runId: p.activeRunId });
 			onOpenRun(run.runId);
+			// a started checklist goes straight into open mode: voice on, mic open between items
+			const sid = me.stationId;
+			void (async () => {
+				if (!v.active) await v.start(sid);
+				v.setHandsFree(true);
+			})();
 		} catch (e) {
 			setErr(toApiError(e).message);
 		} finally {

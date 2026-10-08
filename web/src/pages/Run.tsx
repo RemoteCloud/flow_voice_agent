@@ -52,6 +52,16 @@ export function RunPage({ runId, mobile = false }: { runId: string; mobile?: boo
 		}
 	};
 
+	// Complete asks twice: the first press arms it (the hub says "press again"), the second completes
+	const [armedTick, setArmedTick] = useState(0);
+	const armedLeft = run?.completeArmedUntil ? Date.parse(run.completeArmedUntil) - Date.now() : 0;
+	useEffect(() => {
+		if (armedLeft <= 0) return;
+		const t = window.setTimeout(() => setArmedTick((n) => n + 1), armedLeft + 50);
+		return () => window.clearTimeout(t);
+	}, [armedLeft, armedTick]);
+	const completeArmed = armedLeft > 0;
+
 	const current = useMemo(() => run?.items.find((i) => i.taskId === run.currentTaskId), [run]);
 	const sections = useMemo(() => {
 		const out: { name: string | undefined; items: RunItem[] }[] = [];
@@ -160,7 +170,7 @@ export function RunPage({ runId, mobile = false }: { runId: string; mobile?: boo
 									)}
 								</div>
 							) : (
-								<p className="mt-4 text-lg text-fg-muted">{done ? (run.state === "completed" ? "Checklist completed." : "Run stopped. The checklist stays open in Flow.") : run.state === "paused" ? "Paused." : run.answered >= run.total ? "All items answered. Complete the checklist below." : "Waiting for the next item…"}</p>
+								<p className="mt-4 text-lg text-fg-muted">{done ? (run.state === "completed" ? "Checklist completed." : "Run stopped. The checklist stays open in Flow.") : run.state === "paused" ? "Paused." : run.answered >= run.total ? completeArmed ? "Press Complete again to confirm." : "All items answered. Complete the checklist?" : "Waiting for the next item…"}</p>
 						)}
 						{run.pendingReadback && (
 							<div className="mt-4 rounded-lg border border-accent/40 bg-accent/10 px-3 py-2">
@@ -207,8 +217,8 @@ export function RunPage({ runId, mobile = false }: { runId: string; mobile?: boo
 					{/* checklist actions */}
 					<section className="card">
 						<div className="card-body flex flex-wrap items-center gap-2">
-							<button type="button" className="btn btn-primary" disabled={done || !!completeBlocked} onClick={() => void act("complete")} title={completeBlocked ?? "Complete the checklist in Flow"}>
-								Complete checklist
+							<button type="button" className={`btn btn-primary ${completeArmed ? "ring-2 ring-warn ring-offset-2" : ""}`} disabled={done || !!completeBlocked} onClick={() => void act("complete-tap")} title={completeBlocked ?? "Complete the checklist in Flow (press twice)"}>
+								{completeArmed ? "Press again to confirm" : "Complete checklist"}
 							</button>
 							{mobile && run.state === "active" && (
 								<button type="button" className="btn" onClick={() => void act("pause")}>

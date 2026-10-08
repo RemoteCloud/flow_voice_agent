@@ -275,6 +275,8 @@ export interface RunView {
 	currentTaskId?: string;
 	/** Set while the next item is held back (exchange "waiting"): what releases it. */
 	waiting?: { taskId: string; mode: "ask" | "timer" | "external"; until?: string };
+	/** Complete was pressed once: a second press before this time completes the checklist. */
+	completeArmedUntil?: string;
 	items: RunItem[];
 	answered: number;
 	total: number;

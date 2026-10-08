@@ -90,6 +90,8 @@ interface Timers {
 	step?: NodeJS.Timeout;
 }
 
+/** How long the first press of Complete waits for the second (`completeTap`). */
+const COMPLETE_TAP_MS = 15_000;
 const iso = (ms: number) => new Date(ms).toISOString();
 const newId = (prefix: string) => `${prefix}_${Date.now().toString(36)}${Math.random().toString(36).slice(2, 8)}`;
 
@@ -174,6 +176,7 @@ export class RunEngine {
 			exchange: r.exchange,
 			currentTaskId: r.currentTaskId,
 			waiting: r.waiting,
+			completeArmedUntil: r.completeArmedUntil && Date.parse(r.completeArmedUntil) > this.deps.now() ? r.completeArmedUntil : undefined,
 			items: r.items,
 			answered: p.answered,
 			total: p.total,
@@ -2262,7 +2265,11 @@ export class RunEngine {
 		switch (action) {
 			case "accept": {
 				if (r.exchange === "waiting") return this.proceed(runId, "screen");
-				if (!open) return this.view(runId);
+				if (!open) {
+					// every item answered: the button is the Complete button (press, then press again to confirm)
+					const p = progressOf(r.items);
+					return p.total > 0 && p.answered >= p.total && !nextItem(r.items) ? this.completeTap(runId, session) : this.view(runId);
+				}
 				if (r.pendingReadback) {
 					if (!r.users.some((u) => u.sessionId === session.id)) r.users.push({ sub: session.sub, name: this.deps.store.get().users.find((u) => u.sub === session.sub)?.name, sessionId: session.id });
 					await this.commit(r, open, r.pendingReadback, "manual");
@@ -2340,6 +2347,29 @@ export class RunEngine {
 	}
 
 	/** Explicit, on-screen. Blocked while anything for the instance sits unsynced. */
+	/**
+	 * The Complete button on screen (and a hardware "accept" once every item is answered) asks twice: the first press arms it and the hub says "press again to
+	 * confirm"; a second press within COMPLETE_TAP_MS completes. Blocked checklists fail at once, unarmed.
+	 */
+	async completeTap(runId: string, session: HubSession): Promise<RunView> {
+		const r = this.record(runId);
+		const now = this.deps.now();
+		if (r.completeArmedUntil && Date.parse(r.completeArmedUntil) > now) {
+			r.completeArmedUntil = undefined;
+			await this.save(r);
+			return this.complete(runId, session);
+		}
+		const pending = this.deps.outbox.pending(r.instanceId);
+		if (pending.length) throw new EngineError(409, "OUTBOX_PENDING", `${pending.length} value(s) not yet synced to Flow — wait for the link, then complete`);
+		const p = progressOf(r.items);
+		if (p.answered < p.total) throw new EngineError(409, "ITEMS_OPEN", `${p.total - p.answered} item(s) still open`);
+		r.completeArmedUntil = iso(now + COMPLETE_TAP_MS);
+		await this.save(r);
+		// not awaited: the second press must not wait for the line to be spoken (the client drops presses in flight)
+		void this.say(r, tr(r.language, "complete_tap_again"));
+		return this.toView(r);
+	}
+
 	async complete(runId: string, session: HubSession): Promise<RunView> {
 		const r = this.record(runId);
 		const pending = this.deps.outbox.pending(r.instanceId);
