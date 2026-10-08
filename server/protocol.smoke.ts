@@ -128,21 +128,53 @@ function pressReader(): void {
 	click("Ble1FFE101");
 	tick(BUTTON_DOUBLE_MS);
 	assert.equal(take(), "accept");
+	// PTT-Z as logged on the SM-T500: Bluetooth batches the release of the first press with the second press (1 ms
+	// apart). A button that has been let go cleanly before is never taken for click-only: still one double
+	const ptt = buttonPresses([{ key: "Ble1FFE101", action: "accept", double: "override", hold: "back" }], (a: ButtonAction, down: boolean) => ran.push(down ? a : `${a}:up`), clock);
+	ptt.press("Ble1FFE101", true);
+	tick(150);
+	ptt.press("Ble1FFE101", false);
+	tick(BUTTON_DOUBLE_MS + 100);
+	assert.equal(take(), "accept");
+	ptt.press("Ble1FFE101", true);
+	tick(278);
+	ptt.press("Ble1FFE101", false);
+	tick(1);
+	ptt.press("Ble1FFE101", true);
+	tick(113);
+	ptt.press("Ble1FFE101", false);
+	tick(BUTTON_DOUBLE_MS * 3);
+	assert.equal(take(), "override", "batched release + quick second press = double");
+	ptt.press("Ble1FFE101", true);
+	tick(BUTTON_HOLD_MS);
+	assert.equal(take(), "back", "and it can still be held");
+	ptt.press("Ble1FFE101", false);
+	ptt.stop();
 	// a click-only Bluetooth button: released only just before its next press. The first press is read late, after that each press is a whole click
-	r.press("Ble1FFE101", true);
+	const co = buttonPresses([{ key: "Ble1FFE101", action: "accept", double: "override", hold: "back" }], (a: ButtonAction, down: boolean) => ran.push(down ? a : `${a}:up`), clock);
+	co.press("Ble1FFE101", true);
 	tick(1000);
-	r.press("Ble1FFE101", false);
-	r.press("Ble1FFE101", true);
+	co.press("Ble1FFE101", false);
+	co.press("Ble1FFE101", true);
 	tick(BUTTON_DOUBLE_MS);
 	assert.equal(take(), "accept,accept");
 	tick(3000);
 	assert.equal(take(), "", "a click-only button is never held");
-	r.press("Ble1FFE101", false);
-	r.press("Ble1FFE101", true);
+	co.press("Ble1FFE101", false);
+	co.press("Ble1FFE101", true);
 	tick(100);
-	r.press("Ble1FFE101", false);
-	r.press("Ble1FFE101", true);
+	co.press("Ble1FFE101", false);
+	co.press("Ble1FFE101", true);
 	tick(BUTTON_DOUBLE_MS * 3);
 	assert.equal(take(), "override");
+	// once it is let go on its own after all, it is read as a normal button again
+	co.press("Ble1FFE101", false);
+	tick(BUTTON_DOUBLE_MS * 3);
+	take();
+	co.press("Ble1FFE101", true);
+	tick(BUTTON_HOLD_MS);
+	assert.equal(take(), "back", "a real release ends the click-only reading");
+	co.press("Ble1FFE101", false);
+	co.stop();
 	r.stop();
 }

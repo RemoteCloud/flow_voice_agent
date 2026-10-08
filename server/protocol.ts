@@ -168,7 +168,10 @@ export function stationButtons(v: unknown): StationButton[] | undefined {
  * runs once no second press follows within `BUTTON_DOUBLE_MS`; with `hold` it runs on the release, and keeping the
  * button down for `BUTTON_HOLD_MS` runs `hold` instead. A click-only Bluetooth button (it never says it was let go,
  * so `ble.ts` / the agent release it just before its next press) is recognised by that instant release: from then
- * on each press counts as a whole click and it cannot be held. Pure apart from the timers it is handed.
+ * on each press counts as a whole click and it cannot be held. A button that has once been let go on its own (no
+ * press right after) is never taken for one, because Bluetooth batches notifications and a real release can land
+ * a millisecond before a quick second press; such a release also ends the click-only reading. Pure apart from
+ * the timers it is handed.
  */
 export interface PressClock {
 	set(fn: () => void, ms: number): unknown;
@@ -178,14 +181,14 @@ export interface PressClock {
 /** A release this close before the next press of the same key is the click-only button's own, not a person letting go. */
 const INSTANT_RELEASE_MS = 30;
 export function buttonPresses(buttons: StationButton[], run: (action: ButtonAction, down: boolean) => void, clock: PressClock): { press(key: string, down: boolean): boolean; stop(): void } {
-	interface KeyState { down: boolean; done: boolean; clickOnly: boolean; lastUp?: number; hold?: unknown; click?: unknown }
+	interface KeyState { down: boolean; done: boolean; clickOnly: boolean; /** let go on its own at least once */ released: boolean; settle?: unknown; hold?: unknown; click?: unknown }
 	const map = new Map(buttons.filter((b) => b.key).map((b) => [b.key, b] as const));
 	const state = new Map<string, KeyState>();
 	const press = (key: string, down: boolean): boolean => {
 		const b = map.get(key);
 		if (!b) return false;
 		let s = state.get(key);
-		if (!s) state.set(key, (s = { down: false, done: false, clickOnly: false }));
+		if (!s) state.set(key, (s = { down: false, done: false, clickOnly: false, released: !key.startsWith(BLE_KEY_PREFIX) }));
 		const st = s;
 		if (!b.double && !b.hold) {
 			if (down === st.down) return true; // the key repeats while it is held, or a release without a press
@@ -204,7 +207,10 @@ export function buttonPresses(buttons: StationButton[], run: (action: ButtonActi
 		if (down) {
 			if (st.down) return true;
 			st.down = true;
-			if (!st.clickOnly && key.startsWith(BLE_KEY_PREFIX) && st.lastUp !== undefined && clock.now() - st.lastUp < INSTANT_RELEASE_MS) {
+			const instant = st.settle !== undefined;
+			clock.clear(st.settle);
+			st.settle = undefined;
+			if (instant && !st.clickOnly && !st.released) {
 				// that release was the button's own: the press before it was one click, ended just now
 				st.clickOnly = true;
 				clock.clear(st.hold);
@@ -235,7 +241,12 @@ export function buttonPresses(buttons: StationButton[], run: (action: ButtonActi
 		}
 		if (!st.down) return true;
 		st.down = false;
-		st.lastUp = clock.now();
+		// no press right after: the button was really let go, so it is not a click-only one
+		st.settle = clock.set(() => {
+			st.settle = undefined;
+			st.released = true;
+			st.clickOnly = false;
+		}, INSTANT_RELEASE_MS);
 		clock.clear(st.hold);
 		st.hold = undefined;
 		if (!st.done) clicked();
@@ -244,6 +255,7 @@ export function buttonPresses(buttons: StationButton[], run: (action: ButtonActi
 	};
 	const stop = () => {
 		for (const s of state.values()) {
+			clock.clear(s.settle);
 			clock.clear(s.hold);
 			clock.clear(s.click);
 		}
