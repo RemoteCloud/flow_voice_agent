@@ -239,7 +239,7 @@ export function RunPage({ runId, mobile = false }: { runId: string; mobile?: boo
 									Voice off
 								</button>
 							)}
-							<BleButtonLink buttons={stations.find((s) => s.stationId === run.stationId)?.buttons} className="btn" />
+							<BleButtonLink quiet buttons={stations.find((s) => s.stationId === run.stationId)?.buttons} className="btn" />
 							<button type="button" className={`btn ml-auto gap-1 pl-2 ${mobile ? "h-12 text-base" : ""}`} onClick={() => navigate({ page: "picker" })}>
 								<Icon name="chevron" size={20} className="rotate-180" />
 								Back to checklists

@@ -359,7 +359,7 @@ export function VoiceBar({ compact }: { compact?: boolean }) {
 				</>
 			)}
 			{!mobile && <LanguageSelect compact />}
-			<BleButtonLink buttons={station?.buttons} />
+			<BleButtonLink quiet buttons={station?.buttons} />
 		</div>
 	);
 }
