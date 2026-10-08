@@ -40,9 +40,17 @@ export function Shell({ route, mobile = false, children }: { route: Route; mobil
 			<div className="flex min-h-screen flex-col">
 				<header className="sticky top-0 z-10 border-b border-line bg-bg/95 backdrop-blur">
 					<div className="flex items-center gap-2 px-3 py-2">
-						<button type="button" className="flex items-center gap-2" onClick={() => navigate({ page: "picker" })} aria-label="Checklists">
-							<Logo mark height={22} />
-						</button>
+						{route.page === "run" ? (
+							/* inside a checklist the way back is the biggest thing in the bar: always visible, gloves-sized */
+							<button type="button" className="btn h-12 shrink-0 gap-1 border-2 border-fg pr-4 pl-2 text-base font-semibold" onClick={() => navigate({ page: "picker" })}>
+								<Icon name="chevron" size={24} className="rotate-180" />
+								Checklists
+							</button>
+						) : (
+							<button type="button" className="flex h-12 items-center gap-2" onClick={() => navigate({ page: "picker" })} aria-label="Checklists">
+								<Logo mark height={22} />
+							</button>
+						)}
 						<span className="pill min-w-0 truncate border-line-strong text-fg-muted" title="Station">
 							{tenantName ? `${tenantName} · ` : ""}
 							{stationLabel}
