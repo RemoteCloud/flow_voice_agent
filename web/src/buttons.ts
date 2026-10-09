@@ -13,10 +13,10 @@ import { parseRoute } from "./router.js";
 
 export const BUTTON_ACTION_TEXT: Record<ButtonAction, string> = {
 	accept: "Accept item: done / yes / confirm",
-	no: "No: not done / wrong, ask again",
+	no: "No: answer no / not done, on to the next item",
 	override: "Override item: skip it, it is asked again at the end",
 	next: "Next item",
-	back: "Previous item",
+	back: "Previous item: ask it again",
 	repeat: "Repeat the question",
 	talk: "Hold to talk",
 	pause: "Pause / resume",

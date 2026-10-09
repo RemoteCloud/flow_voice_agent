@@ -103,7 +103,7 @@ export interface StationButton {
 	/** Held down for `BUTTON_HOLD_MS`: runs while still held, the release then does nothing. Never "talk". */
 	hold?: ButtonAction;
 }
-export const BUTTON_DOUBLE_MS = 350;
+export const BUTTON_DOUBLE_MS = 500;
 export const BUTTON_HOLD_MS = 2000;
 
 /** The key name a button is stored under: letters and digits of the DOM `code` (or `key` when a device sends no code). */

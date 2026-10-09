@@ -1356,10 +1356,16 @@ export class RunEngine {
 				else if (item) await this.advance(r, item);
 				return;
 			case "back": {
-				const prev = item ? previousItem(r.items, item.index) : undefined;
+				// after the last item there is no current one: back is the last item
+				const prev = previousItem(r.items, item ? item.index : Number.POSITIVE_INFINITY);
 				if (prev) {
 					if (item && item.state === "current") item.state = "unanswered";
+					// asked again on purpose: live sync must not hand the old value straight back
+					if (prev.state === "answered" || prev.state === "unsynced") prev.reasking = true;
 					prev.state = "unanswered";
+					if (r.waiting) r.waiting = undefined;
+					r.pendingReadback = undefined;
+					this.clearTimers(r.runId);
 					await this.speakItem(r, prev);
 				} else await this.say(r, tr(r.language, "first_item"));
 				return;
@@ -2242,7 +2248,8 @@ export class RunEngine {
 	 *   accept   → confirm the read-back / start a pending run / resume a paused one / release a held item; on an open
 	 *              item: its answer word, else checked / Yes / now. An item with no such answer (a number, free text,
 	 *              options without a marked word) gets the short hint and stays open.
-	 *   no       → what a spoken "no" does: the read-back is asked again, a checkbox stays open, yes/no gets No.
+	 *   no       → the item gets No and the run moves on (yes/no → No, an option named No); one that cannot hold a No
+	 *              (checkbox, number, text) is skipped and asked again at the end. A read-back waiting: asked again.
 	 *   override → the item is skipped (also a held one: the hold moves to the one after it); it comes back in the sweep.
 	 *   next     → release a held item, otherwise move on like a spoken "next".
 	 *   back / repeat → as spoken. pause → pause, or resume a paused run. talk is push-to-talk: the device does it.
@@ -2292,9 +2299,21 @@ export class RunEngine {
 				await this.openListen(r, open);
 				return this.view(runId);
 			}
-			case "no":
-				if (open) await this.onTranscript(r.stationId, "no", 1, session);
-				return this.view(runId);
+			case "no": {
+				// a read-back waiting: the value heard was wrong, the item is asked again (as a spoken "no")
+				if (!open || r.pendingReadback) {
+					if (open) await this.onTranscript(r.stationId, "no", 1, session);
+					return this.view(runId);
+				}
+				// the item is answered No and the run moves on, so the next press is the next item. An item that cannot
+				// hold a No (a checkbox, a number, text) is not done: skipped, and asked again at the end
+				this.clearTimers(r.runId);
+				this.deps.io.stopListening(r.stationId);
+				const result = interpret(open.type, "no", { ...this.interpretCtx(r, open, new Date(this.deps.now())), answersOnly: false });
+				if (this.level(r) !== "silent") await this.say(r, tr(r.language, "echo_short", { value: result.ok ? result.valueText : tr(r.language, "no") }));
+				if (result.ok && result.value !== CHECKBOX_NOT_DONE) return this.answerManual(runId, open.taskId, result.value, session, result.valueText);
+				return this.skip(runId, open.taskId, "no by button");
+			}
 			case "override": {
 				const held = r.exchange === "waiting" ? r.items.find((i) => i.taskId === r.waiting?.taskId) : undefined;
 				if (held) {
@@ -2307,7 +2326,7 @@ export class RunEngine {
 			case "back":
 			case "repeat":
 				if (action === "repeat" && r.exchange === "waiting") await this.onTranscript(r.stationId, "repeat", 1, session);
-				else if (action !== "back" || item) await this.handleCommand(r, action, session);
+				else await this.handleCommand(r, action, session);
 				return this.view(runId);
 		}
 		return this.view(runId);

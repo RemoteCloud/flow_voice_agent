@@ -745,6 +745,19 @@ try {
 	assert.equal((await api("POST", `runs/${btnRun.runId}/button`, { action: "pause" })).body.state, "paused");
 	assert.equal((await api("POST", `runs/${btnRun.runId}/button`, { action: "pause" })).body.state, "active");
 	assert.ok((await api("GET", "audit?limit=200")).body.some((a) => a.kind === "button" && a.text === "override"), "presses are audited");
+	// no: the item gets No (or, when it cannot hold one, is skipped) and the run moves on, so the next press is the next item
+	const beforeNo = (await api("GET", `runs/${btnRun.runId}`)).body;
+	const noItem = beforeNo.items.find((i) => i.taskId === beforeNo.currentTaskId);
+	assert.ok(noItem, "an item is open before no");
+	await api("POST", `runs/${btnRun.runId}/button`, { action: "no" });
+	await waitFor(async () => (await api("GET", `runs/${btnRun.runId}`)).body.currentTaskId !== noItem.taskId, "no moves on to the next item");
+	const afterNo = (await api("GET", `runs/${btnRun.runId}`)).body.items.find((i) => i.taskId === noItem.taskId);
+	assert.ok(afterNo.state === "skipped" ? afterNo.skipReason === "no by button" : afterNo.value === "No", `no answers No or skips (${afterNo.state})`);
+	// back (held 2 s): the previous item is asked again
+	mark = spoken.length;
+	await api("POST", `runs/${btnRun.runId}/button`, { action: "back" });
+	await waitFor(async () => (await api("GET", `runs/${btnRun.runId}`)).body.currentTaskId === noItem.taskId, "back goes to the previous item");
+	await waitFor(() => spoken.slice(mark).some((s) => s.includes(noItem.name)), "back asks the previous item again");
 	await api("POST", `runs/${btnRun.runId}/abandon`);
 	// set on the device itself (Home → Buttons): one station's buttons, without touching the rest of the station
 	// one button, three meanings: press = accept, two quick presses = override, held 2 s = back (read on the device); talk keeps the whole press
