@@ -7,7 +7,7 @@ import { Shell } from "./components/Shell.js";
 import { AppContext, type AppApi } from "./context.js";
 import { AdminPage } from "./pages/Admin.js";
 import { EnrollPage } from "./pages/Enroll.js";
-import { HomePage } from "./pages/Home.js";
+import { HomePage, StationGate } from "./pages/Home.js";
 import { LoginPage } from "./pages/Login.js";
 import { RunPage } from "./pages/Run.js";
 import { isMobileClient } from "./platform.js";
@@ -137,7 +137,7 @@ export function App() {
 		(text?: string) => {
 			setNotice(text ?? "Your session has ended. Sign in again.");
 			setMe(null);
-			void probe();
+			void probe(true);
 		},
 		[probe],
 	);
@@ -193,6 +193,18 @@ export function App() {
 	if (route.page === "enroll") return <EnrollPage />;
 	if (join?.state === "pending") return <Splash text="Joining the station…" />;
 	if (me === undefined) return <Splash />;
+	// a phone / tablet / `/client` joins its station before anyone signs in: the station picks the tenant
+	if (!ctx && mobile && !bootError && join?.state !== "ok")
+		return (
+			<StationGate
+				hubVersion={boot?.hubVersion}
+				error={join?.state === "invalid" ? join.message : undefined}
+				onJoined={(station) => {
+					setJoin({ state: "ok", station });
+					void probe();
+				}}
+			/>
+		);
 	if (!ctx)
 		return (
 			<LoginPage

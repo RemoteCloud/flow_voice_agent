@@ -190,7 +190,7 @@ export function HomePage({ onOpenRun, mobile = true }: { onOpenRun: (runId: stri
 }
 
 /** "Or type the station code": the six digits on the poster, the same as scanning it. */
-function StationCodeForm({ onJoined }: { onJoined: () => void }) {
+export function StationCodeForm({ onJoined }: { onJoined: (station: JoinResponse["station"]) => void }) {
 	const [code, setCode] = useState("");
 	const [busy, setBusy] = useState(false);
 	const [err, setErr] = useState<string | undefined>();
@@ -200,10 +200,10 @@ function StationCodeForm({ onJoined }: { onJoined: () => void }) {
 		setBusy(true);
 		setErr(undefined);
 		try {
-			await api.post<JoinResponse>("auth/join", { code: digits });
+			const res = await api.post<JoinResponse>("auth/join", { code: digits });
 			rememberJoin(digits);
 			setCode("");
-			onJoined();
+			onJoined(res.station);
 		} catch (e) {
 			setErr(joinErrorText(toApiError(e), true));
 		} finally {
@@ -238,5 +238,28 @@ function StationCodeForm({ onJoined }: { onJoined: () => void }) {
 			</button>
 			{err && <Alert>{err}</Alert>}
 		</form>
+	);
+}
+
+/**
+ * Before any sign-in on a phone / tablet / `/client`: the station decides which tenant (and so which Maranics
+ * sign-in) this device belongs to, so the poster comes first. Scan (Android) or type the six digits.
+ */
+export function StationGate({ hubVersion, error, onJoined }: { hubVersion?: string; error?: string; onJoined: (station: JoinResponse["station"]) => void }) {
+	const canScan = !!window.FlowVoiceAndroid?.scanStation;
+	return (
+		<main className="dots-page flex min-h-screen flex-col items-center justify-center gap-5 px-4 py-10 text-center">
+			<Icon name="qr" size={72} strokeWidth={1.4} />
+			<h1 className="text-2xl font-semibold tracking-wide uppercase">{canScan ? "Scan the station QR code" : "Open the station link"}</h1>
+			<p className="max-w-sm text-sm text-fg-muted">{canScan ? "Scan the poster at your station first. It tells this device where to sign in." : "Open the station's own link, or type the code from its poster. It tells this device where to sign in."}</p>
+			{error && <Alert>{error}</Alert>}
+			{canScan && (
+				<button type="button" className="start-btn max-w-sm justify-center text-lg font-semibold tracking-wide uppercase" onClick={() => window.FlowVoiceAndroid?.scanStation?.()}>
+					Scan QR code
+				</button>
+			)}
+			<StationCodeForm onJoined={onJoined} />
+			<p className="text-[11px] text-fg-faint">{versionLine(hubVersion)}</p>
+		</main>
 	);
 }
