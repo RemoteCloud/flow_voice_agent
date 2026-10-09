@@ -17,7 +17,7 @@ const AUTH_ERROR_TEXT: Record<string, string> = {
 	not_configured: "Sign-in is not configured on this hub.",
 };
 
-export function LoginPage(p: { provider?: AuthProviderView; hubVersion?: string; vesselId?: string; hubUrl?: string; authError?: string; notice?: string; probeError?: ApiClientError; joinStation?: { name: string; location?: string }; joinError?: string; onRetry: () => void; onDevSignedIn: (me: MeResponse) => void }) {
+export function LoginPage(p: { provider?: AuthProviderView; hubVersion?: string; vesselId?: string; hubUrl?: string; authError?: string; notice?: string; probeError?: ApiClientError; joinStation?: { name: string; location?: string }; joinError?: string; onChangeStation?: () => void; onRetry: () => void; onDevSignedIn: (me: MeResponse) => void }) {
 	const [busy, setBusy] = useState(false);
 	const [err, setErr] = useState<string | undefined>();
 	const [showQr, setShowQr] = useState(false);
@@ -64,6 +64,11 @@ export function LoginPage(p: { provider?: AuthProviderView; hubVersion?: string;
 				{p.joinStation && (
 					<p role="status" className="mb-4 rounded-lg border border-accent/40 bg-accent/10 px-3 py-2 text-sm">
 						Sign in to continue on <strong>{p.joinStation.location ? `${p.joinStation.location} · ` : ""}{p.joinStation.name}</strong>.
+						{p.onChangeStation && (
+							<button type="button" className="ml-1 underline" onClick={p.onChangeStation}>
+								Another station?
+							</button>
+						)}
 					</p>
 				)}
 				{p.joinError && (

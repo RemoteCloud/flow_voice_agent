@@ -337,6 +337,24 @@ export function createApp(deps: AppDeps): Hono {
 
 	// everything below needs a signed-in user
 	api.use("*", requireSession(sessionDeps));
+	// SSO tenant: only its first sign-in becomes admin by itself. Whoever opened the tenant from Central / the main
+	// hub ("enter", the only source of role "admin"; the dispatcher strips the header from every inbound request)
+	// is made admin here, so a second Maranics person can still set up stations and see the QR links.
+	if (!env.tokenTenant) {
+		api.use("*", async (c, next) => {
+			if (c.req.header(ROLE_HEADER) === "admin") {
+				const sub = c.get("sessionRow").sub;
+				if (!store.get().users.find((x) => x.sub === sub)?.isAdmin) {
+					await store.update((d) => {
+						const u = d.users.find((x) => x.sub === sub);
+						if (u) u.isAdmin = true;
+					});
+					log.info(`user ${sub} made admin: opened this tenant from the central admin area`);
+				}
+			}
+			await next();
+		});
+	}
 
 	api.get("/auth/me", (c) => c.json(meOf(c.get("sessionRow"))));
 

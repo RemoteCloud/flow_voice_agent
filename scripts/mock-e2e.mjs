@@ -1142,6 +1142,19 @@ try {
 	assert.equal((await api("GET", "tenants", undefined, ssoJar)).body.current?.id, "sso-co");
 	assert.ok((await api("GET", "checklists", undefined, ssoJar)).body.length > 0, "the user's own token reads Maranics");
 	assert.equal((await api("PUT", "tenants/sso-co/client", { clientId: fake.oidc.clientId, clientSecret: fake.oidc.clientSecret }, ssoJar)).status, 403, "a tenant admin is not the central admin");
+	// a later Maranics user is read-only (no QR link, no code) until they open the tenant from Central
+	assert.equal((await api("PUT", "stations", [{ stationId: "deck", name: "Deck", language: "en", audioPolicy: "ptt" }], ssoJar)).status, 200);
+	assert.ok((await api("GET", "stations", undefined, ssoJar)).body[0]?.join?.code, "the admin sees the station code");
+	assert.equal((await api("PUT", `users/${encodeURIComponent(ssoMe.body.sub)}/admin`, { isAdmin: false }, ssoJar)).status, 200);
+	assert.equal((await api("GET", "auth/me", undefined, ssoJar)).body.isAdmin, false);
+	assert.ok(!(await api("GET", "stations", undefined, ssoJar)).body.some((s) => s.join?.code), "no station code for a non-admin");
+	await hop(`${base}/t/sso-co`);
+	assert.equal((await api("GET", "auth/me", undefined, ssoJar)).body.isAdmin, false, "the tenant link never makes an admin");
+	assert.equal((await api("POST", "tenants/sso-co/enter", undefined, adminJar)).status, 200);
+	ssoJar.set("fv_tenant", adminJar.get("fv_tenant"));
+	assert.equal((await api("GET", "auth/me", undefined, ssoJar)).body.isAdmin, true, "opened from Central = admin of the tenant");
+	assert.ok((await api("GET", "stations", undefined, ssoJar)).body.every((s) => s.join?.code), "and sees the station codes");
+	assert.equal((await api("POST", "tenants/leave", undefined, adminJar)).status, 200);
 	// sign-out, then sign-in: Maranics is asked for its sign-in page again (other person, other location); once only
 	assert.ok(!new URL(toIdp.headers.get("location")).searchParams.has("prompt"), "a normal sign-in does not force the login page");
 	assert.equal((await api("POST", "auth/logout", {}, ssoJar)).status, 200);

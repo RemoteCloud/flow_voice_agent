@@ -68,6 +68,8 @@ export function App() {
 		return r.page === "join" ? r.token : undefined;
 	});
 	const [join, setJoin] = useState<JoinState | undefined>(() => (joinToken ? { state: "pending" } : undefined));
+	// "Another station?" on the sign-in page: back to the station screen to scan or type a different code
+	const [otherStation, setOtherStation] = useState(false);
 	const probeGen = useRef(0);
 
 	const probe = useCallback(async (rejoin = false) => {
@@ -194,13 +196,14 @@ export function App() {
 	if (join?.state === "pending") return <Splash text="Joining the station…" />;
 	if (me === undefined) return <Splash />;
 	// a phone / tablet / `/client` joins its station before anyone signs in: the station picks the tenant
-	if (!ctx && mobile && !bootError && join?.state !== "ok")
+	if (!ctx && mobile && !bootError && (join?.state !== "ok" || otherStation))
 		return (
 			<StationGate
 				hubVersion={boot?.hubVersion}
 				error={join?.state === "invalid" ? join.message : undefined}
 				onJoined={(station) => {
 					setJoin({ state: "ok", station });
+					setOtherStation(false);
 					void probe();
 				}}
 			/>
@@ -217,6 +220,7 @@ export function App() {
 				probeError={bootError}
 				joinStation={join?.state === "ok" ? join.station : undefined}
 				joinError={join?.state === "invalid" ? join.message : undefined}
+				onChangeStation={mobile ? () => setOtherStation(true) : undefined}
 				onRetry={() => void probe()}
 				onDevSignedIn={(m) => setMe(m)}
 			/>
