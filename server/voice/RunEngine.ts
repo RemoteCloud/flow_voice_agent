@@ -2360,13 +2360,11 @@ export class RunEngine {
 					if (open) await this.onTranscript(r.stationId, "no", 1, session);
 					return this.view(runId);
 				}
-				// the item is answered No and the run moves on, so the next press is the next item. An item that cannot
-				// hold a No (a checkbox, a number, text) is not done: skipped, and asked again at the end
+				// the item is overridden (not done) and the run moves on, so the next press is the next item; it is
+				// asked again in the sweep at the end, where "click once to go back" leads to it
 				this.clearTimers(r.runId);
 				this.deps.io.stopListening(r.stationId);
-				const result = interpret(open.type, "no", { ...this.interpretCtx(r, open, new Date(this.deps.now())), answersOnly: false });
-				if (this.level(r) !== "silent") await this.say(r, tr(r.language, "echo_short", { value: result.ok ? result.valueText : tr(r.language, "no") }));
-				if (result.ok && result.value !== CHECKBOX_NOT_DONE) return this.answerManual(runId, open.taskId, result.value, session, result.valueText);
+				if (this.level(r) !== "silent") await this.say(r, tr(r.language, "echo_short", { value: tr(r.language, "no") }));
 				return this.skip(runId, open.taskId, "no by button");
 			}
 			case "override": {

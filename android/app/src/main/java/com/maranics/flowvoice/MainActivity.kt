@@ -39,6 +39,9 @@ import org.json.JSONArray
 import org.json.JSONObject
 import java.util.Locale
 
+/** Hub used until another one is picked on the device. */
+const val DEFAULT_HUB_URL = "https://flowvoice.operationcentric.com"
+
 /**
  * Flow Voice Android agent (spec 21, profile C). The app stays thin: it owns the microphone,
  * the speaker, the foreground service and the session cookie; the hub owns everything else.
@@ -82,7 +85,8 @@ class MainActivity : AppCompatActivity() {
     private var micGranted = false
 
     private val prefs by lazy { getSharedPreferences("flowvoice", Context.MODE_PRIVATE) }
-    private val hubUrl: String? get() = prefs.getString("hubUrl", null)
+    /** The hub this app talks to: the one picked on this device (scan / "Change hub"), else the Flow Voice server. */
+    private val hubUrl: String? get() = prefs.getString("hubUrl", null)?.takeIf { it.isNotBlank() } ?: DEFAULT_HUB_URL
 
     private val micPermission = registerForActivityResult(ActivityResultContracts.RequestPermission()) { granted ->
         micGranted = granted

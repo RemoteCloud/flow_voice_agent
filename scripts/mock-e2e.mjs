@@ -752,7 +752,7 @@ try {
 	await api("POST", `runs/${btnRun.runId}/button`, { action: "no" });
 	await waitFor(async () => (await api("GET", `runs/${btnRun.runId}`)).body.currentTaskId !== noItem.taskId, "no moves on to the next item");
 	const afterNo = (await api("GET", `runs/${btnRun.runId}`)).body.items.find((i) => i.taskId === noItem.taskId);
-	assert.ok(afterNo.state === "skipped" ? afterNo.skipReason === "no by button" : afterNo.value === "No", `no answers No or skips (${afterNo.state})`);
+	assert.ok(afterNo.state === "skipped" && afterNo.skipReason === "no by button", `no overrides the item (${afterNo.state})`);
 	// back (held 2 s): the previous item is asked again
 	mark = spoken.length;
 	await api("POST", `runs/${btnRun.runId}/button`, { action: "back" });
