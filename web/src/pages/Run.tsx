@@ -5,7 +5,7 @@ import { api, toApiError } from "../api.js";
 import { useApp } from "../context.js";
 import { Icon } from "../icons.js";
 import { navigate } from "../router.js";
-import { LanguageSelect, STATE_TEXT, useVoice, type VoiceApi } from "../voice.js";
+import { LanguageSelect, STATE_TEXT, useVoice, VoiceControlSwitch, type VoiceApi } from "../voice.js";
 import { Alert, joinNames, RUN_STATE_TEXT } from "../components/ui.js";
 import { BleButtonLink } from "../components/BleButtonLink.js";
 
@@ -109,6 +109,7 @@ export function RunPage({ runId, mobile = false }: { runId: string; mobile?: boo
 									</p>
 								)}
 						</div>
+						{v.active && v.role === "endpoint" && <VoiceControlSwitch className={mobile ? "h-12 text-base" : ""} />}
 						<span className={`pill max-w-full ${voice === "listening" ? "border-danger text-danger" : voice === "speaking" ? "border-accent text-accent" : voice === "ready" ? "border-ok/50 text-ok" : "border-line-strong text-fg-muted"}`}>
 							<span className="truncate">
 								{STATE_TEXT[voice]}
@@ -245,8 +246,8 @@ export function RunPage({ runId, mobile = false }: { runId: string; mobile?: boo
 								Stop run
 							</button>
 							{mobile && v.active && (
-								<button type="button" className="btn btn-ghost" onClick={() => v.stop()}>
-									Voice off
+								<button type="button" className="btn btn-ghost" onClick={() => v.stop()} title="Stop the voice on this device: nothing is read out or heard">
+									Sound off
 								</button>
 							)}
 							<BleButtonLink quiet buttons={stations.find((s) => s.stationId === run.stationId)?.buttons} className="btn" />
@@ -331,7 +332,10 @@ function VoiceControls({ run, v, station, done, current, mobile, act, startVoice
 				</button>
 			</div>
 		);
-	const ptt = (
+	// voice control off: nothing is heard, so the talk button gives way to the switch that turns listening back on
+	const ptt = !v.voiceControl ? (
+		<VoiceControlSwitch hint className={mobile ? "h-16 min-w-0 flex-1 rounded-2xl text-base" : "h-16 px-6 text-lg"} />
+	) : (
 		<button
 			type="button"
 			className={`${mobile ? "h-16 min-w-0 flex-1 rounded-2xl border-2 text-base" : "h-32 w-32 rounded-full border-4 text-lg"} flex items-center justify-center font-semibold select-none ${listening ? "mic-ring border-danger bg-danger/20 text-danger" : "border-accent bg-accent/10 text-accent active:bg-accent/30"}`}
@@ -396,8 +400,8 @@ function VoiceControls({ run, v, station, done, current, mobile, act, startVoice
 						Resume
 					</button>
 				) : null}
-				<button type="button" className="btn btn-ghost" onClick={() => v.stop()}>
-					Voice off
+				<button type="button" className="btn btn-ghost" onClick={() => v.stop()} title="Stop the voice on this device: nothing is read out or heard">
+					Sound off
 				</button>
 				{run.voiceModeCrew && <VoiceModeButton run={run} onError={onError} onDone={reload} />}
 				<LanguageSelect />

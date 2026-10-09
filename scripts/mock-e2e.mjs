@@ -775,6 +775,53 @@ try {
 	await api("PUT", "stations", withButtons.map(({ buttons: _b, ...s }) => s));
 	assert.equal((await api("GET", "stations")).body.find((st) => st.stationId === "bridge-01").buttons, undefined);
 
+	// voice control off on the device (hello capabilities.listens = false): the hub reads, never opens a window, and the
+	// station's button is named in what it says; at the end with items answered No / not done, a press goes back to them
+	step = "voice control off";
+	await api("PUT", "stations/ecr-01/buttons", { buttons: [{ key: "Ble1FFE101", action: "accept", double: "no", hold: "back" }] });
+	const vcWs = new WebSocket(`ws://127.0.0.1:${port}/v1/audio`, { headers: { cookie } });
+	await new Promise((resolve, reject) => {
+		vcWs.once("open", resolve);
+		vcWs.once("error", reject);
+	});
+	const vcSpoken = [];
+	const vcFrames = [];
+	vcWs.on("message", (data) => {
+		const m = JSON.parse(String(data));
+		vcFrames.push(m);
+		if (m.type === "speak") {
+			vcSpoken.push(m.text);
+			setTimeout(() => vcWs.send(JSON.stringify({ type: "spoken", promptId: m.promptId })), 20);
+		}
+	});
+	vcWs.send(JSON.stringify({ type: "hello", endpointId: "e2e-quiet", stationId: "ecr-01", capabilities: { pushToTalk: true, localStt: true, localTts: true, listens: false }, language: "en" }));
+	await waitFor(() => vcFrames.some((m) => m.type === "hello" && m.role === "endpoint"), "quiet endpoint hello");
+	const vcRun = (await api("POST", "runs", { templateId: "tpl-engine", stationId: "ecr-01" })).body;
+	const vcView = async () => (await api("GET", `runs/${vcRun.runId}`)).body;
+	await waitFor(() => vcSpoken.some((t) => t.includes("Check lube oil pressure") && t.includes("Click to confirm.")), "item read with the button hint");
+	await new Promise((r) => setTimeout(r, 300));
+	assert.ok(!vcFrames.some((m) => m.type === "listen.open"), "voice control off: no listen window");
+	await api("POST", `runs/${vcRun.runId}/button`, { action: "accept" });
+	await waitFor(async () => (await vcView()).items.find((i) => i.dataId === "ER/Main/LubeOil").state === "answered", "button answers with voice control off");
+	assert.ok(!vcSpoken.some((t) => /Check cooling water temp.*Click to confirm/.test(t)), "no click hint on a number");
+	// two quick presses (no) on everything else: skipped, swept once, skipped again, then the end line
+	for (let k = 0; k < 20; k++) {
+		const cur = (await vcView()).currentTaskId;
+		if (!cur) break;
+		await api("POST", `runs/${vcRun.runId}/button`, { action: "no" });
+		await waitFor(async () => (await vcView()).currentTaskId !== cur, "no moves on");
+	}
+	await waitFor(() => vcSpoken.some((t) => t.includes("Click once to go back, or double click to complete the checklist.")), "end line with negatives");
+	assert.ok(!vcFrames.some((m) => m.type === "listen.open"), "still no listen window");
+	// one press at the end: back to the first item answered No / not done
+	const firstNeg = (await vcView()).items.filter((i) => i.voice && i.state !== "answered" && i.state !== "info").sort((x, y) => x.index - y.index)[0];
+	await api("POST", `runs/${vcRun.runId}/button`, { action: "accept" });
+	await waitFor(async () => (await vcView()).currentTaskId === firstNeg.taskId, "one press at the end goes back to the first negative");
+	// two quick presses while items are open (back at the end): the hub says what is open instead of completing
+	await api("POST", `runs/${vcRun.runId}/abandon`);
+	vcWs.close();
+	await api("PUT", "stations/ecr-01/buttons", { buttons: [] });
+
 	// answer words that must come together ("a + b"): every part heard, in any order — and they say which item was answered
 	step = "words together";
 	const comboWords = (await api("PUT", "library/entry", { templateId: "tpl-engine", words: { "d:ER/Main/LubeOil": ["normal"], "d:ER/Aux/Gen1": ["running+generator"] } })).body.templates[0].words;

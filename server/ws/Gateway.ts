@@ -328,9 +328,16 @@ export class Gateway implements EngineIo {
 		});
 	}
 
+	/** Voice control is on for the station's endpoint (it opens the mic when asked). False without an endpoint. */
+	endpointListens(stationId: string): boolean {
+		const ep = this.endpoints.get(stationId);
+		return !!ep && ep.ws.readyState === ep.ws.OPEN && ep.caps.listens !== false;
+	}
+
 	listen(stationId: string, promptId: string, opts: { maxMs: number; bias?: string[]; expect?: string; grammar?: string[]; language?: string }): void {
 		const ep = this.endpoints.get(stationId);
-		if (!ep) return;
+		// voice control off on that device: nothing is heard, so no window is opened
+		if (!ep || ep.caps.listens === false) return;
 		const record = !!this.deps.recorder && !!this.deps.records?.(stationId);
 		ep.listening = { promptId, chunks: [], bytes: 0, language: opts.language ?? ep.language, bias: opts.bias, record };
 		this.send(ep, { type: "listen.open", promptId, maxMs: opts.maxMs, vad: !ep.caps.pushToTalk, bias: opts.bias, expect: opts.expect, grammar: opts.grammar, language: opts.language, ...(record ? { record } : {}) });

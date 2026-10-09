@@ -38,6 +38,9 @@ export const DISCARD_REASONS: DiscardOption[] = [
 	{ code: "Other", title: "Other", requireComment: true },
 ];
 
+/** A value that means No in any of the five languages (the answer a "no" press or a spoken no leaves). */
+const NO_VALUE = /^(no|nei|nej|nein|non)$/i;
+
 export interface EngineIo {
 	/** Speak `text` on the station's endpoint. Resolves when the endpoint reports it spoke (or a fallback timer fires). */
 	speak(stationId: string, promptId: string, text: string, language: string): Promise<void>;
@@ -48,6 +51,8 @@ export interface EngineIo {
 	hasEndpoint(stationId: string): boolean;
 	/** Language the endpoint chose in `hello` (overrides the station / profile language while it is attached). */
 	endpointLanguage(stationId: string): string | undefined;
+	/** Voice control is on for the station's endpoint: false = the hub only speaks, answers come from a button or the screen. */
+	endpointListens(stationId: string): boolean;
 	pushRun(stationId: string, run: RunView | null): void;
 	emit(event: HubEvent): void;
 	/** Move the station's screens (endpoint + observers) to a page. */
@@ -283,6 +288,24 @@ export class RunEngine {
 
 	listRuns(): RunView[] {
 		return this.deps.store.get().runs.filter((r) => r.state !== "completed" && r.state !== "abandoned").map((r) => this.toView(r));
+	}
+
+	/** Voice control is off on the station's device: the hub reads each item, nothing is heard, a button or the screen answers. */
+	private quiet(r: RunRecord): boolean {
+		return this.deps.io.hasEndpoint(r.stationId) && !this.deps.io.endpointListens(r.stationId);
+	}
+
+	/** What the station's buttons do, for the spoken hints while voice control is off: a press accepts, two quick presses say no. */
+	private buttonHints(r: RunRecord): { click: boolean; double: boolean } {
+		const bs = (this.deps.store.get().stations.find((s) => s.stationId === r.stationId)?.buttons ?? []).filter((b) => b.key);
+		return { click: bs.some((b) => b.action === "accept"), double: bs.some((b) => b.action === "accept" && b.double === "no") };
+	}
+
+	/** Items answered No or not done (skipped, still open), in checklist order: where "go back" at the end leads. */
+	private negatives(r: RunRecord): RunItem[] {
+		return r.items
+			.filter((i) => i.voice && i.state !== "info" && (i.state === "skipped" || i.state === "unanswered" || i.state === "current" || ((i.state === "answered" || i.state === "unsynced") && (NO_VALUE.test(i.value ?? "") || NO_VALUE.test(i.valueText ?? "")))))
+			.sort((a, b) => a.index - b.index);
 	}
 
 	private station(stationId: string): Station {
@@ -835,7 +858,10 @@ export class RunEngine {
 		await this.save(r);
 		const prev = this.lastSection.get(r.runId);
 		const first = prev === undefined && !r.items.some((i) => i.state === "answered" || i.state === "unsynced");
-		const text = itemAnnouncement(item, prev, first, this.level(r), r.language);
+		let text = itemAnnouncement(item, prev, first, this.level(r), r.language);
+		r.endChoice = undefined;
+		// voice control off with a button: say what a press does (a number or free text cannot be clicked in)
+		if (this.quiet(r) && this.buttonHints(r).click && item.type !== "Number" && item.type !== "Text" && item.type !== "LongText") text = `${text} ${tr(r.language, "click_confirm")}`;
 		this.lastSection.set(r.runId, item.sectionName);
 		this.emit("run.item.spoken", r, { taskId: item.taskId, text });
 		this.armExchangeTimer(r);
@@ -887,6 +913,7 @@ export class RunEngine {
 		this.partial.delete(r.runId);
 		await this.save(r);
 		this.deps.io.status(r.stationId, "listening", tr(r.language, "trigger_ready"));
+		if (this.quiet(r)) return;
 		const maxMs = this.deps.policy.listenMs;
 		this.deps.io.listen(r.stationId, `${r.runId}:triggers`, { maxMs, bias: this.triggerBias(r), language: r.language });
 		this.clearTimer(r.runId, "listen");
@@ -899,6 +926,15 @@ export class RunEngine {
 	private async openListen(r: RunRecord, item: RunItem, maxMs = this.deps.policy.listenMs): Promise<void> {
 		const current = this.record(r.runId);
 		if (current.state !== "active" || current.currentTaskId !== item.taskId) return;
+		if (this.quiet(r)) {
+			// voice control off: no window, so no "did not hear" and no retries; the item waits for a button or the screen
+			this.clearTimer(r.runId, "listen");
+			this.clearTimer(r.runId, "confirm");
+			r.exchange = r.pendingReadback ? "confirming" : "idle";
+			await this.save(r);
+			this.deps.io.status(r.stationId, r.exchange, item.name);
+			return;
+		}
 		r.exchange = r.pendingReadback ? "confirming" : "listening";
 		await this.save(r);
 		this.deps.io.status(r.stationId, r.exchange, item.name);
@@ -1739,7 +1775,7 @@ export class RunEngine {
 	private async openWaitListen(r: RunRecord): Promise<void> {
 		const current = this.record(r.runId);
 		if (current.state !== "active" || current.exchange !== "waiting" || current.waiting?.mode !== "ask") return;
-		if (current.pendingAction || this.speaking.has(r.runId)) return;
+		if (current.pendingAction || this.speaking.has(r.runId) || this.quiet(r)) return;
 		const next = current.items.find((i) => i.taskId === current.waiting?.taskId);
 		const maxMs = this.deps.policy.listenMs;
 		this.deps.io.listen(r.stationId, `${r.runId}:waiting`, {
@@ -1864,7 +1900,17 @@ export class RunEngine {
 		r.exchange = "idle";
 		r.currentTaskId = undefined;
 		await this.save(r);
-		await this.say(r, this.completionText(r));
+		const hints = this.quiet(r) ? this.buttonHints(r) : undefined;
+		if (hints?.double) {
+			// voice control off with a button: the press decides. Something answered No or not done → one press goes
+			// back to it, two quick presses complete; otherwise two quick presses complete
+			const neg = this.negatives(r);
+			r.endChoice = neg.length > 0 || undefined;
+			await this.save(r);
+			const p = progressOf(r.items);
+			const progress = tr(r.language, "completion_progress", { name: r.templateName, answered: spokenNumber(p.answered, r.language), total: spokenNumber(p.total, r.language) });
+			await this.say(r, `${progress} ${neg.length ? tr(r.language, "end_negatives", { n: spokenNumber(neg.length, r.language) }) : tr(r.language, "end_click_complete")}`);
+		} else await this.say(r, this.completionText(r));
 		this.deps.io.status(r.stationId, "idle", "ready to complete on screen");
 		void this.pumpPrompts(r.stationId);
 	}
@@ -1982,6 +2028,7 @@ export class RunEngine {
 		r.exchange = "confirming";
 		await this.save(r);
 		this.deps.io.status(r.stationId, "confirming", r.pendingAction?.kind);
+		if (this.quiet(r)) return;
 		this.deps.io.listen(r.stationId, `${r.runId}:action`, { maxMs: this.deps.policy.confirmMs, expect: "Confirm", language: r.language });
 		this.clearTimer(r.runId, "listen");
 		const t = setTimeout(() => void this.onListenTimeout(r.runId), this.deps.policy.confirmMs + 1500);
@@ -2273,6 +2320,12 @@ export class RunEngine {
 			case "accept": {
 				if (r.exchange === "waiting") return this.proceed(runId, "screen");
 				if (!open) {
+					// at the end with items answered No or not done: one press goes back to the first of them
+					const back = r.endChoice && !r.waiting ? this.negatives(r)[0] : undefined;
+					if (back) {
+						r.endChoice = undefined;
+						return this.jumpTo(runId, back.taskId);
+					}
 					// every item answered: the button is the Complete button (press, then press again to confirm)
 					const p = progressOf(r.items);
 					return p.total > 0 && p.answered >= p.total && !nextItem(r.items) ? this.completeTap(runId, session) : this.view(runId);
@@ -2300,6 +2353,8 @@ export class RunEngine {
 				return this.view(runId);
 			}
 			case "no": {
+				// at the end (nothing asked, nothing held): two quick presses complete the checklist
+				if (!open && !r.waiting && !r.currentTaskId) return this.buttonComplete(r, session);
 				// a read-back waiting: the value heard was wrong, the item is asked again (as a spoken "no")
 				if (!open || r.pendingReadback) {
 					if (open) await this.onTranscript(r.stationId, "no", 1, session);
@@ -2330,6 +2385,18 @@ export class RunEngine {
 				return this.view(runId);
 		}
 		return this.view(runId);
+	}
+
+	/** Two quick presses at the end: complete, or say what is still open and go back to the first of it. */
+	private async buttonComplete(r: RunRecord, session: HubSession): Promise<RunView> {
+		const p = progressOf(r.items);
+		if (p.answered < p.total) {
+			await this.say(r, tr(r.language, "complete_blocked_items", { n: spokenNumber(p.total - p.answered, r.language) }));
+			const open = this.negatives(r).find((i) => i.state !== "answered" && i.state !== "unsynced");
+			return open ? this.jumpTo(r.runId, open.taskId) : this.view(r.runId);
+		}
+		r.endChoice = undefined;
+		return this.complete(r.runId, session);
 	}
 
 	async pause(runId: string): Promise<RunView> {

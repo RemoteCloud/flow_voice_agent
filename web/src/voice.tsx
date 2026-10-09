@@ -47,6 +47,9 @@ export interface VoiceApi {
 	/** Noisy bridge: the mic opens only while push-to-talk is held, never on its own after a prompt. */
 	holdToAnswer: boolean;
 	setHoldToAnswer(on: boolean): void;
+	/** Voice control on this device: on = the hub listens for spoken answers; off = it only reads, answers come from a button or the screen. Reconnects if voice is on. */
+	voiceControl: boolean;
+	setVoiceControl(on: boolean): void;
 	clearError(): void;
 }
 
@@ -94,6 +97,8 @@ export function VoiceProvider({ children }: { children: ReactNode }) {
 	const answerLangRef = useRef(answerLanguage);
 	const [holdToAnswer, setHoldState] = useState<boolean>(() => localStorage.getItem("fv.hold") === "1");
 	const holdRef = useRef(holdToAnswer);
+	const [voiceControl, setVoiceControlState] = useState<boolean>(() => localStorage.getItem("fv.voiceControl") !== "0");
+	const voiceControlRef = useRef(voiceControl);
 
 	const stop = useCallback(() => {
 		ep.current?.stop();
@@ -120,7 +125,7 @@ export function VoiceProvider({ children }: { children: ReactNode }) {
 			setError(undefined);
 			const endpoint = new AudioEndpoint(
 				// phones / tablets have no settings of their own: language and hold-to-answer come from the station (and the run language from the template)
-				{ stationId: sid, endpointId: endpointId(), language: (mobile ? "" : langRef.current) || station?.language || "en", answerLanguage: mobile ? "" : answerLangRef.current, holdToAnswer: mobile ? !!station?.holdToAnswer : holdRef.current, sttOnEndpoint: boot.speech.stt === "endpoint", serverBackup: !!boot.speech.sttBackup, hubStt: station?.speech === "hub", serverTts: boot.speech.tts === "http", pushToTalk: !open, handsFree: handsFree || open },
+				{ stationId: sid, endpointId: endpointId(), language: (mobile ? "" : langRef.current) || station?.language || "en", answerLanguage: mobile ? "" : answerLangRef.current, holdToAnswer: mobile ? !!station?.holdToAnswer : holdRef.current, sttOnEndpoint: boot.speech.stt === "endpoint", serverBackup: !!boot.speech.sttBackup, hubStt: station?.speech === "hub", serverTts: boot.speech.tts === "http", pushToTalk: !open, handsFree: handsFree || open, listens: voiceControlRef.current },
 				{
 					onState: (s, t) => {
 						setState(s);
@@ -278,9 +283,21 @@ export function VoiceProvider({ children }: { children: ReactNode }) {
 				localStorage.setItem("fv.hold", on ? "1" : "0");
 				ep.current?.setHoldToAnswer(on);
 			},
+			voiceControl,
+			setVoiceControl: (on) => {
+				voiceControlRef.current = on;
+				setVoiceControlState(on);
+				localStorage.setItem("fv.voiceControl", on ? "1" : "0");
+				// it rides in the AEP hello (capabilities.listens): reconnect so the hub stops / starts listening
+				if (ep.current && stationId) {
+					const sid = stationId;
+					stop();
+					void start(sid);
+				}
+			},
 			clearError: () => setError(undefined),
 		}),
-		[state, stateText, role, stationId, handsFree, transcript, run, events, error, start, stop, boot.speech.stt, language, answerLanguage, holdToAnswer],
+		[state, stateText, role, stationId, handsFree, transcript, run, events, error, start, stop, boot.speech.stt, language, answerLanguage, holdToAnswer, voiceControl],
 	);
 
 	return <VoiceContext.Provider value={api}>{children}</VoiceContext.Provider>;
@@ -292,7 +309,32 @@ export function useVoice(): VoiceApi {
 	return v;
 }
 
-export const STATE_TEXT: Record<EndpointState, string> = { disconnected: "Voice off", connecting: "Connecting…", observer: "Observing", ready: "Ready", speaking: "Speaking", listening: "Listening", thinking: "…" };
+/**
+ * The voice control switch: big and coloured so it is clear from across the bridge whether the hub listens. Off = the
+ * hub still reads each item, answers come from the button or the screen.
+ */
+export function VoiceControlSwitch({ className = "", hint }: { className?: string; hint?: boolean }) {
+	const v = useVoice();
+	const on = v.voiceControl;
+	return (
+		<button
+			type="button"
+			role="switch"
+			aria-checked={on}
+			onClick={() => v.setVoiceControl(!on)}
+			className={`btn gap-2 border-2 font-semibold ${on ? "border-ok bg-ok/15 text-ok" : "border-warn bg-warn/15 text-warn"} ${className}`}
+			title={on ? "The hub listens for spoken answers. Tap to answer only by button or screen." : "The hub reads each item but does not listen. Tap to answer by voice again."}
+		>
+			<span aria-hidden className={`inline-block size-3 shrink-0 rounded-full ${on ? "bg-ok" : "bg-warn"}`} />
+			<span className="truncate">
+				{on ? "Voice control ON" : "Voice control OFF"}
+				{hint ? (on ? " · tap to turn off" : " · tap to turn on") : ""}
+			</span>
+		</button>
+	);
+}
+
+export const STATE_TEXT: Record<EndpointState, string> = { disconnected: "Sound off", connecting: "Connecting…", observer: "Observing", ready: "Ready", speaking: "Speaking", listening: "Listening", thinking: "…" };
 
 /** Per-device languages: the one the checklist is spoken in, and the one the crew answers in. Shown wherever voice can be started. */
 export function LanguageSelect({ compact }: { compact?: boolean }) {
@@ -353,8 +395,9 @@ export function VoiceBar({ compact }: { compact?: boolean }) {
 						<input type="checkbox" checked={v.holdToAnswer} onChange={(e) => v.setHoldToAnswer(e.target.checked)} disabled={v.handsFree} />
 						Hold to answer
 					</label>}
-					<button type="button" className="btn btn-sm btn-ghost" onClick={v.stop}>
-						Voice off
+					{v.role === "endpoint" && <VoiceControlSwitch className={compact ? "btn-sm" : ""} />}
+					<button type="button" className="btn btn-sm btn-ghost" onClick={v.stop} title="Stop the voice on this device: nothing is read out or heard">
+						Sound off
 					</button>
 				</>
 			)}

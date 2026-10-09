@@ -337,6 +337,11 @@ export interface EndpointCapabilities {
 	localTts?: boolean;
 	/** The endpoint transcribes locally and sends `transcript` frames instead of audio. */
 	localStt?: boolean;
+	/**
+	 * false = voice control is off on this device: the hub still reads each item out loud, but never opens a
+	 * listen window (no retries, no "did not hear"); answers come from a button or the screen. Absent = on.
+	 */
+	listens?: boolean;
 }
 
 export type EndpointMessage =

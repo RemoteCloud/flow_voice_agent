@@ -116,6 +116,8 @@ export interface EndpointOptions {
 	hubStt?: boolean;
 	/** Hub boot info: the hub has a voice server (GET /api/tts): the same voice on every computer, in the checklist's language. */
 	serverTts?: boolean;
+	/** false = voice control off on this device: the hub's voice is played, the mic never opens (answers by button or screen). */
+	listens?: boolean;
 }
 
 const IDLE = "idle";
@@ -185,7 +187,7 @@ export class AudioEndpoint {
 		const browserStt = !!(window.SpeechRecognition ?? window.webkitSpeechRecognition) && !(opts.serverBackup && (opts.hubStt || hubSttPreferred()));
 		const localStt = opts.sttOnEndpoint && (hasAndroid() ? window.FlowVoiceAndroid!.hasLocalStt() : browserStt);
 		this.handsFree = !!opts.handsFree;
-		this.capabilities = { input: [hasAndroid() ? "android-mic" : "browser-mic"], sampleRate: 16000, aec: false, pushToTalk: opts.pushToTalk && !this.handsFree, wakeWord: false, localTts: true, localStt };
+		this.capabilities = { input: [hasAndroid() ? "android-mic" : "browser-mic"], sampleRate: 16000, aec: false, pushToTalk: opts.pushToTalk && !this.handsFree, wakeWord: false, localTts: true, localStt, ...(opts.listens === false ? { listens: false } : {}) };
 		window.FlowVoiceAndroid?.setServerStt?.(!!opts.serverBackup);
 		window.FlowVoiceAndroid?.prepareGrammarStt?.(opts.answerLanguage || opts.language);
 		window.flowVoiceBridge = {
@@ -277,7 +279,7 @@ export class AudioEndpoint {
 	/** (Re)open the idle listening window unless a prompt window or TTS is active. */
 	private scheduleIdle(delayMs: number): void {
 		this.clearIdleTimer();
-		if (!this.handsFree || !this.handsFreeSupported) return;
+		if (!this.handsFree || !this.handsFreeSupported || this.opts.listens === false) return;
 		this.idleTimer = window.setTimeout(() => {
 			this.idleTimer = undefined;
 			if (!this.handsFree || this.role !== "endpoint" || this.speakingNow || this.listenPromptId || this.closed) return;
@@ -331,6 +333,7 @@ export class AudioEndpoint {
 
 	pttStart(): void {
 		if (this.role !== "endpoint" || this.pttDown) return;
+		if (this.opts.listens === false) return; // voice control off: nothing is heard
 		this.pttDown = true;
 		this.send({ type: "ptt", state: "down" });
 		// an armed prompt window (hold-to-answer) opens now; otherwise PTT opens the mic even if the hub has not asked yet
@@ -628,6 +631,8 @@ export class AudioEndpoint {
 	// ------------------------------------------------------------ STT
 
 	private openListen(promptId: string, maxMs: number): void {
+		// voice control off: the hub opens no windows for this device, and nothing here opens the mic either
+		if (this.opts.listens === false) return;
 		this.clearIdleTimer();
 		this.stopListen("cancel");
 		this.listenPromptId = promptId;
