@@ -1072,6 +1072,17 @@ try {
 	assert.equal((await api("POST", "library", { templateId: "tpl-engine" }, adminJar)).body.templates.length, 1);
 	assert.equal((await api("GET", "library")).body.templates.length, 0, "the main hub's register is untouched");
 	assert.ok((await api("GET", "checklists", undefined, adminJar)).body.some((p) => p.templateId === "tpl-engine" && p.access === "start"), "the pasted token reads Maranics");
+	// a token Maranics refuses: a 403 with a code the screens explain, never a bare 502 (Cloudflare may swap its body)
+	assert.equal((await api("POST", "tenants", { name: "Refused Co", tenant: "demo", token: "Bearer n0t-a-g00d-t0ken" }, adminJar)).status, 201);
+	const refusedJar = new Map(adminJar);
+	assert.equal((await api("POST", "tenants/refused-co/enter", undefined, refusedJar)).status, 200);
+	assert.equal((await api("POST", "auth/dev", undefined, refusedJar)).status, 200);
+	for (const p of ["library/available", "checklists"]) {
+		const r = await api("GET", p, undefined, refusedJar);
+		assert.equal(r.status, 403, `${p}: ${JSON.stringify(r.body)}`);
+		assert.equal(r.body.code, "MARANICS_UNAUTHORIZED", p);
+	}
+	assert.equal((await api("DELETE", "tenants/refused-co", undefined, adminJar)).status, 200);
 	// a station link of the tenant carries a phone into it, as a non-admin
 	const tStations = (await api("GET", "stations", undefined, adminJar)).body;
 	const tToken = tStations[0].join.path.split("/join/")[1];

@@ -341,6 +341,18 @@ export class RunEngine {
 
 	// ------------------------------------------------------------ picker
 
+	/**
+	 * Maranics said no to this person's token (401 / 403): their user in that tenant lacks Flow / Templates access,
+	 * or the sign-in client does. Never 401 (to the client that means "hub session gone": it would bounce to the
+	 * login page and straight back) and not 5xx either: Cloudflare may answer a 502 with its own page, and the
+	 * explanation is lost ("HTTP 502" on screen). 403 + MARANICS_UNAUTHORIZED, which the screens explain.
+	 */
+	private refusedToken(session: HubSession, res: { status?: number; message: string }): void {
+		if (res.status !== 401 && res.status !== 403) return;
+		this.deps.log.warn(`Maranics refused the token of ${session.sub}: ${res.message}`);
+		throw new EngineError(403, "MARANICS_UNAUTHORIZED", `Maranics refused this account (${res.message})`);
+	}
+
 	async listPicks(session: HubSession, stationId: string | undefined = session.stationId): Promise<ChecklistPick[]> {
 		const api = await this.deps.credentials.apiSettings(session);
 		if (!api) throw noCredential();
@@ -348,10 +360,7 @@ export class RunEngine {
 		if (!flows.ok) {
 			// Never 401 here: to the client 401 means "hub session gone" and it would bounce to the login screen
 			// (and straight back, since the hub session is fine). A Maranics-side refusal is an upstream problem.
-			if (flows.status === 401 || flows.status === 403) {
-				this.deps.log.warn(`Maranics refused the token of ${session.sub}: ${flows.message}`);
-				throw new EngineError(502, "MARANICS_UNAUTHORIZED", `Maranics rejected this session's token (${flows.message}) — the sign-in client may lack Flow API access`);
-			}
+			this.refusedToken(session, flows);
 			throw new EngineError(502, "MARANICS", `Maranics flows: ${flows.message}`);
 		}
 		const picks: ChecklistPick[] = [];
@@ -591,7 +600,10 @@ export class RunEngine {
 		const api = await this.deps.credentials.apiSettings(session);
 		if (!api) throw noCredential();
 		const list = await this.deps.flows.listTemplates(api);
-		if (!list.ok) throw new EngineError(502, "MARANICS", `Maranics templates: ${list.message}`);
+		if (!list.ok) {
+			this.refusedToken(session, list);
+			throw new EngineError(502, "MARANICS", `Maranics templates: ${list.message}`);
+		}
 		const library = this.deps.store.get().library ?? {};
 		return list.data.items.map((t) => ({ templateId: t.id, name: t.name, refId: t.refId, categoryName: t.categoryName, registered: !!library[t.id] })).sort((a, b) => a.name.localeCompare(b.name));
 	}
@@ -602,7 +614,10 @@ export class RunEngine {
 		if (!api) throw noCredential();
 		this.templates.delete(templateId);
 		const t = await this.deps.flows.getTemplate(api, templateId);
-		if (!t.ok) throw new EngineError(502, "MARANICS", `template: ${t.message}`);
+		if (!t.ok) {
+			this.refusedToken(session, t);
+			throw new EngineError(502, "MARANICS", `template: ${t.message}`);
+		}
 		const items = await this.templateItems(session, templateId);
 		await this.deps.store.update((d) => {
 			(d.library ??= {})[templateId] = { templateId, name: t.data.name, refId: t.data.refId, categoryName: t.data.categoryName, importedAt: iso(this.deps.now()), items };

@@ -1,7 +1,7 @@
 import { useCallback, useEffect, useState } from "react";
 import type { LibraryAvailable, LibraryView } from "../../../server/api.js";
 import type { TriggerSpec } from "../../../server/protocol.js";
-import { api, toApiError } from "../api.js";
+import { api, credentialErrorText, toApiError } from "../api.js";
 import { Icon } from "../icons.js";
 import { Alert, SaveMark, type SaveState } from "../components/ui.js";
 
@@ -27,12 +27,20 @@ const norm = (w: string) =>
 export function ChecklistsTab({ canEdit }: { canEdit: boolean }) {
 	const [lib, setLib] = useState<LibraryView | undefined>();
 	const [avail, setAvail] = useState<LibraryAvailable["templates"] | undefined>();
+	const [availFailed, setAvailFailed] = useState(false);
 	const [err, setErr] = useState<string | undefined>();
 	const [busy, setBusy] = useState<string | undefined>();
 	const [open, setOpen] = useState<string | undefined>();
 	const [saved, setSaved] = useState<SaveState>("idle");
 
-	const loadAvail = useCallback(() => api.get<LibraryAvailable>("library/available").then((a) => setAvail(a.templates), (e) => (setErr(toApiError(e).message), setAvail([]))), []);
+	const loadAvail = useCallback(
+		() =>
+			api.get<LibraryAvailable>("library/available").then(
+				(a) => (setAvailFailed(false), setAvail(a.templates)),
+				(e) => (setErr(credentialErrorText(toApiError(e))), setAvailFailed(true), setAvail([])),
+			),
+		[],
+	);
 	useEffect(() => {
 		api.get<LibraryView>("library").then(setLib, (e) => setErr(toApiError(e).message));
 		void loadAvail();
@@ -47,7 +55,7 @@ export function ChecklistsTab({ canEdit }: { canEdit: boolean }) {
 			void loadAvail();
 			if (key.startsWith("save:")) setSaved("saved");
 		} catch (e) {
-			setErr(toApiError(e).message);
+			setErr(credentialErrorText(toApiError(e)));
 			setSaved("idle");
 		} finally {
 			setBusy(undefined);
@@ -86,7 +94,7 @@ export function ChecklistsTab({ canEdit }: { canEdit: boolean }) {
 								</button>
 							</li>
 						))}
-						{!notAdded.length && <li className="px-4 py-3 text-sm text-fg-muted">{avail.length ? "Every checklist is downloaded." : "The Templates app returned no checklists for this sign-in."}</li>}
+						{!notAdded.length && <li className="px-4 py-3 text-sm text-fg-muted">{availFailed ? "The list could not be loaded from the Templates app (see above)." : avail.length ? "Every checklist is downloaded." : "The Templates app returned no checklists for this sign-in."}</li>}
 					</ul>
 				)}
 			</section>

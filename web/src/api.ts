@@ -63,6 +63,6 @@ export function wsUrl(path: string): string {
 /** Picker / Home load errors. The two credential codes get a plain-language line; everything else its message. */
 export function credentialErrorText(e: ApiClientError): string {
 	if (e.code === "NO_CREDENTIAL") return "No Maranics token for this session — sign out and in again.";
-	if (e.code === "MARANICS_UNAUTHORIZED") return `Maranics rejected this session's token. Signing in again will not help until the hub's OIDC client is granted Flow API access. (${e.message})`;
+	if (e.code === "MARANICS_UNAUTHORIZED") return `Maranics refused your account here. Your Maranics user in this tenant needs access to Flow and Templates: ask the tenant's Maranics administrator for a role with it, then sign out and in again. (${e.message})`;
 	return e.message;
 }
