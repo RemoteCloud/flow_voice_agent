@@ -1,6 +1,6 @@
 import { useCallback, useEffect, useState } from "react";
 import type { ChecklistPick, JoinResponse, RunView } from "../../../server/api.js";
-import { joinErrorText } from "../App.js";
+import { joinErrorText, rememberJoin } from "../App.js";
 import { api, credentialErrorText, toApiError } from "../api.js";
 import { useApp } from "../context.js";
 import { Icon, iconFor } from "../icons.js";
@@ -201,6 +201,7 @@ function StationCodeForm({ onJoined }: { onJoined: () => void }) {
 		setErr(undefined);
 		try {
 			await api.post<JoinResponse>("auth/join", { code: digits });
+			rememberJoin(digits);
 			setCode("");
 			onJoined();
 		} catch (e) {

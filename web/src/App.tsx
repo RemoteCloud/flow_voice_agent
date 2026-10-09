@@ -26,6 +26,27 @@ export function joinBody(v: string): { token: string } | { code: string } {
 	const code = joinCode(v);
 	return code ? { code } : { token: v };
 }
+/**
+ * The last station link or code this device joined with, kept in the device's own storage so a sign-out (which
+ * deletes the session and with it the station) does not mean scanning the poster again: boot redeems it once more
+ * whenever the session is not bound to a station by a link. A link or code that no longer works is forgotten.
+ */
+const SAVED_JOIN = "fv.stationJoin";
+export function savedJoin(): string | undefined {
+	try {
+		return localStorage.getItem(SAVED_JOIN) || undefined;
+	} catch {
+		return undefined;
+	}
+}
+export function rememberJoin(v: string | undefined): void {
+	try {
+		if (v) localStorage.setItem(SAVED_JOIN, v);
+		else localStorage.removeItem(SAVED_JOIN);
+	} catch {
+		/* private mode: the poster is still there */
+	}
+}
 export function joinErrorText(a: { code?: string; message: string }, byCode: boolean): string {
 	if (a.code === "JOIN_INVALID") return byCode ? "No station has this code. Check the six digits on the station poster." : "This QR code is no longer valid.";
 	if (a.code === "RATE_LIMITED") return byCode ? "Too many tries from this network right now. Wait a few minutes." : "Too many scans from this network right now. Try again in a few minutes.";
@@ -49,13 +70,28 @@ export function App() {
 	const [join, setJoin] = useState<JoinState | undefined>(() => (joinToken ? { state: "pending" } : undefined));
 	const probeGen = useRef(0);
 
-	const probe = useCallback(async () => {
+	const probe = useCallback(async (rejoin = false) => {
 		const gen = ++probeGen.current;
 		try {
-			const res = await api.get<SessionProbeResponse>("auth/session", {
+			let res = await api.get<SessionProbeResponse>("auth/session", {
 				noAuthRedirect: true,
 			});
 			if (gen !== probeGen.current) return;
+			// signed out (or signed in again) without a station: join the station this device had before
+			const saved = rejoin && res.me?.stationSource !== "join" ? savedJoin() : undefined;
+			if (saved) {
+				try {
+					const j = await api.post<JoinResponse>("auth/join", joinBody(saved), { noAuthRedirect: true });
+					if (gen !== probeGen.current) return;
+					setJoin({ state: "ok", station: j.station });
+					if (res.authenticated) res = await api.get<SessionProbeResponse>("auth/session", { noAuthRedirect: true });
+				} catch (e) {
+					// a rotated link / code is gone for good; offline or rate limited → try again next time
+					const code = toApiError(e).code;
+					if (code === "JOIN_INVALID" || code === "BAD_REQUEST") rememberJoin(undefined);
+				}
+				if (gen !== probeGen.current) return;
+			}
 			setBoot(res);
 			setBootError(undefined);
 			setMe(res.authenticated && res.me ? res.me : null);
@@ -73,7 +109,7 @@ export function App() {
 			history.replaceState(history.state, "", `${url.pathname}${url.search}${url.hash}`);
 		}
 		if (!joinToken) {
-			void probe();
+			void probe(true);
 			return;
 		}
 		// The token must not linger in the address bar or history; `?mobile=1` has already been remembered by isMobileClient().
@@ -83,6 +119,7 @@ export function App() {
 			try {
 				const res = await api.post<JoinResponse>("auth/join", joinBody(joinToken), { noAuthRedirect: true });
 				setJoin({ state: "ok", station: res.station });
+				rememberJoin(joinToken);
 			} catch (e) {
 				setJoin({ state: "invalid", message: joinErrorText(toApiError(e), !!joinCode(joinToken)) });
 			}

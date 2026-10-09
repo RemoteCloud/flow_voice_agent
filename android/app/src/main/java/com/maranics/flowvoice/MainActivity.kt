@@ -55,6 +55,35 @@ class MainActivity : AppCompatActivity() {
     private var ttsReady = false
     private var recognizer: SpeechRecognizer? = null
     private var listening = false
+    /**
+     * End of the open platform-recogniser window (elapsedRealtime). The system recogniser gives up after a few seconds
+     * of quiet whatever the page asked for; until this deadline it is restarted here instead, so the page (and the hub)
+     * see one window instead of the mic going on and off every few seconds. 0 = no window.
+     */
+    private var listenUntil = 0L
+    /** Bumped by every new window / stop / speak, so a restart queued for an old window is dropped. */
+    private var listenGen = 0
+
+    private fun openWindow(maxMs: Int) {
+        listenGen++
+        listenUntil = android.os.SystemClock.elapsedRealtime() + maxMs.coerceAtLeast(0)
+    }
+
+    private fun closeWindow() {
+        listenGen++
+        listenUntil = 0L
+    }
+
+    /** Enough of the window left for another try? (The recogniser needs a moment to start and hear something.) */
+    private fun windowLeft(): Boolean = listenUntil - android.os.SystemClock.elapsedRealtime() > 1500
+
+    private fun restartListening(fresh: Boolean) {
+        val gen = listenGen
+        if (fresh) { recognizer?.destroy(); recognizer = null }
+        web.postDelayed({
+            if (gen == listenGen && windowLeft()) beginListening(listenLanguage, preferOffline = listenLanguage !in offlineUnavailable)
+        }, 250)
+    }
     /** Grammar-restricted offline recogniser; used when the hub sends a vocabulary and a model for the language is loaded. */
     private val vosk by lazy { VoskStt(this, voskCallbacks) { hubUrl } }
     private val packsRequested = HashSet<String>()
@@ -494,6 +523,7 @@ class MainActivity : AppCompatActivity() {
 
         @JavascriptInterface
         fun speak(text: String, language: String, promptId: String) = runOnUiThread {
+            closeWindow()
             val t = tts
             if (t == null || !ttsReady) {
                 js("window.flowVoiceBridge&&window.flowVoiceBridge.onSpoken(${q(promptId)})")
@@ -513,6 +543,7 @@ class MainActivity : AppCompatActivity() {
                 js("window.flowVoiceBridge&&window.flowVoiceBridge.onListenEnd('cancel')")
                 return@runOnUiThread
             }
+            openWindow(maxMs)
             beginListening(language, preferOffline = language !in offlineUnavailable)
         }
 
@@ -529,11 +560,13 @@ class MainActivity : AppCompatActivity() {
             }
             listenExtraLanguages = extraLanguages.split(',').map { it.trim() }.filter { it.isNotEmpty() }
             listenBias = bias.split(',').map { it.trim() }.filter { it.isNotEmpty() }.take(40)
+            openWindow(maxMs)
             beginListening(language, preferOffline = language !in offlineUnavailable)
         }
 
         @JavascriptInterface
         fun stopListening() = runOnUiThread {
+            closeWindow()
             if (voskListening) vosk.stop()
             if (listening) recognizer?.stopListening()
         }
@@ -567,6 +600,7 @@ class MainActivity : AppCompatActivity() {
             if (listening) recognizer?.cancel()
             listening = false
             tts?.stop()
+            openWindow(maxMs)
             voskListening = vosk.start(language, grammarJson, maxMs)
             if (!voskListening) {
                 // model gone or mic busy: fall back to the platform recogniser so the window is not lost
@@ -593,6 +627,7 @@ class MainActivity : AppCompatActivity() {
             if (listening) recognizer?.cancel()
             listening = false
             tts?.stop()
+            openWindow(maxMs)
             voskListening = vosk.startServer(language, hintsJson, maxMs)
             if (!voskListening) beginListening(language, preferOffline = language !in offlineUnavailable)
         }
@@ -704,7 +739,8 @@ class MainActivity : AppCompatActivity() {
             listening = false
             val text = results?.getStringArrayList(SpeechRecognizer.RESULTS_RECOGNITION)?.firstOrNull()
             val conf = results?.getFloatArray(SpeechRecognizer.CONFIDENCE_SCORES)?.firstOrNull() ?: 0.9f
-            if (text.isNullOrBlank()) js("window.flowVoiceBridge&&window.flowVoiceBridge.onListenEnd('silence')")
+            if (text.isNullOrBlank() && windowLeft()) restartListening(fresh = false)
+            else if (text.isNullOrBlank()) js("window.flowVoiceBridge&&window.flowVoiceBridge.onListenEnd('silence')")
             else js("window.flowVoiceBridge&&window.flowVoiceBridge.onTranscript(${q(text)},${if (conf < 0) 0.9f else conf},true)")
         }
 
@@ -715,6 +751,12 @@ class MainActivity : AppCompatActivity() {
                 // no offline pack for this language: try the online recogniser, and skip offline for it from now on
                 offlineUnavailable.add(listenLanguage)
                 beginListening(listenLanguage, preferOffline = false)
+                return
+            }
+            val quiet = error == SpeechRecognizer.ERROR_NO_MATCH || error == SpeechRecognizer.ERROR_SPEECH_TIMEOUT
+            if ((quiet || error == SpeechRecognizer.ERROR_RECOGNIZER_BUSY) && windowLeft()) {
+                // nobody spoke yet (or the recogniser was still winding down): keep the same window open
+                restartListening(fresh = error == SpeechRecognizer.ERROR_RECOGNIZER_BUSY)
                 return
             }
             val reason = when (error) {
