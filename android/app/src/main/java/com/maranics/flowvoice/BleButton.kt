@@ -89,6 +89,24 @@ class BleButton(private val activity: Activity, val slot: Int, private val onKey
         }, null)
     }
 
+    /**
+     * Buttons already paired with this device in its Bluetooth settings (a PTT-Z shows up as a keyboard there).
+     * A paired button sleeps and stops advertising, so the scanning chooser never finds it: offer these first.
+     * `all` = every paired Bluetooth LE device, else only names that look like a button.
+     */
+    fun paired(all: Boolean): List<BluetoothDevice> {
+        if (!allowed()) return emptyList()
+        val adapter = activity.getSystemService(BluetoothManager::class.java)?.adapter ?: return emptyList()
+        return runCatching { adapter.bondedDevices }.getOrNull().orEmpty().filter { d ->
+            val le = runCatching { d.type }.getOrDefault(BluetoothDevice.DEVICE_TYPE_UNKNOWN).let { it == BluetoothDevice.DEVICE_TYPE_LE || it == BluetoothDevice.DEVICE_TYPE_DUAL || it == BluetoothDevice.DEVICE_TYPE_UNKNOWN }
+            val name = runCatching { d.name }.getOrNull().orEmpty()
+            le && (all || BUTTON_NAMES.matcher(name).matches())
+        }.sortedBy { runCatching { it.name }.getOrNull().orEmpty() }
+    }
+
+    /** A paired button was picked from the list: remember it and connect, no chooser needed. */
+    fun usePaired(device: BluetoothDevice, taken: (mac: String) -> Boolean) = pick(device, device.address, taken)
+
     /** The chooser closed: remember the picked device and connect to it. `taken` says whether another slot already has that device. */
     fun onChosen(data: Intent?, taken: (mac: String) -> Boolean) {
         if (data == null) return
@@ -104,6 +122,10 @@ class BleButton(private val activity: Activity, val slot: Int, private val onKey
             onError("No Bluetooth button picked")
             return
         }
+        pick(device, mac, taken)
+    }
+
+    private fun pick(device: BluetoothDevice?, mac: String, taken: (mac: String) -> Boolean) {
         if (taken(mac)) {
             onError("That button is already in use as another button")
             return

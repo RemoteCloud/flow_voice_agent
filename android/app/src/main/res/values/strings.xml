@@ -23,6 +23,8 @@
     <string name="button_find">Find the button (short list)</string>
     <string name="button_find_all">Show all Bluetooth devices</string>
     <string name="button_forget">Stop using this button</string>
+    <string name="button_paired_title">Already paired with this device</string>
+    <string name="button_search_new">Search for a new button…</string>
     <string name="button_failed">Bluetooth button: %1$s</string>
     <string name="button_denied">The “Nearby devices” permission is needed to use a Bluetooth button.</string>
     <string name="menu_reload">Reload</string>

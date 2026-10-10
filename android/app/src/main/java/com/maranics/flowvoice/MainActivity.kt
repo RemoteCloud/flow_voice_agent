@@ -197,7 +197,17 @@ class MainActivity : AppCompatActivity() {
     private fun chooseButton(slot: Int, all: Boolean) = withButtonPermission {
         val button = bleButtons.getOrNull(slot - 1) ?: return@withButtonPermission
         choosingSlot = slot
-        button.choose(all) { sender -> buttonChooser.launch(IntentSenderRequest.Builder(sender).build()) }
+        val scan = { button.choose(all) { sender -> buttonChooser.launch(IntentSenderRequest.Builder(sender).build()) } }
+        // a button paired in the tablet's Bluetooth settings sleeps and is invisible to the scanning chooser: list those first
+        val paired = button.paired(all)
+        if (paired.isEmpty()) scan()
+        else {
+            val names = paired.map { d -> runCatching { d.name }.getOrNull()?.takeIf { it.isNotBlank() } ?: d.address } + getString(R.string.button_search_new)
+            AlertDialog.Builder(this).setTitle(R.string.button_paired_title).setItems(names.toTypedArray()) { _, which ->
+                if (which < paired.size) button.usePaired(paired[which]) { mac -> bleButtons.any { it !== button && it.sameDevice(mac) } }
+                else scan()
+            }.show()
+        }
     }
 
     /** Menu "Bluetooth buttons…": the three slots, then what to do with the one tapped. */
