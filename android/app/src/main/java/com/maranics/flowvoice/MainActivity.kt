@@ -77,6 +77,25 @@ class MainActivity : AppCompatActivity() {
     /** Enough of the window left for another try? (The recogniser needs a moment to start and hear something.) */
     private fun windowLeft(): Boolean = listenUntil - android.os.SystemClock.elapsedRealtime() > 1500
 
+    /**
+     * The system recogniser plays a start / stop earcon on the notification stream, and within one window it is
+     * restarted after every few seconds of quiet: the tablet beeps on and off all the time. Mute the notification
+     * stream while one of our windows runs (our own voice is on the media stream) and unmute shortly after it ends.
+     */
+    private var earconsMuted = false
+    private fun muteEarcons(on: Boolean) {
+        if (on == earconsMuted) return
+        val audio = getSystemService(AUDIO_SERVICE) as android.media.AudioManager
+        runCatching { audio.adjustStreamVolume(android.media.AudioManager.STREAM_NOTIFICATION, if (on) android.media.AudioManager.ADJUST_MUTE else android.media.AudioManager.ADJUST_UNMUTE, 0) }
+            .onSuccess { earconsMuted = on }
+    }
+    /** After the stop earcon has had its chance; a restart within the window keeps it muted. */
+    private val unmuteEarcons = Runnable { if (!listening) muteEarcons(false) }
+    private fun unmuteEarconsSoon() {
+        web.removeCallbacks(unmuteEarcons)
+        web.postDelayed(unmuteEarcons, 1500)
+    }
+
     private fun restartListening(fresh: Boolean) {
         val gen = listenGen
         if (fresh) { recognizer?.destroy(); recognizer = null }
@@ -464,6 +483,8 @@ class MainActivity : AppCompatActivity() {
         for (b in bleButtons) b.close()
         vosk.shutdown()
         recognizer?.destroy()
+        web.removeCallbacks(unmuteEarcons)
+        muteEarcons(false)
         tts?.shutdown()
         VoiceService.stop(this)
         super.onDestroy()
@@ -599,6 +620,7 @@ class MainActivity : AppCompatActivity() {
             }
             if (listening) recognizer?.cancel()
             listening = false
+            unmuteEarconsSoon()
             tts?.stop()
             openWindow(maxMs)
             voskListening = vosk.start(language, grammarJson, maxMs)
@@ -626,6 +648,7 @@ class MainActivity : AppCompatActivity() {
             }
             if (listening) recognizer?.cancel()
             listening = false
+            unmuteEarconsSoon()
             tts?.stop()
             openWindow(maxMs)
             voskListening = vosk.startServer(language, hintsJson, maxMs)
@@ -678,6 +701,8 @@ class MainActivity : AppCompatActivity() {
         listenLanguage = language
         listenRetriedOnline = !preferOffline
         listening = true
+        web.removeCallbacks(unmuteEarcons)
+        muteEarcons(true)
         recognizer?.startListening(intent)
     }
 
@@ -737,6 +762,7 @@ class MainActivity : AppCompatActivity() {
 
         override fun onResults(results: Bundle?) {
             listening = false
+            unmuteEarconsSoon()
             val text = results?.getStringArrayList(SpeechRecognizer.RESULTS_RECOGNITION)?.firstOrNull()
             val conf = results?.getFloatArray(SpeechRecognizer.CONFIDENCE_SCORES)?.firstOrNull() ?: 0.9f
             if (text.isNullOrBlank() && windowLeft()) restartListening(fresh = false)
@@ -746,6 +772,7 @@ class MainActivity : AppCompatActivity() {
 
         override fun onError(error: Int) {
             listening = false
+            unmuteEarconsSoon()
             val languageProblem = error == SpeechRecognizer.ERROR_LANGUAGE_UNAVAILABLE || error == SpeechRecognizer.ERROR_LANGUAGE_NOT_SUPPORTED
             if (languageProblem && !listenRetriedOnline && listenLanguage.isNotEmpty()) {
                 // no offline pack for this language: try the online recogniser, and skip offline for it from now on

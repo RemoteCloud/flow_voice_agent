@@ -751,6 +751,12 @@ export class AudioEndpoint {
 			const a = window.FlowVoiceAndroid!;
 			// English is always understood by the hub: let the recogniser switch to it when the checklist is in another language
 			const extra = /^en/i.test(stt) ? "" : "en-US";
+			// station set to "recognised on the hub": every window goes to the hub's recogniser, the idle one too, so
+			// the platform recogniser (and its start / stop beep, restarted every few seconds of quiet) is never used
+			if (this.opts.hubStt && this.opts.serverBackup && a.startListeningServer) {
+				a.startListeningServer(stt, JSON.stringify(this.grammar?.length ? this.grammar : this.bias), maxMs, this.listenPromptId ?? "");
+				return;
+			}
 			// narrow answer set + offline grammar model on the phone: the recogniser can only return allowed words
 			if (this.grammar?.length && a.startListeningGrammar && a.hasGrammarStt?.(stt)) {
 				a.startListeningGrammar(stt, JSON.stringify(this.grammar), maxMs, this.listenPromptId ?? "");
