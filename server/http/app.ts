@@ -508,7 +508,11 @@ export function createApp(deps: AppDeps): Hono {
 					}
 				}
 			}
-			if (ep) v.endpoint = { endpointId: ep.endpointId, user: ep.user, observers: ep.observers, aec: ep.caps.aec, pushToTalk: ep.caps.pushToTalk, localStt: ep.caps.localStt, localTts: ep.caps.localTts };
+			if (ep) v.endpoint = { endpointId: ep.endpointId, user: ep.user, observers: ep.observers, aec: ep.caps.aec, pushToTalk: ep.caps.pushToTalk, localStt: ep.caps.localStt, localTts: ep.caps.localTts, ...(withLinks && ep.caps.device ? { device: ep.caps.device } : {}) };
+			if (withLinks) {
+				const dev = store.get().stationDevices?.[s.stationId];
+				if (dev) v.device = dev;
+			}
 			if (run) {
 				const view = engine.toView(run);
 				v.activeRun = { runId: run.runId, templateName: run.templateName, state: run.state, answered: view.answered, total: view.total };

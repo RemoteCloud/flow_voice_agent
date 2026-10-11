@@ -8,7 +8,7 @@ import { createLogger } from "./core/log.js";
 import { registerSecret } from "./core/redact.js";
 import { EnvError, parseEnv, type HubEnv } from "./env.js";
 import { ROLE_HEADER, SESSION_COOKIE, Tenants, type Core } from "./tenants.js";
-import { normalizeJoinCode } from "./protocol.js";
+import { normalizeJoinCode, deviceLabel } from "./protocol.js";
 import { clientIpOf, createApp, upgradeAuthenticator } from "./http/app.js";
 import { JOIN_CODE_LIMITS, RateLimiter } from "./http/rateLimit.js";
 import { OidcAuth } from "./http/auth.js";
@@ -85,6 +85,14 @@ async function run(): Promise<void> {
 			now,
 			authenticate: upgradeAuthenticator({ env, store, now }),
 			onEndpointChange: (stationId, endpointId) => log.debug(`station ${stationId}: endpoint ${endpointId ?? "none"}`),
+			// the last device on each station, for Admin → Stations ("which tablet is that, which Android, which speech engine?")
+			onDeviceInfo: async (stationId, endpointId, user, info) => {
+				await store.update((d) => {
+					d.stationDevices ??= {};
+					d.stationDevices[stationId] = { at: new Date(now()).toISOString(), endpointId, user, label: deviceLabel(info), info };
+					for (const id of Object.keys(d.stationDevices)) if (!d.stations.some((s) => s.stationId === id)) delete d.stationDevices[id];
+				});
+			},
 			bindStation: async (session, stationId, deviceId) => {
 				await store.update((d) => {
 					const s = d.sessions.find((x) => x.id === session.id);

@@ -1,7 +1,8 @@
 import assert from "node:assert/strict";
-import { BUTTON_DOUBLE_MS, BUTTON_HOLD_MS, bleIsRelease, bleKeyName, bleKeySlot, buttonKeyName, buttonPresses, stationButtons, type ButtonAction } from "./protocol.js";
+import { BUTTON_DOUBLE_MS, BUTTON_HOLD_MS, DEVICE_INFO_MAX_BYTES, bleIsRelease, bleKeyName, bleKeySlot, buttonKeyName, buttonPresses, deviceInfo, deviceLabel, parseEndpointMessage, stationButtons, type ButtonAction } from "./protocol.js";
 
 export function run(): void {
+	deviceInfoBounds();
 	// key names: the DOM code, else the key, letters and digits only
 	assert.equal(buttonKeyName("PageDown", "PageDown"), "PageDown");
 	assert.equal(buttonKeyName("", "AudioVolumeUp"), "AudioVolumeUp");
@@ -177,4 +178,35 @@ function pressReader(): void {
 	co.press("Ble1FFE101", false);
 	co.stop();
 	r.stop();
+}
+
+/** What a device says about itself is kept, but bounded: long strings cut, lists capped, oversize topics dropped, junk refused. */
+function deviceInfoBounds(): void {
+	const info = deviceInfo({ device: { manufacturer: "samsung", model: "SM-T500" }, os: { name: "Android", version: "13", sdk: 33 }, audio: { outputs: ["speaker", "bluetooth"], micMute: false, nothing: null } });
+	assert.deepEqual(info, { device: { manufacturer: "samsung", model: "SM-T500" }, os: { name: "Android", version: "13", sdk: 33 }, audio: { outputs: ["speaker", "bluetooth"], micMute: false, nothing: null } });
+	assert.equal(deviceLabel(info), "Samsung SM-T500 · Android 13");
+	assert.equal(deviceLabel(deviceInfo({ browser: { name: "Chrome", version: "130" }, os: { name: "Windows" }, app: { version: "0.4.0" } })), "Chrome 130 · Windows · app 0.4.0");
+	assert.equal(deviceLabel(deviceInfo({ device: { manufacturer: "Google", model: "Google Pixel 8" } })), "Google Pixel 8");
+	assert.equal(deviceLabel(undefined), "");
+	assert.equal(deviceInfo("samsung"), undefined);
+	assert.equal(deviceInfo({}), undefined);
+	assert.equal(deviceInfo({ fn: () => 1 }), undefined);
+	// strings cut, lists capped, functions / undefined dropped, numbers must be finite
+	const long = deviceInfo({ a: { s: "x".repeat(1000), l: Array.from({ length: 100 }, (_, i) => i), f: Infinity, u: undefined } });
+	const a = long?.a as Record<string, unknown>;
+	assert.equal((a.s as string).length, 400);
+	assert.equal((a.l as unknown[]).length, 60);
+	assert.equal(a.f, null);
+	assert.equal("u" in a, false);
+	// too deep is cut off
+	assert.deepEqual(deviceInfo({ a: { b: { c: { d: { e: 1 } } } } }), { a: { b: { c: {} } } });
+	// the whole thing stays under the byte limit: the biggest topic goes first
+	const big = deviceInfo({ small: { ok: true }, huge: { list: Array.from({ length: 60 }, (_, i) => "y".repeat(399) + i) } });
+	assert.deepEqual(big, { small: { ok: true } });
+	assert.ok(JSON.stringify(big).length <= DEVICE_INFO_MAX_BYTES);
+	// rides in hello.capabilities, bounded on the way in; a junk device field is dropped, the other flags stay
+	const m = parseEndpointMessage(JSON.stringify({ type: "hello", endpointId: "e1", stationId: "s1", capabilities: { localStt: true, device: { os: { name: "Android" } } } }));
+	assert.deepEqual(m, { type: "hello", endpointId: "e1", stationId: "s1", capabilities: { localStt: true, device: { os: { name: "Android" } } }, language: undefined, observer: false });
+	const junk = parseEndpointMessage(JSON.stringify({ type: "hello", endpointId: "e1", stationId: "s1", capabilities: { localStt: true, device: "phone" } }));
+	assert.deepEqual(junk && junk.type === "hello" ? junk.capabilities : undefined, { localStt: true });
 }

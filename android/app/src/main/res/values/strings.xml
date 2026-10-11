@@ -27,6 +27,12 @@
     <string name="button_search_new">Search for a new button…</string>
     <string name="button_failed">Bluetooth button: %1$s</string>
     <string name="button_denied">The “Nearby devices” permission is needed to use a Bluetooth button.</string>
+    <string name="menu_device_info">Device info…</string>
+    <string name="device_info_title">Device info</string>
+    <string name="close">Close</string>
+    <string name="copy">Copy</string>
+    <string name="copied">Copied</string>
+    <string name="share">Share</string>
     <string name="menu_reload">Reload</string>
     <string name="menu_ptt_hint">Push-to-talk: hold the on-screen button, volume-up, or a headset button.</string>
     <string name="notification_channel">Voice session</string>

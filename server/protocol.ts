@@ -342,7 +342,98 @@ export interface EndpointCapabilities {
 	 * listen window (no retries, no "did not hear"); answers come from a button or the screen. Absent = on.
 	 */
 	listens?: boolean;
+	/**
+	 * Technical description of the device (`deviceInfo()` in the Android agent, `collectDeviceInfo` in the browser):
+	 * make / model / OS / screen / memory / audio / speech engines …, grouped by topic. Diagnostics only, never an
+	 * identifier (no serial, MAC, SSID or account). Bounded by `deviceInfo()` on the hub.
+	 */
+	device?: DeviceInfo;
 }
+
+/** One topic → key → value (string / number / boolean / list of them / one more level of the same). */
+export type DeviceInfo = Record<string, DeviceValue>;
+export type DeviceValue = string | number | boolean | null | DeviceValue[] | { [k: string]: DeviceValue };
+
+export const DEVICE_INFO_MAX_BYTES = 24_000;
+const DEVICE_STR_MAX = 400;
+const DEVICE_KEYS_MAX = 120;
+const DEVICE_LIST_MAX = 60;
+
+/**
+ * Bound what an endpoint claims about itself: strings cut, lists and objects capped, depth ≤ 4 and the whole thing
+ * at most `DEVICE_INFO_MAX_BYTES` once serialised; anything else → undefined. Pure.
+ */
+export function deviceInfo(v: unknown): DeviceInfo | undefined {
+	if (!isObj(v)) return undefined;
+	const out = boundValue(v, 0);
+	if (!isObj(out) || !Object.keys(out).length) return undefined;
+	let s = JSON.stringify(out);
+	if (s.length <= DEVICE_INFO_MAX_BYTES) return out as DeviceInfo;
+	// too big: drop the largest topics until it fits
+	const o = out as Record<string, DeviceValue>;
+	const bySize = Object.keys(o).sort((a, b) => JSON.stringify(o[b]).length - JSON.stringify(o[a]).length);
+	for (const k of bySize) {
+		delete o[k];
+		s = JSON.stringify(o);
+		if (s.length <= DEVICE_INFO_MAX_BYTES) break;
+	}
+	return Object.keys(o).length ? o : undefined;
+}
+
+function boundValue(v: unknown, depth: number): DeviceValue | undefined {
+	if (v === null) return null;
+	if (typeof v === "string") return v.length > DEVICE_STR_MAX ? `${v.slice(0, DEVICE_STR_MAX - 1)}…` : v;
+	if (typeof v === "number") return Number.isFinite(v) ? v : null;
+	if (typeof v === "boolean") return v;
+	if (depth >= 4) return undefined;
+	if (Array.isArray(v)) {
+		const a: DeviceValue[] = [];
+		for (const x of v) {
+			const b = boundValue(x, depth + 1);
+			if (b !== undefined) a.push(b);
+			if (a.length >= DEVICE_LIST_MAX) break;
+		}
+		return a;
+	}
+	if (isObj(v)) {
+		const o: Record<string, DeviceValue> = {};
+		let n = 0;
+		for (const [k, x] of Object.entries(v)) {
+			if (!k || k.length > 64) continue;
+			const b = boundValue(x, depth + 1);
+			if (b === undefined) continue;
+			o[k] = b;
+			if (++n >= DEVICE_KEYS_MAX) break;
+		}
+		return o;
+	}
+	return undefined;
+}
+
+/** "Samsung SM-T500 · Android 13" / "Chrome 130 on Windows" — one line for lists, logs and events; "" when nothing is known. */
+export function deviceLabel(info: DeviceInfo | undefined): string {
+	if (!info) return "";
+	const str = (topic: string, key: string): string => {
+		const t = info[topic];
+		const v = isObj(t) ? (t as Record<string, unknown>)[key] : undefined;
+		return typeof v === "string" || typeof v === "number" ? String(v) : "";
+	};
+	const parts: string[] = [];
+	const maker = str("device", "manufacturer");
+	const model = str("device", "model");
+	if (maker || model) parts.push([maker && !model.toLowerCase().startsWith(maker.toLowerCase()) ? cap(maker) : "", model].filter(Boolean).join(" "));
+	const osName = str("os", "name");
+	const osVersion = str("os", "version");
+	if (osName || osVersion) parts.push([osName, osVersion].filter(Boolean).join(" "));
+	const browser = str("browser", "name");
+	const browserVersion = str("browser", "version");
+	if (browser) parts.unshift([browser, browserVersion].filter(Boolean).join(" "));
+	const app = str("app", "version");
+	if (app) parts.push(`app ${app}`);
+	return parts.join(" · ");
+}
+
+const cap = (s: string): string => (s ? s[0].toUpperCase() + s.slice(1) : s);
 
 export type EndpointMessage =
 	| { type: "hello"; endpointId: string; stationId: string; capabilities: EndpointCapabilities; language?: string; observer?: boolean }
@@ -436,6 +527,13 @@ export function isDeviceToken(v: unknown): v is string {
 
 const isObj = (v: unknown): v is Record<string, unknown> => typeof v === "object" && v !== null && !Array.isArray(v);
 
+/** The capability flags as sent, with the device description bounded (`deviceInfo`). */
+function boundCapabilities(c: Record<string, unknown>): EndpointCapabilities {
+	const { device, ...rest } = c;
+	const d = deviceInfo(device);
+	return { ...(rest as EndpointCapabilities), ...(d ? { device: d } : {}) };
+}
+
 export function parseEndpointMessage(raw: string): EndpointMessage | undefined {
 	let v: unknown;
 	try {
@@ -447,7 +545,7 @@ export function parseEndpointMessage(raw: string): EndpointMessage | undefined {
 	switch (v.type) {
 		case "hello":
 			return typeof v.endpointId === "string" && typeof v.stationId === "string"
-				? { type: "hello", endpointId: v.endpointId, stationId: v.stationId, capabilities: isObj(v.capabilities) ? (v.capabilities as EndpointCapabilities) : {}, language: typeof v.language === "string" ? v.language : undefined, observer: v.observer === true }
+				? { type: "hello", endpointId: v.endpointId, stationId: v.stationId, capabilities: isObj(v.capabilities) ? boundCapabilities(v.capabilities) : {}, language: typeof v.language === "string" ? v.language : undefined, observer: v.observer === true }
 				: undefined;
 		case "ptt":
 			return v.state === "down" || v.state === "up" ? { type: "ptt", state: v.state } : undefined;

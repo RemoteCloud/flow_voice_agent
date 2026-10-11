@@ -10,7 +10,7 @@ import type { IncomingMessage } from "node:http";
 import type { Duplex } from "node:stream";
 import { WebSocketServer, type WebSocket } from "ws";
 import type { Logger } from "../core/log.js";
-import { parseEndpointMessage, PROTOCOL_VERSION, WS_CLOSE_PROTOCOL, WS_CLOSE_REPLACED, WS_CLOSE_UNAUTHORIZED, type EndpointCapabilities, type ExchangeState, type HubEvent, type HubToEndpointMessage, type RunView } from "../protocol.js";
+import { parseEndpointMessage, PROTOCOL_VERSION, WS_CLOSE_PROTOCOL, WS_CLOSE_REPLACED, WS_CLOSE_UNAUTHORIZED, type EndpointCapabilities, type ExchangeState, type HubEvent, type HubToEndpointMessage, type RunView, deviceLabel, type DeviceInfo } from "../protocol.js";
 import type { CaptureRecognition, VoiceRecorder } from "../speech/capture.js";
 import type { SttAdapter } from "../speech/stt.js";
 import { spokenText } from "../voice/i18n.js";
@@ -26,6 +26,8 @@ export interface GatewayDeps {
 	/** Resolve the browser / device session from the upgrade request (cookie or bearer device token). */
 	authenticate(req: IncomingMessage): Promise<{ session?: HubSession; deviceId?: string } | undefined>;
 	onEndpointChange(stationId: string, endpointId: string | undefined): void;
+	/** An endpoint described its device in `hello` (`capabilities.device`): keep it for the station. */
+	onDeviceInfo?(stationId: string, endpointId: string, user: string | undefined, device: DeviceInfo): Promise<void>;
 	/** Persist "this session is on this station". */
 	bindStation(session: HubSession, stationId: string, deviceId?: string): Promise<void>;
 	now(): number;
@@ -167,14 +169,17 @@ export class Gateway implements EngineIo {
 		}
 		if (ep.role === "endpoint") {
 			this.endpoints.set(ep.stationId, ep);
-			this.deps.log.info(`endpoint ${ep.endpointId} active on ${ep.stationId} from ${ip}${ep.session ? ` as ${ep.session.sub}` : " (no user)"}`);
+			const label = deviceLabel(ep.caps.device);
+			this.deps.log.info(`endpoint ${ep.endpointId} active on ${ep.stationId} from ${ip}${ep.session ? ` as ${ep.session.sub}` : " (no user)"}${label ? ` (${label})` : ""}`);
 			this.deps.onEndpointChange(ep.stationId, ep.endpointId);
+			if (ep.caps.device && this.deps.onDeviceInfo) await this.deps.onDeviceInfo(ep.stationId, ep.endpointId, ep.session?.sub, ep.caps.device).catch((e: unknown) => this.deps.log.warn(`device info of ${ep.endpointId} not kept: ${(e as Error).message}`));
 		} else this.observers.add(ep);
 		if (ep.session) await this.deps.bindStation(ep.session, ep.stationId, ep.deviceId);
 		const run = this.engine.activeRun(ep.stationId);
 		this.send(ep, { type: "hello", protocol: PROTOCOL_VERSION, hubVersion: this.deps.hubVersion, stationId: ep.stationId, role: ep.role, runId: run?.runId });
 		this.send(ep, { type: "run", run: run ? this.engine.toView(run) : null });
-		this.emit({ type: "station.endpoint", at: new Date(this.deps.now()).toISOString(), stationId: ep.stationId, text: ep.role === "endpoint" ? `${ep.endpointId} active` : `${ep.endpointId} observing` });
+		const dl = deviceLabel(ep.caps.device);
+		this.emit({ type: "station.endpoint", at: new Date(this.deps.now()).toISOString(), stationId: ep.stationId, text: `${ep.endpointId} ${ep.role === "endpoint" ? "active" : "observing"}${dl ? ` (${dl})` : ""}` });
 		if (ep.role === "endpoint") await this.engine.onEndpointReady(ep.stationId, ep.session);
 	}
 

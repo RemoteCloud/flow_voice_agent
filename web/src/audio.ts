@@ -13,6 +13,10 @@
  */
 import type { EndpointCapabilities, EndpointMessage, HubEvent, HubToEndpointMessage, RunView } from "../../server/protocol.js";
 import { wsUrl } from "./api.js";
+import { collectDeviceInfo, primeDeviceInfo } from "./deviceinfo.js";
+
+// voices and microphones take a moment: start gathering as soon as the bundle loads, long before the first hello
+if (typeof window !== "undefined") primeDeviceInfo();
 
 declare global {
 	interface Window {
@@ -44,6 +48,8 @@ declare global {
 			setForeground(active: boolean, text: string): void;
 			hasLocalStt(): boolean;
 			version(): string;
+			/** Technical description of the device as JSON (DeviceInfo.kt): make, Android version, memory, audio, speech engines … Sent to the hub in hello. */
+			deviceInfo?(): string;
 			setTheme?(theme: "light" | "dark"): void;
 			/** Keys of the station's hardware buttons (comma-separated DOM `code` names): the app keeps them from the page and reports them through `flowVoiceButton`. */
 			setButtonKeys?(keys: string): void;
@@ -188,6 +194,7 @@ export class AudioEndpoint {
 		const localStt = opts.sttOnEndpoint && (hasAndroid() ? window.FlowVoiceAndroid!.hasLocalStt() : browserStt);
 		this.handsFree = !!opts.handsFree;
 		this.capabilities = { input: [hasAndroid() ? "android-mic" : "browser-mic"], sampleRate: 16000, aec: false, pushToTalk: opts.pushToTalk && !this.handsFree, wakeWord: false, localTts: true, localStt, ...(opts.listens === false ? { listens: false } : {}) };
+		primeDeviceInfo();
 		window.FlowVoiceAndroid?.setServerStt?.(!!opts.serverBackup);
 		window.FlowVoiceAndroid?.prepareGrammarStt?.(opts.answerLanguage || opts.language);
 		window.flowVoiceBridge = {
@@ -359,7 +366,14 @@ export class AudioEndpoint {
 		this.ws = ws;
 		ws.onopen = () => {
 			this.retry = 0;
-			this.send({ type: "hello", endpointId: this.opts.endpointId, stationId: this.opts.stationId, capabilities: this.capabilities, language: this.opts.language, observer: this.opts.observer });
+			// what this device is rides in every hello (Admin → Stations shows it; the hub keeps the last one per station)
+			let device: EndpointCapabilities["device"];
+			try {
+				device = collectDeviceInfo();
+			} catch {
+				/* diagnostics only */
+			}
+			this.send({ type: "hello", endpointId: this.opts.endpointId, stationId: this.opts.stationId, capabilities: { ...this.capabilities, ...(device ? { device } : {}) }, language: this.opts.language, observer: this.opts.observer });
 			if (this.pingTimer) window.clearInterval(this.pingTimer);
 			this.pingTimer = window.setInterval(() => this.send({ type: "ping" }), 20000);
 		};

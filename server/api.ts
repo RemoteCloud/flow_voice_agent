@@ -1,7 +1,7 @@
 /** HTTP view types shared with the web app (relative import from web/src). */
-import type { StepMode } from "./store/HubStore.js";
+import type { StepMode, StationDevice } from "./store/HubStore.js";
 import type { AuthErrorCode, AuthProviderView } from "./http/auth.js";
-import type { ChecklistPick, RunView, TriggerSpec } from "./protocol.js";
+import type { ChecklistPick, RunView, TriggerSpec, DeviceInfo } from "./protocol.js";
 import type { AuditEntry, Device, LibraryTemplate, EventMapping, OutboxEntry, PendingEnrollment, Station, StationJoin, VoiceProfile } from "./store/HubStore.js";
 
 export type { LibraryTemplate };
@@ -57,7 +57,9 @@ export interface HealthResponse {
 }
 
 export interface StationView extends Station {
-	endpoint?: { endpointId: string; user?: string; observers: number; aec?: boolean; pushToTalk?: boolean; localStt?: boolean; localTts?: boolean };
+	endpoint?: { endpointId: string; user?: string; observers: number; aec?: boolean; pushToTalk?: boolean; localStt?: boolean; localTts?: boolean; /** What the connected device says about itself (hello). */ device?: DeviceInfo };
+	/** The last device that held this station's microphone, kept across its disconnects and hub restarts — admins only. */
+	device?: StationDevice;
 	activeRun?: { runId: string; templateName: string; state: string; answered: number; total: number };
 	/** The station's live QR join token, never the hash. */
 	join?: { tokenHint: string; createdAt: string; createdBy?: string; /** `/client#/join/<token>` — admins only; absent on links minted before the hub kept them (rotate once). */ path?: string; /** Six-digit station code to type into the app — admins only. */ code?: string };

@@ -289,6 +289,13 @@ class MainActivity : AppCompatActivity() {
         for (b in bleButtons) if (b.name.isNotEmpty()) b.connect()
 
         if (savedInstanceState == null) load() else web.restoreState(savedInstanceState)
+        // one line per topic in logcat, so `adb logcat -s FlowVoiceInfo` tells what kind of device this is
+        web.postDelayed({
+            runCatching {
+                val info = deviceInfoJson()
+                for (k in info.keys()) android.util.Log.i("FlowVoiceInfo", "$k ${info.opt(k)}")
+            }
+        }, 3000)
     }
 
     override fun onNewIntent(intent: Intent) {
@@ -391,16 +398,67 @@ class MainActivity : AppCompatActivity() {
     }
 
     private fun showMenu() {
-        val items = arrayOf(getString(R.string.menu_hub), getString(R.string.menu_scan), getString(R.string.menu_code), getString(R.string.menu_button), getString(R.string.menu_reload), getString(R.string.menu_ptt_hint))
+        val items = arrayOf(getString(R.string.menu_hub), getString(R.string.menu_scan), getString(R.string.menu_code), getString(R.string.menu_button), getString(R.string.menu_device_info), getString(R.string.menu_reload), getString(R.string.menu_ptt_hint))
         AlertDialog.Builder(this).setItems(items) { _, which ->
             when (which) {
                 0 -> askHubUrl(first = false)
                 1 -> startScan()
                 2 -> askStationCode()
                 3 -> showButtons()
-                4 -> web.reload()
+                4 -> showDeviceInfo()
+                5 -> web.reload()
             }
         }.show()
+    }
+
+    // ---- technical description of this device (DeviceInfo.kt): sent to the hub in hello, shown here, logged on start
+    private val deviceInfo by lazy { DeviceInfo(this) }
+
+    /** Everything DeviceInfo knows plus what only this activity knows (the voice engine, the recognisers in use, the buttons, the hub). */
+    private fun deviceInfoJson(): JSONObject = deviceInfo.collect {
+        val tts = JSONObject()
+        runCatching { deviceInfo.tts(tts, this@MainActivity.tts, ttsReady) }
+        put("tts", tts)
+        val voice = JSONObject()
+        voice.put("micGranted", micGranted)
+        voice.put("platformRecogniserAvailable", SpeechRecognizer.isRecognitionAvailable(this@MainActivity))
+        voice.put("offlineUnavailable", JSONArray(offlineUnavailable.toList()))
+        voice.put("grammarModelsSupported", JSONArray(VoskStt.MODELS.keys.toList()))
+        voice.put("grammarModelsLoaded", JSONArray(VoskStt.MODELS.keys.filter { vosk.hasModel(it) }))
+        voice.put("hubBackupRecogniser", vosk.serverBackup)
+        voice.put("listening", listening || voskListening)
+        put("voice", voice)
+        val buttons = JSONArray()
+        for (b in bleButtons) buttons.put(JSONObject().put("slot", b.slot).put("name", b.name).put("connected", b.connected))
+        put("buttons", JSONObject().put("bluetooth", buttons).put("boundKeys", JSONArray(buttonKeys.toList())))
+        put("hub", JSONObject().put("url", hubUrl ?: "").put("userAgent", web.settings.userAgentString))
+    }
+
+    /** Long-press menu "Device info…": the same JSON the hub gets, to read, copy or share with support. */
+    private fun showDeviceInfo() {
+        val text = runCatching { deviceInfoJson().toString(2) }.getOrElse { "error: $it" }
+        val view = android.widget.ScrollView(this).apply {
+            addView(TextView(this@MainActivity).apply {
+                this.text = text
+                typeface = android.graphics.Typeface.MONOSPACE
+                textSize = 11f
+                setTextIsSelectable(true)
+                setPadding(32, 16, 32, 16)
+            })
+        }
+        AlertDialog.Builder(this)
+            .setTitle(R.string.device_info_title)
+            .setView(view)
+            .setPositiveButton(R.string.close, null)
+            .setNeutralButton(R.string.copy) { _, _ ->
+                (getSystemService(CLIPBOARD_SERVICE) as android.content.ClipboardManager).setPrimaryClip(android.content.ClipData.newPlainText("Flow Voice device info", text))
+                Toast.makeText(this, R.string.copied, Toast.LENGTH_SHORT).show()
+            }
+            .setNegativeButton(R.string.share) { _, _ ->
+                val send = Intent(Intent.ACTION_SEND).setType("text/plain").putExtra(Intent.EXTRA_SUBJECT, "Flow Voice device info").putExtra(Intent.EXTRA_TEXT, text)
+                runCatching { startActivity(Intent.createChooser(send, getString(R.string.share))) }
+            }
+            .show()
     }
 
     // ---- station buttons (Admin → Stations → Buttons): a Bluetooth / USB button is a keyboard to Android.
@@ -548,6 +606,10 @@ class MainActivity : AppCompatActivity() {
 
         @JavascriptInterface
         fun version(): String = BuildConfig.VERSION_NAME
+
+        /** Technical description of this device as JSON (DeviceInfo.kt); the page sends it to the hub in `hello.capabilities.device`. */
+        @JavascriptInterface
+        fun deviceInfo(): String = runCatching { deviceInfoJson().toString() }.getOrElse { "{\"error\":${q(it.toString())}}" }
 
         @JavascriptInterface
         fun hasLocalStt(): Boolean = SpeechRecognizer.isRecognitionAvailable(this@MainActivity)

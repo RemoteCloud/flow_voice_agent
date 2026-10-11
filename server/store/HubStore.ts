@@ -5,7 +5,7 @@
  */
 import { mkdirSync, readFileSync, readdirSync, renameSync, statSync, writeFileSync, existsSync } from "node:fs";
 import path from "node:path";
-import type { RunItem, RunState, ExchangeState, StationButton, TriggerSpec, VoiceMode } from "../protocol.js";
+import type { RunItem, RunState, ExchangeState, StationButton, TriggerSpec, VoiceMode, DeviceInfo } from "../protocol.js";
 
 export interface HubUser {
 	sub: string;
@@ -162,6 +162,16 @@ export interface StationTemplateRule {
  * One live QR join token per station (hash only). Minting again replaces it (rotate); revoking deletes it.
  * Lives in hub.json, not in the portable stations.json, so it survives restarts but never travels to the next vessel.
  */
+/** What the last endpoint of a station said about itself, with when and who (support: "which tablet is that, which Android?"). */
+export interface StationDevice {
+	at: string;
+	endpointId: string;
+	user?: string;
+	/** One line: "Samsung SM-T500 · Android 13" (`deviceLabel`). */
+	label: string;
+	info: DeviceInfo;
+}
+
 export interface StationJoin {
 	stationId: string;
 	/** sha256 hex of the `fvj_` token. */
@@ -323,6 +333,8 @@ export interface HubData {
 	stations: Station[];
 	/** Keyed by stationId. */
 	stationJoins: Record<string, StationJoin>;
+	/** Keyed by stationId: the last device that held the station's microphone (`hello.capabilities.device`). Not portable. */
+	stationDevices?: Record<string, StationDevice>;
 	profiles: VoiceProfile[];
 	mappings: EventMapping[];
 	runs: RunRecord[];

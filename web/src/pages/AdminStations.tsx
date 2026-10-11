@@ -2,6 +2,7 @@ import { useEffect, useState } from "react";
 import type { ChecklistPick, JoinTokenResponse, LibraryView, Station, StationView, StatusResponse, VoiceProfile } from "../../../server/api.js";
 import { encodeQr, qrToSvg } from "../../../server/core/qr.js";
 import { ButtonRules } from "../components/ButtonRules.js";
+import { DevicePanel } from "../components/DevicePanel.js";
 import { api, toApiError } from "../api.js";
 import { QrCode } from "../components/QrCode.js";
 import { Icon } from "../icons.js";
@@ -279,6 +280,7 @@ export function StationsTab({ s, reload, canEdit }: { s: StatusResponse; reload:
 								<div className="sm:col-span-2">
 									<TemplateRules rules={st.templates} templates={templates} canEdit={canEdit} onChange={(t) => pick(i, { templates: t })} />
 								</div>
+								{!isNew && <DevicePanel station={live} />}
 								<details className="rounded-lg border border-line sm:col-span-2">
 									<summary className="cursor-pointer px-3 py-2 text-sm text-fg-muted">Advanced settings</summary>
 									<div className="grid gap-3 border-t border-line p-3 sm:grid-cols-2">

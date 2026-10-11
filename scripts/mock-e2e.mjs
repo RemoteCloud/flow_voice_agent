@@ -204,7 +204,9 @@ try {
 		ws.once("open", resolve);
 		ws.once("error", reject);
 	});
-	send({ type: "hello", endpointId: "e2e-endpoint", stationId: "bridge-01", capabilities: { pushToTalk: true, localStt: true, localTts: true, aec: false }, language: "en" });
+	// what the device is rides in hello (DeviceInfo.kt / deviceinfo.ts): bounded by the hub, shown to admins, kept per station
+	const deviceInfo = { device: { manufacturer: "samsung", model: "SM-T500" }, os: { name: "Android", version: "13", sdk: 33 }, audio: { outputs: ["speaker"], micMuted: false }, junk: { s: "x".repeat(2000) } };
+	send({ type: "hello", endpointId: "e2e-endpoint", stationId: "bridge-01", capabilities: { pushToTalk: true, localStt: true, localTts: true, aec: false, device: deviceInfo }, language: "en" });
 	ws.on("message", (data) => {
 		const m = JSON.parse(String(data));
 		sent.push(m);
@@ -216,6 +218,17 @@ try {
 		if (m.type === "run") runView = m.run;
 	});
 	await waitFor(() => sent.some((m) => m.type === "hello" && m.role === "endpoint"), "endpoint hello");
+	step = "device info";
+	{
+		const st = await waitFor(async () => (await api("GET", "stations")).body.find((s) => s.stationId === "bridge-01" && s.endpoint?.device), "station shows the connected device");
+		assert.equal(st.endpoint.device.device.model, "SM-T500");
+		assert.equal(st.endpoint.device.junk.s.length, 400, "long strings are cut by the hub");
+		assert.equal(st.device.label, "Samsung SM-T500 · Android 13", "the hub keeps the last device per station with a one-line label");
+		assert.equal(st.device.endpointId, "e2e-endpoint");
+		assert.ok(st.device.at, "with when it connected");
+		assert.ok(log.some((l) => l.includes("Samsung SM-T500 · Android 13")), "the hub log names the device");
+	}
+	step = "endpoint";
 
 	const say = async (text) => {
 		await waitFor(() => listenOpen, `listen window before "${text}"`);
