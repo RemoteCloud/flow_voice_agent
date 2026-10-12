@@ -8,6 +8,7 @@ import { Alert } from "../components/ui.js";
 import { ButtonSetup } from "../components/ButtonRules.js";
 import { useVoice, VoiceBar } from "../voice.js";
 import { versionLine } from "../build.js";
+import { enterFullscreen } from "../platform.js";
 
 const READINESS: Record<ChecklistPick["readiness"], { label: string; cls: string }> = {
 	full: { label: "Voice", cls: "border-ok/50 text-ok" },
@@ -28,6 +29,8 @@ export function HomePage({ onOpenRun, mobile = true }: { onOpenRun: (runId: stri
 	const [runs, setRuns] = useState<RunView[]>([]);
 	const [err, setErr] = useState<string | undefined>();
 	const [busy, setBusy] = useState<string | undefined>();
+	/** What the start button brings up next (station's checklist order); undefined = no order set. */
+	const [next, setNext] = useState<{ templateId: string; templateName: string } | { done: true } | undefined>();
 
 	const load = useCallback(async () => {
 		setErr(undefined);
@@ -35,12 +38,14 @@ export function HomePage({ onOpenRun, mobile = true }: { onOpenRun: (runId: stri
 			const [p, r] = await Promise.all([api.get<ChecklistPick[]>("checklists"), api.get<RunView[]>("runs")]);
 			setPicks(p);
 			setRuns(r);
+			const sid = me.stationId;
+			setNext(sid ? (await api.get<{ next: typeof next | null }>(`stations/${encodeURIComponent(sid)}/next`).catch(() => ({ next: null }))).next ?? undefined : undefined);
 		} catch (e) {
 			const a = toApiError(e);
 			setErr(credentialErrorText(a));
 			setPicks([]);
 		}
-	}, []);
+	}, [me.stationId]);
 	useEffect(() => {
 		void load();
 	}, [load]);
@@ -68,6 +73,28 @@ export function HomePage({ onOpenRun, mobile = true }: { onOpenRun: (runId: stri
 			})();
 		} catch (e) {
 			setErr(toApiError(e).message);
+		} finally {
+			setBusy(undefined);
+		}
+	};
+
+	// tapping the "next in order" card does what the station's start button does
+	const startNext = async () => {
+		if (!me.stationId) return;
+		setBusy("next");
+		setErr(undefined);
+		try {
+			const run = await api.post<RunView>(`stations/${encodeURIComponent(me.stationId)}/start-next`, {});
+			enterFullscreen();
+			onOpenRun(run.runId);
+			const sid = me.stationId;
+			void (async () => {
+				if (!v.active) await v.start(sid);
+				v.setHandsFree(true);
+			})();
+		} catch (e) {
+			setErr(toApiError(e).message);
+			void load();
 		} finally {
 			setBusy(undefined);
 		}
@@ -157,6 +184,16 @@ export function HomePage({ onOpenRun, mobile = true }: { onOpenRun: (runId: stri
 				</button>
 			)}
 
+			{!open && next && (
+				<button type="button" className="start-btn border-accent" disabled={busy === "next"} onClick={() => void startNext()}>
+					<Icon name="play" size={34} strokeWidth={1.5} className="shrink-0 opacity-80" />
+					<span className="min-w-0 flex-1 text-left">
+						<span className="block text-xs tracking-wide text-fg-muted uppercase">{busy === "next" ? "Starting…" : "done" in next ? "Checklist order done" : "Button starts next"}</span>
+						<span className="line-clamp-2 block text-lg leading-tight font-semibold tracking-wide uppercase">{"done" in next ? "Press twice to start from the first" : next.templateName}</span>
+					</span>
+					<Icon name="chevron" size={24} className="shrink-0 opacity-60" />
+				</button>
+			)}
 			{err && <Alert>{err}</Alert>}
 			{open && tiles.length > 0 && <p className="text-xs text-fg-muted">One checklist at a time on this station. Finish or discard “{open.templateName}” to start another.</p>}
 			{picks === undefined ? (
