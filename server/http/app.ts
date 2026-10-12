@@ -8,7 +8,7 @@ import { Hono, type Context } from "hono";
 import QRCode from "qrcode";
 import { deleteCookie, getCookie, setCookie } from "hono/cookie";
 import type { ApiError, EnrollPollResponse, EnrollRequest, EnrollResponse, HealthResponse, JoinRequest, JoinResponse, JoinTokenResponse, LibraryView, LogoutResponse, MeResponse, SessionProbeResponse, StationView, StatusResponse } from "../api.js";
-import { BUTTON_ACTIONS, isJoinToken, normalizeJoinCode, stationButtons, type TriggerSpec, type VoiceMode } from "../protocol.js";
+import { BUTTON_ACTIONS, isJoinToken, normalizeJoinCode, stationButtons, stationSequence, type TriggerSpec, type VoiceMode } from "../protocol.js";
 import type { HubEnv } from "../env.js";
 import type { Logger } from "../core/log.js";
 import type { VoiceRecorder } from "../speech/capture.js";
@@ -379,6 +379,16 @@ export function createApp(deps: AppDeps): Hono {
 			return c.json(await engine.start(row, { instanceId: str(body.instanceId), templateId: str(body.templateId), stationId, runId: str(body.runId) }), 201);
 		}),
 	);
+	// the start button: the checklist after the last one completed on the station (Admin → Stations → Checklist order)
+	api.post("/stations/:id/start-next", (c) =>
+		handle(c, async () => {
+			const row = c.get("sessionRow");
+			const id = c.req.param("id");
+			if (!isAdminCtx(c) && row.stationId && row.stationId !== id) return fail(c, 403, "FORBIDDEN", "this device belongs to another station");
+			return c.json(await engine.startNext(row, id), 201);
+		}),
+	);
+	api.get("/stations/:id/next", (c) => handle(c, async () => c.json({ next: engine.nextOfSequence(c.req.param("id")) ?? null })));
 	api.get("/runs", (c) => c.json(engine.listRuns()));
 	api.get("/runs/:id", (c) => handle(c, async () => c.json(engine.view(c.req.param("id")))));
 	api.get("/runs/:id/next", (c) =>
@@ -533,7 +543,7 @@ export function createApp(deps: AppDeps): Hono {
 		const body = (await c.req.json().catch(() => undefined)) as Station[] | undefined;
 		if (!Array.isArray(body) || !body.every((s) => isObj(s) && str(s.stationId) && str(s.name))) return fail(c, 400, "BAD_REQUEST", "array of stations expected");
 		await store.update((d) => {
-			d.stations = body.map((s) => ({ stationId: s.stationId, name: s.name, location: str(s.location), defaultProfile: s.defaultProfile ?? null, language: s.language || "en", audioPolicy: s.audioPolicy === "open" ? "open" : "ptt", autoStartAllowed: !!s.autoStartAllowed, verbosity: s.verbosity ?? "full", voiceActions: s.voiceActions !== false, holdToAnswer: s.holdToAnswer === true, askNext: s.askNext !== false, voiceMode: voiceMode(s.voiceMode), voiceModeCrew: s.voiceModeCrew === true, recordVoice: s.recordVoice === true, speech: s.speech === "hub" ? "hub" : undefined, buttons: stationButtons(s.buttons), templates: templateRules(s.templates) }));
+			d.stations = body.map((s) => ({ stationId: s.stationId, name: s.name, location: str(s.location), defaultProfile: s.defaultProfile ?? null, language: s.language || "en", audioPolicy: s.audioPolicy === "open" ? "open" : "ptt", autoStartAllowed: !!s.autoStartAllowed, verbosity: s.verbosity ?? "full", voiceActions: s.voiceActions !== false, holdToAnswer: s.holdToAnswer === true, askNext: s.askNext !== false, voiceMode: voiceMode(s.voiceMode), voiceModeCrew: s.voiceModeCrew === true, recordVoice: s.recordVoice === true, speech: s.speech === "hub" ? "hub" : undefined, buttons: stationButtons(s.buttons), templates: templateRules(s.templates), sequence: stationSequence(s.sequence) }));
 			for (const id of Object.keys(d.stationJoins)) if (!d.stations.some((s) => s.stationId === id)) delete d.stationJoins[id];
 		});
 		await ensureJoins(c.get("sessionRow").sub);
@@ -639,6 +649,27 @@ export function createApp(deps: AppDeps): Hono {
 		const runId = c.req.query("runId");
 		const rows = store.get().audit.filter((a) => !runId || a.runId === runId);
 		return c.json(rows.slice(-limit).reverse());
+	});
+
+	/** Items the hub gave up to the screen, and why (`ScreenLogEntry`). `?format=csv` downloads a spreadsheet, else JSON. */
+	api.get("/logs/screen", (c) => {
+		const denied = requireAdmin(c);
+		if (denied) return denied;
+		const rows = [...(store.get().screenLog ?? [])].reverse();
+		const stamp = new Date(deps.now()).toISOString().slice(0, 10);
+		if (c.req.query("format") !== "csv") {
+			c.header("content-disposition", `attachment; filename="screen-log-${stamp}.json"`);
+			return c.json(rows);
+		}
+		const cell = (v: unknown) => {
+			const t = v === undefined || v === null ? "" : String(v);
+			return /[",\n\r;]/.test(t) || /^[=+\-@]/.test(t) ? `"${(/^[=+\-@]/.test(t) ? "'" : "") + t.replace(/"/g, '""')}"` : t;
+		};
+		const head = ["at", "station", "checklist", "item", "dataId", "type", "reason", "attempts", "exchange", "voiceMode", "voiceOff", "readbackValue", "readbackHeard", "readbackConfidence", "users", "runId", "leadingUp"];
+		const lines = rows.map((e) =>
+			[e.at, e.stationName ?? e.stationId, e.templateName, e.item, e.dataId, e.type, e.reason, e.attempts, e.exchange, e.voiceMode, e.quiet ? "yes" : "", e.readback?.value, e.readback?.transcript, e.readback ? Math.round(e.readback.confidence * 100) + "%" : "", e.users.join(" / "), e.runId, e.recent.join("\n")].map(cell).join(","),
+		);
+		return c.body("\ufeff" + [head.join(","), ...lines].join("\r\n"), 200, { "content-type": "text/csv; charset=utf-8", "content-disposition": `attachment; filename="screen-log-${stamp}.csv"` });
 	});
 
 	api.post("/devices/approve", async (c) => {

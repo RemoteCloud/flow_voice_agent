@@ -51,6 +51,8 @@ declare global {
 			/** Technical description of the device as JSON (DeviceInfo.kt): make, Android version, memory, audio, speech engines … Sent to the hub in hello. */
 			deviceInfo?(): string;
 			setTheme?(theme: "light" | "dark"): void;
+			/** Hide (true) or show again (false) the status and navigation bars: the checklist fills the screen. */
+			setFullscreen?(on: boolean): void;
 			/** Keys of the station's hardware buttons (comma-separated DOM `code` names): the app keeps them from the page and reports them through `flowVoiceButton`. */
 			setButtonKeys?(keys: string): void;
 			/** Pick the Bluetooth push-to-talk button for a slot (1–3) in the system chooser; the app remembers it and reconnects by itself. `all` = list every device, not only button-like ones. */

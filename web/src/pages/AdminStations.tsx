@@ -278,6 +278,9 @@ export function StationsTab({ s, reload, canEdit }: { s: StatusResponse; reload:
 									<ButtonRules buttons={st.buttons} canEdit={canEdit} onChange={(b) => pick(i, { buttons: b })} />
 								</div>
 								<div className="sm:col-span-2">
+									<SequenceRules sequence={st.sequence} templates={templates} canEdit={canEdit} onChange={(q) => pick(i, { sequence: q })} />
+								</div>
+								<div className="sm:col-span-2">
 									<TemplateRules rules={st.templates} templates={templates} canEdit={canEdit} onChange={(t) => pick(i, { templates: t })} />
 								</div>
 								{!isNew && <DevicePanel station={live} />}
@@ -423,6 +426,74 @@ function TemplateRules({ rules, templates, canEdit, onChange }: { rules: Station
 					{!templates.length && <li className="px-3 py-2 text-sm text-fg-muted">No checklists yet. Download them under Checklist setup.</li>}
 				</ul>
 			)}
+		</div>
+	);
+}
+
+/**
+ * Per station: the order checklists follow each other (Arrival → Departure → …). A button set to "Start the next
+ * checklist" (or "Accept" while nothing is open) starts the one after the last completed here, full screen.
+ */
+function SequenceRules({ sequence, templates, canEdit, onChange }: { sequence: Station["sequence"]; templates: ChecklistPick[] | undefined; canEdit: boolean; onChange: (q: Station["sequence"]) => void }) {
+	const order = sequence?.order ?? [];
+	const loop = !!sequence?.loop;
+	const put = (o: string[], l = loop) => onChange(o.length ? { order: o, ...(l && { loop: true }) } : undefined);
+	const name = (id: string) => templates?.find((t) => t.templateId === id)?.templateName ?? `No longer in the hub (${id.slice(0, 8)}…)`;
+	const move = (k: number, by: number) => {
+		const o = [...order];
+		const [x] = o.splice(k, 1);
+		o.splice(k + by, 0, x!);
+		put(o);
+	};
+	return (
+		<div className="rounded-lg border border-line">
+			<div className="px-3 py-2">
+				<h3 className="text-sm font-medium">Checklist order (start button)</h3>
+				<p className="text-xs text-fg-muted">A button set to “Start the next checklist” starts the one after the last checklist completed here, full screen. While nothing is open, “Accept item” does the same.</p>
+			</div>
+			{order.length > 0 && (
+				<ol className="divide-y divide-line border-t border-line">
+					{order.map((id, k) => (
+						<li key={`${id}-${k}`} className="flex items-center gap-2 px-3 py-2 text-sm">
+							<span className="w-6 shrink-0 text-right font-mono text-fg-faint">{k + 1}.</span>
+							<span className="min-w-0 flex-1 truncate">{name(id)}</span>
+							<button type="button" className="btn btn-sm" disabled={!canEdit || k === 0} onClick={() => move(k, -1)} aria-label="Move up">
+								↑
+							</button>
+							<button type="button" className="btn btn-sm" disabled={!canEdit || k === order.length - 1} onClick={() => move(k, 1)} aria-label="Move down">
+								↓
+							</button>
+							<button type="button" className="btn btn-sm" disabled={!canEdit} onClick={() => put(order.filter((_, j) => j !== k))}>
+								Remove
+							</button>
+						</li>
+					))}
+					{order.length > 1 && (
+						<li className="px-3 py-2 text-xs text-fg-muted">
+							{loop ? `After ${name(order[order.length - 1]!)} comes ${name(order[0]!)} again.` : `After ${name(order[order.length - 1]!)} the order is done; a second press starts it from the top.`}
+						</li>
+					)}
+				</ol>
+			)}
+			<div className="flex flex-wrap items-center gap-3 border-t border-line px-3 py-2">
+				<select
+					className="input w-auto py-1 text-sm"
+					value=""
+					disabled={!canEdit || !templates?.length}
+					onChange={(e) => e.target.value && put([...order, e.target.value])}
+				>
+					<option value="">{order.length ? "Then…" : "First checklist…"}</option>
+					{(templates ?? []).map((t) => (
+						<option key={t.templateId} value={t.templateId}>
+							{t.templateName}
+						</option>
+					))}
+				</select>
+				<label className="flex items-center gap-2 text-sm">
+					<input type="checkbox" className="h-5 w-5" checked={loop} disabled={!canEdit || !order.length} onChange={(e) => put(order, e.target.checked)} />
+					Loop: after the last, start again from the first
+				</label>
+			</div>
 		</div>
 	);
 }

@@ -25,3 +25,33 @@ export function isMobileClient(): boolean {
 	// iPadOS reports a desktop Safari user agent: a Mac with a touch screen is a tablet
 	return /Macintosh/i.test(ua) && navigator.maxTouchPoints > 1;
 }
+
+/** The app put the screen into full screen itself (a checklist started by button), so it may also take it out again. */
+let fullByApp = false;
+/**
+ * The checklist fills the whole screen: the Android agent hides its system bars; a browser asks for full screen,
+ * which it only allows shortly after a key press or click (a Bluetooth button press is neither: then nothing happens).
+ */
+export function enterFullscreen(): void {
+	const android = window.FlowVoiceAndroid;
+	if (android?.setFullscreen) {
+		android.setFullscreen(true);
+		fullByApp = true;
+		return;
+	}
+	if (document.fullscreenElement || !document.documentElement.requestFullscreen) return;
+	document.documentElement.requestFullscreen({ navigationUI: "hide" }).then(
+		() => {
+			fullByApp = true;
+		},
+		() => {},
+	);
+}
+/** Back from full screen, only when `enterFullscreen` put it there (a kiosk or F11 full screen stays). */
+export function exitFullscreen(): void {
+	if (!fullByApp) return;
+	fullByApp = false;
+	const android = window.FlowVoiceAndroid;
+	if (android?.setFullscreen) android.setFullscreen(false);
+	else if (document.fullscreenElement) void document.exitFullscreen().catch(() => {});
+}

@@ -11,10 +11,11 @@
 import type { Logger } from "../core/log.js";
 import type { PolicyEnv } from "../env.js";
 import type { DiscardReason, FlowDetail, FlowsClient, TemplateDetail } from "../maranics/FlowsClient.js";
+import { nextInSequence } from "../protocol.js";
 import type { ButtonAction, ChecklistPick, ExchangeState, HubEvent, HubEventType, RunItem, RunView, TriggerSpec, VoiceMode } from "../protocol.js";
 import type { CaptureContext, CaptureOutcome } from "../speech/capture.js";
 import type { Credentials } from "../store/credentials.js";
-import type { HubSession, HubStore, PromptRecord, RunRecord, Station, StepMode, VoiceProfile } from "../store/HubStore.js";
+import type { HubSession, HubStore, PromptRecord, RunRecord, ScreenLogEntry, Station, StepMode, VoiceProfile } from "../store/HubStore.js";
 import { answerKey, buildItems, itemAnnouncement, nextItem, previousItem, progressOf, readinessOf, spokenNumber, startAnnouncement } from "./checklist.js";
 import { CHECKBOX_CHECKED, CHECKBOX_NOT_DONE, checkboxCheckedValue, controlWord, interpret, itemNumber, readbackText, THRESHOLDS, type ControlWord, type Interpretation, type InterpretContext } from "./interpret.js";
 import type { Outbox } from "./Outbox.js";
@@ -473,6 +474,67 @@ export class RunEngine {
 		await this.audit(run, "run.started", { sub: session.sub, text: run.templateName });
 		await this.announceAndSpeak(run, false);
 		return this.toView(run);
+	}
+
+	/** Non-loop order finished: a second press within this window starts again from the first (station → until, ms). */
+	private sequenceRestart = new Map<string, number>();
+
+	/** What the start button would start next on this station (`Station.sequence`), for the screen. */
+	nextOfSequence(stationId: string): { templateId: string; templateName: string; index: number } | { done: true } | undefined {
+		const station = this.station(stationId);
+		const next = nextInSequence(station.sequence, this.lastOfSequence(station));
+		if (!next || "done" in next) return next;
+		return { ...next, templateName: this.deps.store.get().library?.[next.templateId]?.name ?? next.templateId };
+	}
+
+	/** The last checklist of the station's order completed here: what the start button counts on from. */
+	private lastOfSequence(station: Station): { templateId?: string; index?: number } | undefined {
+		const order = station.sequence?.order ?? [];
+		let last: RunRecord | undefined;
+		for (const r of this.deps.store.get().runs) {
+			if (r.stationId !== station.stationId || r.state !== "completed" || !r.templateId || !order.includes(r.templateId)) continue;
+			if (!last || (r.completedAt ?? "") >= (last.completedAt ?? "")) last = r;
+		}
+		return last && { templateId: last.templateId, index: last.sequenceIndex };
+	}
+
+	/**
+	 * The start button (or "accept" while nothing is open): the checklist after the last one completed on this
+	 * station, in the order set in Admin (Arrival → Departure → Arrival …). A checklist already open here is resumed
+	 * instead. The order finished without loop: says so, and a second press within 15 s starts from the first again.
+	 */
+	async startNext(session: HubSession, stationId: string): Promise<RunView> {
+		const station = this.station(stationId);
+		const lang = station.language || this.deps.policy.defaultLanguage;
+		const open = this.activeRun(stationId);
+		if (open && open.state !== "pending") {
+			if (open.state === "paused") return this.resume(open.runId, session);
+			this.deps.io.navigate(stationId, "run", { runId: open.runId });
+			return this.toView(open);
+		}
+		let next = nextInSequence(station.sequence, this.lastOfSequence(station));
+		if (!next) {
+			await this.sayOn(stationId, lang, tr(lang, "seq_none"));
+			throw new EngineError(409, "NO_SEQUENCE", `no checklist order is set for ${station.name} (Admin → Stations → Checklist order)`);
+		}
+		if ("done" in next) {
+			if ((this.sequenceRestart.get(stationId) ?? 0) < this.deps.now()) {
+				this.sequenceRestart.set(stationId, this.deps.now() + 15_000);
+				await this.sayOn(stationId, lang, tr(lang, "seq_done"));
+				throw new EngineError(409, "SEQUENCE_DONE", "the last checklist in the order is done; press again to start from the first");
+			}
+			next = { templateId: station.sequence!.order[0]!, index: 0 };
+		}
+		this.sequenceRestart.delete(stationId);
+		const run = await this.start(session, { stationId, templateId: next.templateId });
+		const r = this.deps.store.get().runs.find((x) => x.runId === run.runId);
+		if (r) {
+			r.sequenceIndex = next.index;
+			await this.save(r);
+		}
+		await this.audit(r ?? this.record(run.runId), "run.sequence", { sub: session.sub, text: `${next.index + 1}/${station.sequence!.order.length}` });
+		this.deps.io.navigate(stationId, "run", { runId: run.runId });
+		return this.view(run.runId);
 	}
 
 	private newRun(flow: FlowDetail, station: Station, session: HubSession | undefined, userName: string | undefined, template?: TemplateDetail): RunRecord {
@@ -1056,6 +1118,7 @@ export class RunEngine {
 	}
 
 	private async escalate(r: RunRecord, item: RunItem, reason: string): Promise<void> {
+		await this.logScreen(r, item, reason);
 		this.clearTimers(r.runId);
 		this.deps.io.stopListening(r.stationId);
 		r.exchange = "escalated";
@@ -1073,6 +1136,44 @@ export class RunEngine {
 		}
 		await this.say(r, tr(r.language, "needs_screen_moving_on", { name: item.name }));
 		await this.advance(r, item);
+	}
+
+	/** What led up to an item being given to the screen, kept for Admin → Audit → "Download screen log". */
+	private async logScreen(r: RunRecord, item: RunItem, reason: string): Promise<void> {
+		const d = this.deps.store.get();
+		const recent = d.audit
+			.filter((a) => a.runId === r.runId)
+			.slice(-15)
+			.map((a) => {
+				const said = a.transcript ? ` "${a.transcript}"` : "";
+				const conf = a.confidence !== undefined ? ` ${Math.round(a.confidence * 100)}%` : "";
+				const what = [a.text, a.value !== undefined ? `= ${a.value}` : ""].filter(Boolean).join(" ");
+				return `${a.at.slice(11, 19)} ${a.kind}${a.dataId ?? a.taskId ? ` [${a.dataId ?? a.taskId}]` : ""}${said}${conf}${what ? ` ${what}` : ""}`;
+			});
+		const rb = r.pendingReadback;
+		const entry: ScreenLogEntry = {
+			at: iso(this.deps.now()),
+			runId: r.runId,
+			stationId: r.stationId,
+			stationName: d.stations.find((x) => x.stationId === r.stationId)?.name,
+			templateId: r.templateId,
+			templateName: r.templateName,
+			taskId: item.taskId,
+			dataId: item.dataId,
+			item: item.name,
+			type: item.type,
+			reason,
+			attempts: r.attempts,
+			exchange: r.exchange,
+			voiceMode: this.voiceMode(r),
+			quiet: this.quiet(r),
+			readback: rb ? { value: rb.valueText, transcript: rb.transcript, confidence: rb.confidence } : undefined,
+			users: r.users.map((u) => u.name ?? u.sub),
+			recent,
+		};
+		await this.deps.store.update((x) => {
+			(x.screenLog ??= []).push(entry);
+		});
 	}
 
 	// ------------------------------------------------------------ input
@@ -2490,6 +2591,9 @@ export class RunEngine {
 		await this.audit(r, "run.completed", { sub: session.sub, text: `${p.answered}/${p.total}` });
 		await this.say(r, tr(r.language, "completed", { name: r.templateName, answered: spokenNumber(p.answered, r.language), total: spokenNumber(p.total, r.language) }));
 		await this.runCallback(r, "completed");
+		// a station with a checklist order: say which one the start button brings up next
+		const next = this.nextOfSequence(r.stationId);
+		if (next && !("done" in next) && this.level(r) !== "silent") await this.say(r, tr(r.language, "seq_next", { name: next.templateName }));
 		this.deps.io.navigate(r.stationId, "picker");
 		void this.pumpPrompts(r.stationId);
 		void this.speakMenu(r.stationId, session);

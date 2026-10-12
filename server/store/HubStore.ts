@@ -5,7 +5,7 @@
  */
 import { mkdirSync, readFileSync, readdirSync, renameSync, statSync, writeFileSync, existsSync } from "node:fs";
 import path from "node:path";
-import type { RunItem, RunState, ExchangeState, StationButton, TriggerSpec, VoiceMode, DeviceInfo } from "../protocol.js";
+import type { RunItem, RunState, ExchangeState, StationButton, StationSequence, TriggerSpec, VoiceMode, DeviceInfo } from "../protocol.js";
 
 export interface HubUser {
 	sub: string;
@@ -99,6 +99,8 @@ export interface Station {
 	 * `language` = the language the checklist is run in on this station (wins over the hub-wide template language).
 	 */
 	templates?: Record<string, StationTemplateRule>;
+	/** The order checklists follow each other here, for the "start" button (Arrival → Departure → …). Portable. */
+	sequence?: StationSequence;
 }
 
 /** A token tenant: its own hub core under `<data>/tenants/<id>/`, acting with one pasted access token (sealed). */
@@ -287,6 +289,8 @@ export interface RunRecord {
 	endChoice?: boolean;
 	/** Complete pressed once on screen: a second press before this time completes (`RunEngine.completeTap`). */
 	completeArmedUntil?: string;
+	/** Started by the start button: the place in the station's checklist order (`Station.sequence`) it was. */
+	sequenceIndex?: number;
 	/** Between items: the next item is held until asked ("next"), a timer, or an external trigger. */
 	waiting?: RunWaiting;
 }
@@ -322,6 +326,36 @@ export interface AuditEntry {
 	text?: string;
 }
 
+/**
+ * One time the hub gave an item up to the screen ("… needs the screen. Moving on.", `RunEngine.escalate`), with what led
+ * up to it, so an admin can download it (Admin → Audit → "Download screen log") and see why. Text only, never audio.
+ */
+export interface ScreenLogEntry {
+	at: string;
+	runId: string;
+	stationId: string;
+	stationName?: string;
+	templateId?: string;
+	templateName: string;
+	taskId: string;
+	dataId?: string;
+	item: string;
+	type: string;
+	/** Why: "no answer heard", "no confirmation heard", "low confidence", "manual entry requested", an interpreter message … */
+	reason: string;
+	attempts: number;
+	/** The exchange state just before (listening, confirming, clarifying …). */
+	exchange: string;
+	voiceMode: string;
+	/** Voice control off on the device: the hub reads but never listens. */
+	quiet: boolean;
+	/** A read-back that was waiting for yes / no. */
+	readback?: { value: string; transcript: string; confidence: number };
+	users: string[];
+	/** The run's last audit lines before it, oldest first ("12:03:04 button accept", "12:03:09 item.heard \"…\" 41%"). */
+	recent: string[];
+}
+
 export interface HubData {
 	version: 1;
 	/** Bumped on "sign everyone out"; sessions carry the epoch they were minted with. */
@@ -341,6 +375,8 @@ export interface HubData {
 	prompts: PromptRecord[];
 	outbox: OutboxEntry[];
 	audit: AuditEntry[];
+	/** Items given up to the screen, newest last (`ScreenLogEntry`). */
+	screenLog?: ScreenLogEntry[];
 	idempotency: Record<string, { at: string; result: string }>;
 	/**
 	 * The central checklist register (Admin → Checklist setup): templates downloaded from the Templates app, with a snapshot of
@@ -390,9 +426,11 @@ export interface HubStore {
 const MAX_AUDIT = 5000;
 const MAX_RUNS = 200;
 const MAX_PROMPTS = 500;
+const MAX_SCREEN_LOG = 1000;
 
 function trim(d: HubData): void {
 	if (d.audit.length > MAX_AUDIT) d.audit = d.audit.slice(-MAX_AUDIT);
+	if (d.screenLog && d.screenLog.length > MAX_SCREEN_LOG) d.screenLog = d.screenLog.slice(-MAX_SCREEN_LOG);
 	if (d.runs.length > MAX_RUNS) {
 		const finished = d.runs.filter((r) => r.state === "completed" || r.state === "abandoned");
 		const drop = new Set(finished.slice(0, d.runs.length - MAX_RUNS).map((r) => r.runId));

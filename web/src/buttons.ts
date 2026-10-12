@@ -20,6 +20,7 @@ export const BUTTON_ACTION_TEXT: Record<ButtonAction, string> = {
 	repeat: "Repeat the question",
 	talk: "Hold to talk",
 	pause: "Pause / resume",
+	start: "Start the next checklist (station's checklist order), full screen",
 };
 
 /** Keys a button commonly sends, for picking one without the button at hand. */

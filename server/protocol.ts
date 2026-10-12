@@ -91,7 +91,7 @@ export type VoiceMode = "prompt" | "trigger" | "both";
  * `KeyboardEvent.code` name ("Enter", "PageDown", "AudioVolumeUp"); the Android agent maps its key codes to the same
  * names, so one setting works on a laptop and a tablet. "" = not bound to a key yet.
  */
-export const BUTTON_ACTIONS = ["accept", "no", "override", "next", "back", "repeat", "talk", "pause"] as const;
+export const BUTTON_ACTIONS = ["accept", "no", "override", "next", "back", "repeat", "talk", "pause", "start"] as const;
 export type ButtonAction = (typeof BUTTON_ACTIONS)[number];
 export const MAX_STATION_BUTTONS = 3;
 export interface StationButton {
@@ -105,6 +105,39 @@ export interface StationButton {
 }
 export const BUTTON_DOUBLE_MS = 500;
 export const BUTTON_HOLD_MS = 2000;
+
+/**
+ * The order checklists follow each other on a station (Admin → Stations → "Checklist order"): Arrival, then
+ * Departure, then Arrival again when `loop` is on. The "start" button action (and "accept" while no checklist is
+ * open) starts the one after the last checklist completed on that station. Portable (stations.json).
+ */
+export interface StationSequence {
+	/** Template ids in order; one template may appear more than once. */
+	order: string[];
+	/** After the last one, start again from the first. */
+	loop?: boolean;
+}
+export const MAX_SEQUENCE = 20;
+export function stationSequence(v: unknown): StationSequence | undefined {
+	if (!v || typeof v !== "object" || Array.isArray(v)) return undefined;
+	const { order, loop } = v as { order?: unknown; loop?: unknown };
+	const list = Array.isArray(order) ? order.filter((x): x is string => typeof x === "string" && !!x.trim()).map((x) => x.trim()).slice(0, MAX_SEQUENCE) : [];
+	return list.length ? { order: list, ...(loop === true && { loop: true }) } : undefined;
+}
+/**
+ * What the start button starts next. `last` = the template of the last checklist completed on the station, `lastIndex`
+ * = where in the order it was started from (tells two places of the same template apart). Nothing before, or a
+ * template that is not in the order → the first. After the last: the first again with `loop`, else `done`.
+ */
+export function nextInSequence(seq: StationSequence | undefined, last?: { templateId?: string; index?: number }): { templateId: string; index: number } | { done: true } | undefined {
+	const order = seq?.order ?? [];
+	if (!order.length) return undefined;
+	let at = last?.index !== undefined && order[last.index] === last.templateId ? last.index : last?.templateId ? order.indexOf(last.templateId) : -1;
+	if (at < 0) return { templateId: order[0]!, index: 0 };
+	at++;
+	if (at < order.length) return { templateId: order[at]!, index: at };
+	return seq?.loop ? { templateId: order[0]!, index: 0 } : { done: true };
+}
 
 /** The key name a button is stored under: letters and digits of the DOM `code` (or `key` when a device sends no code). */
 export function buttonKeyName(code: string | undefined, key?: string): string {

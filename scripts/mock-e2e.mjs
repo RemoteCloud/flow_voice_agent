@@ -335,6 +335,11 @@ try {
 	await waitFor(() => spoken.includes("Not done. I will come back to Bow thruster tested."), "no on a checkbox = not done");
 	await waitFor(() => /^Two items need the screen\. Arrival Checklist Oslo, six of nine answered\. Open on screen to finish\.$/.test(lastSpoken()), "completion summary");
 	assert.ok(!spoken.includes("Recorded locally, will sync."), "values synced immediately while Flow was reachable");
+	// the screen log (Admin → Audit → "Download screen log"): nothing was given up to the screen in this run
+	const screenLog = await api("GET", "logs/screen");
+	assert.ok(Array.isArray(screenLog.body) && !screenLog.body.some((e) => e.runId === runId), "screen log: no escalation in the arrival run");
+	const screenCsv = await fetch(`${base}/api/logs/screen?format=csv`, { headers: { cookie } });
+	assert.ok(screenCsv.headers.get("content-type")?.startsWith("text/csv") && (await screenCsv.text()).includes("reason,attempts"), "screen log downloads as CSV");
 
 	// complete is blocked (signatures), answer them on screen, then complete → Flow status Completed
 	step = "complete";
@@ -787,6 +792,44 @@ try {
 	assert.deepEqual((await api("PUT", "stations/bridge-01/buttons", { buttons: [] })).body.buttons, []);
 	await api("PUT", "stations", withButtons.map(({ buttons: _b, ...s }) => s));
 	assert.equal((await api("GET", "stations")).body.find((st) => st.stationId === "bridge-01").buttons, undefined);
+
+	// checklist order on a station: the start button starts the one after the last completed here (Engine → Departure → Engine …)
+	step = "checklist order";
+	await api("POST", "library", { templateId: "tpl-departure" }); // the register is the whole offer: departure must be in it to start
+	const seqPlain = (await api("GET", "stations")).body.map(({ endpoint: _e, activeRun: _r, join: _j, device: _d, ...s }) => s);
+	const withOrder = (order, loop) => seqPlain.map((s) => (s.stationId === "bridge-01" ? { ...s, sequence: { order, loop } } : s));
+	assert.equal((await api("POST", "stations/bridge-01/start-next", {})).status, 409, "no order set");
+	assert.equal((await api("POST", "stations/bridge-01/start-next", {})).body.code, "NO_SEQUENCE");
+	assert.equal((await api("PUT", "stations", withOrder(["tpl-engine", "tpl-departure", ""], "yes"))).status, 200);
+	assert.deepEqual((await api("GET", "stations")).body.find((st) => st.stationId === "bridge-01").sequence, { order: ["tpl-engine", "tpl-departure"] }, "order cleaned, loop only when true");
+	// the engine checklist was completed on bridge-01 above (voice complete): departure is next
+	assert.equal((await api("GET", "stations/bridge-01/next")).body.next.templateId, "tpl-departure");
+	mark = spoken.length;
+	const navBefore = navs.length;
+	const seqRun = await api("POST", "stations/bridge-01/start-next", {});
+	assert.equal(seqRun.status, 201, JSON.stringify(seqRun.body));
+	assert.equal(seqRun.body.templateId, "tpl-departure");
+	await waitFor(() => navs.slice(navBefore).some((n) => n.page === "run" && n.runId === seqRun.body.runId), "start button moves the screen to the run");
+	// pressed again while it is open: the same run, nothing new
+	assert.equal((await api("POST", "stations/bridge-01/start-next", {})).body.runId, seqRun.body.runId);
+	await api("POST", `runs/${seqRun.body.runId}/abandon`);
+	assert.equal((await api("GET", "stations/bridge-01/next")).body.next.templateId, "tpl-departure", "an abandoned checklist does not count as done");
+	// the engine checklist last in the order, no loop: done, a second press starts from the first
+	await api("PUT", "stations", withOrder(["tpl-departure", "tpl-engine"], false));
+	assert.equal((await api("GET", "stations/bridge-01/next")).body.next.done, true);
+	mark = spoken.length;
+	assert.equal((await api("POST", "stations/bridge-01/start-next", {})).body.code, "SEQUENCE_DONE");
+	await waitFor(() => spoken.slice(mark).some((s) => s.startsWith("That was the last checklist in the order")), "order done spoken");
+	const seqAgain = await api("POST", "stations/bridge-01/start-next", {});
+	assert.equal(seqAgain.status, 201, JSON.stringify(seqAgain.body));
+	assert.equal(seqAgain.body.templateId, "tpl-departure", "second press starts from the first");
+	await api("POST", `runs/${seqAgain.body.runId}/abandon`);
+	// loop: after the last comes the first at once
+	await api("PUT", "stations", withOrder(["tpl-departure", "tpl-engine"], true));
+	assert.deepEqual((await api("GET", "stations/bridge-01/next")).body.next, { templateId: "tpl-departure", index: 0, templateName: (await api("GET", "stations/bridge-01/next")).body.next.templateName });
+	assert.ok((await api("GET", "audit?limit=300")).body.some((a) => a.kind === "run.sequence"), "start by order is audited");
+	await api("PUT", "stations", seqPlain);
+	await api("DELETE", "library?templateId=tpl-departure");
 
 	// voice control off on the device (hello capabilities.listens = false): the hub reads, never opens a window, and the
 	// station's button is named in what it says; at the end with items answered No / not done, a press goes back to them

@@ -1,7 +1,22 @@
 import assert from "node:assert/strict";
-import { BUTTON_DOUBLE_MS, BUTTON_HOLD_MS, DEVICE_INFO_MAX_BYTES, bleIsRelease, bleKeyName, bleKeySlot, buttonKeyName, buttonPresses, deviceInfo, deviceLabel, parseEndpointMessage, stationButtons, type ButtonAction } from "./protocol.js";
+import { BUTTON_DOUBLE_MS, BUTTON_HOLD_MS, DEVICE_INFO_MAX_BYTES, bleIsRelease, bleKeyName, bleKeySlot, buttonKeyName, buttonPresses, deviceInfo, deviceLabel, nextInSequence, parseEndpointMessage, stationButtons, stationSequence, type ButtonAction } from "./protocol.js";
 
 export function run(): void {
+	// checklist order on a station: Arrival → Departure (→ Arrival again with loop)
+	const seq = { order: ["arr", "dep"] };
+	assert.deepEqual(nextInSequence(undefined), undefined);
+	assert.deepEqual(nextInSequence(seq), { templateId: "arr", index: 0 });
+	assert.deepEqual(nextInSequence(seq, { templateId: "other" }), { templateId: "arr", index: 0 });
+	assert.deepEqual(nextInSequence(seq, { templateId: "arr" }), { templateId: "dep", index: 1 });
+	assert.deepEqual(nextInSequence(seq, { templateId: "dep" }), { done: true });
+	assert.deepEqual(nextInSequence({ ...seq, loop: true }, { templateId: "dep" }), { templateId: "arr", index: 0 });
+	// the same template twice: the index tells the places apart
+	const twice = { order: ["arr", "mid", "arr", "dep"] };
+	assert.deepEqual(nextInSequence(twice, { templateId: "arr", index: 2 }), { templateId: "dep", index: 3 });
+	assert.deepEqual(nextInSequence(twice, { templateId: "arr" }), { templateId: "mid", index: 1 });
+	assert.deepEqual(stationSequence({ order: ["a", "", 3, " b "], loop: true }), { order: ["a", "b"], loop: true });
+	assert.equal(stationSequence({ order: [] }), undefined);
+	assert.deepEqual(stationSequence({ order: ["a"], loop: "yes" }), { order: ["a"] });
 	deviceInfoBounds();
 	// key names: the DOM code, else the key, letters and digits only
 	assert.equal(buttonKeyName("PageDown", "PageDown"), "PageDown");

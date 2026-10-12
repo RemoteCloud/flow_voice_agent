@@ -515,6 +515,9 @@ function AuditTab() {
 					<button type="button" className="btn btn-sm" onClick={() => void load()}>
 						Refresh
 					</button>
+					<a className="btn btn-sm" href="/api/logs/screen?format=csv" download title="Every item the voice gave up to the screen: why, what was heard and the button presses before it">
+						Download screen log
+					</a>
 				</div>
 			</div>
 			<div className="overflow-x-auto">

@@ -15,7 +15,7 @@ import { useStationButtons } from "./buttons.js";
 import { BleButtonLink } from "./components/BleButtonLink.js";
 import { useApp } from "./context.js";
 import { navigate } from "./router.js";
-import { isMobileClient } from "./platform.js";
+import { enterFullscreen, exitFullscreen, isMobileClient } from "./platform.js";
 
 const mobile = isMobileClient();
 
@@ -146,7 +146,10 @@ export function VoiceProvider({ children }: { children: ReactNode }) {
 					onRole: setRole,
 					onNavigate: (page, opts) => {
 						if (page === "run" && opts.runId) navigate({ page: "run", id: opts.runId });
-						else navigate({ page: "picker" });
+						else {
+							exitFullscreen(); // the checklist started full screen has ended
+							navigate({ page: "picker" });
+						}
 					},
 				},
 			);
@@ -223,7 +226,18 @@ export function VoiceProvider({ children }: { children: ReactNode }) {
 			try {
 				const open = (r: RunView) => r.stationId === buttonStation && (r.state === "active" || r.state === "paused" || r.state === "pending");
 				const known = runRef.current && open(runRef.current) ? runRef.current : (await http.get<RunView[]>("runs")).find(open);
-				if (known) setRun(await http.post<RunView>(`runs/${encodeURIComponent(known.runId)}/button`, { action }));
+				if (known && action === "start") {
+					// a checklist is already open here: the start button brings it up full screen
+					enterFullscreen();
+					navigate({ page: "run", id: known.runId });
+				} else if (known) setRun(await http.post<RunView>(`runs/${encodeURIComponent(known.runId)}/button`, { action }));
+				else if (action === "start" || (action === "accept" && stations.find((s) => s.stationId === buttonStation)?.sequence)) {
+					// nothing open: the next checklist in the station's order starts and fills the screen
+					const started = await http.post<RunView>(`stations/${encodeURIComponent(buttonStation)}/start-next`, {});
+					enterFullscreen(); // still within the press's user activation in a browser
+					setRun(started);
+					navigate({ page: "run", id: started.runId });
+				}
 			} catch (e) {
 				setError(toApiError(e).message);
 			} finally {
