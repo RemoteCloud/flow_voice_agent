@@ -214,6 +214,11 @@ export function StationsTab({ s, reload, canEdit }: { s: StatusResponse; reload:
 									<label className="label">Vessel / location</label>
 									<input className="input" value={st.location ?? ""} placeholder="e.g. MF Example" disabled={!canEdit} onChange={(e) => edit(i, { location: e.target.value || undefined })} onBlur={commit} />
 								</div>
+								<div className="sm:col-span-2">
+									<label className="label">Maranics Flow address</label>
+									<input className="input" type="url" inputMode="url" value={st.flowUrl ?? ""} placeholder="e.g. https://flow.example.com/?tenant=acme" disabled={!canEdit} onChange={(e) => edit(i, { flowUrl: e.target.value || undefined })} onBlur={commit} />
+									<p className="mt-1 text-xs text-fg-muted">The Flow app for this station. The tablet app opens it next to the voice once it has scanned this station's QR code (button “Flow” at the top); a computer opens it in a new tab. Empty = no Flow button.</p>
+								</div>
 								<div>
 									<label className="label">Language of the voice menu</label>
 									<select className="input" value={st.language} disabled={!canEdit} onChange={(e) => pick(i, { language: e.target.value })}>

@@ -117,6 +117,22 @@ export interface StationSequence {
 	/** After the last one, start again from the first. */
 	loop?: boolean;
 }
+/**
+ * A station's Maranics Flow address (`Station.flowUrl`): http(s) only, no credentials in it, at most 500 characters;
+ * a bare host gets https. Anything else → undefined (the station has no Flow app).
+ */
+export function flowUrlOf(v: unknown): string | undefined {
+	if (typeof v !== "string" || !v.trim() || v.length > 500) return undefined;
+	let raw = v.trim();
+	if (!/^[a-z][a-z0-9+.-]*:/i.test(raw)) raw = `https://${raw}`;
+	try {
+		const u = new URL(raw);
+		if ((u.protocol !== "https:" && u.protocol !== "http:") || !u.hostname || u.username || u.password) return undefined;
+		return u.href;
+	} catch {
+		return undefined;
+	}
+}
 export const MAX_SEQUENCE = 20;
 export function stationSequence(v: unknown): StationSequence | undefined {
 	if (!v || typeof v !== "object" || Array.isArray(v)) return undefined;

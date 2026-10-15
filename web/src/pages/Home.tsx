@@ -6,6 +6,7 @@ import { useApp } from "../context.js";
 import { Icon, iconFor } from "../icons.js";
 import { Alert } from "../components/ui.js";
 import { ButtonSetup } from "../components/ButtonRules.js";
+import { VoiceSetup } from "../components/VoicePicker.js";
 import { useVoice, VoiceBar } from "../voice.js";
 import { versionLine } from "../build.js";
 import { enterFullscreen } from "../platform.js";
@@ -108,6 +109,7 @@ export function HomePage({ onOpenRun, mobile = true }: { onOpenRun: (runId: stri
 	const station = stations.find((s) => s.stationId === me.stationId);
 	const [changing, setChanging] = useState(false);
 	const [buttonsOpen, setButtonsOpen] = useState(false);
+	const [voiceOpen, setVoiceOpen] = useState(false);
 
 	// every client takes its station from the station link / QR code / six-digit code, never from a picker
 	if (!locked || !me.stationId || changing) {
@@ -135,6 +137,7 @@ export function HomePage({ onOpenRun, mobile = true }: { onOpenRun: (runId: stri
 
 	return (
 		<div className="space-y-4">
+			{voiceOpen && <VoiceSetup language={station?.language} onClose={() => setVoiceOpen(false)} />}
 			{buttonsOpen && me.stationId && <ButtonSetup stationId={me.stationId} buttons={station?.buttons} onSave={saveButtons} onClose={() => setButtonsOpen(false)} />}
 			<div className="flex flex-wrap items-center justify-between gap-2">
 				<VoiceBar compact />
@@ -144,6 +147,9 @@ export function HomePage({ onOpenRun, mobile = true }: { onOpenRun: (runId: stri
 					</button>
 					<button type="button" className="btn btn-sm btn-ghost" onClick={() => setButtonsOpen(true)}>
 						Buttons
+					</button>
+					<button type="button" className="btn btn-sm btn-ghost" onClick={() => setVoiceOpen(true)}>
+						Voice
 					</button>
 					<button type="button" className="btn btn-sm btn-ghost" onClick={() => void load()} aria-label="Refresh the list">
 						Refresh

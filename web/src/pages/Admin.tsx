@@ -7,6 +7,7 @@ import { useApp } from "../context.js";
 import { navigate } from "../router.js";
 import { StationsTab } from "./AdminStations.js";
 import { HubQr } from "./Login.js";
+import { AdminVoices } from "../components/VoicePicker.js";
 import { versionLine } from "../build.js";
 import { Alert, EXCHANGE_TEXT, joinNames, plural, RUN_STATE_TEXT } from "../components/ui.js";
 import type { RunState } from "../../../server/protocol.js";
@@ -100,7 +101,7 @@ function SetupGuide({ s, go }: { s: StatusResponse; go: (t: Tab) => void }) {
 }
 
 function StatusTab({ s, go }: { s: StatusResponse; go: (t: Tab) => void }) {
-	const { boot } = useApp();
+	const { boot, me } = useApp();
 	return (
 		<div className="grid gap-4 md:grid-cols-2">
 			<SetupGuide s={s} go={go} />
@@ -148,6 +149,7 @@ function StatusTab({ s, go }: { s: StatusResponse; go: (t: Tab) => void }) {
 					</dd>
 				</dl>
 			</section>
+			<AdminVoices settings={s.settings} stations={s.stations} canEdit={me.isAdmin} />
 			<section className="card">
 				<div className="card-head">
 					<h2 className="card-title">Pair the Android app</h2>

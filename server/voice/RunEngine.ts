@@ -1084,7 +1084,7 @@ export class RunEngine {
 				r.pendingReadback = undefined;
 				r.attempts = 0;
 			}
-			if (r.attempts > 0 && r.attempts % 3 === 0) await this.say(r, tr(r.language, "waiting", { name: item.name }));
+			if (r.attempts > 0 && r.attempts % 3 === 0) await this.say(r, tr(r.language, this.buttonHints(r).click ? "waiting_button" : "waiting", { name: item.name }));
 			await this.openListen(r, item);
 			return;
 		}
@@ -1359,6 +1359,16 @@ export class RunEngine {
 		if (!result.ok || result.confidence * sttFactor < threshold) {
 			r.attempts += 1;
 			if (r.attempts > this.deps.policy.retries) {
+				// a station with an accept button: what the mic misheard never sends the item to the screen, the button
+				// still answers it. The item stays open and the mic re-arms quietly (the hint was said already).
+				if (!r.runId.startsWith("prun_") && this.buttonHints(r).click) {
+					await this.audit(r, "item.ignored", { taskId: item.taskId, dataId: item.dataId, transcript: text, confidence, sub: session?.sub, text: "kept open for the button" });
+					r.attempts = 0;
+					r.exchange = "listening";
+					await this.save(r);
+					await this.openListen(r, item);
+					return;
+				}
 				await this.escalate(r, item, result.ok ? "low confidence" : result.message);
 				return;
 			}

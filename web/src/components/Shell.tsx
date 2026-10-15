@@ -6,6 +6,7 @@ import { Logo } from "./Logo.js";
 import { useDayNight, useTheme } from "../theme.js";
 import { useApp } from "../context.js";
 import { navigate, type Route } from "../router.js";
+import { openFlowApp, useFlowApp } from "../flowapp.js";
 
 /**
  * App chrome. `mobile` (phones / the Android agent) gets a one-line bar: logo, "location · station",
@@ -26,6 +27,7 @@ export function Shell({ route, mobile = false, children }: { route: Route; mobil
 	};
 	// on a phone / tablet the station only counts once a QR poster set it
 	const station = mobile && me.stationSource !== "join" ? undefined : stations.find((s) => s.stationId === me.stationId);
+	useFlowApp(mobile ? station?.flowUrl : undefined);
 	const stationLabel = station ? (station.location ? `${station.location} · ${station.name}` : station.name) : "No station";
 	const themeIcon = theme === "dark" ? "moon" : theme === "light" ? "sun" : "auto";
 	const themeTitle = theme === "dark" ? "Dark" : theme === "light" ? "Light" : "Auto (follows the device)";
@@ -55,7 +57,12 @@ export function Shell({ route, mobile = false, children }: { route: Route; mobil
 							{tenantName ? `${tenantName} · ` : ""}
 							{stationLabel}
 						</span>
-						<button type="button" className="btn ml-auto h-11 shrink-0 gap-2 px-4 text-sm font-semibold tracking-wide uppercase" onClick={toggleNight} aria-pressed={night} aria-label={night ? "Night mode on. Switch to day" : "Day mode on. Switch to night"}>
+						{station?.flowUrl && (
+							<button type="button" className="btn ml-auto h-11 shrink-0 px-4 text-sm font-semibold tracking-wide uppercase" onClick={() => openFlowApp(station.flowUrl!)} title="Open the Maranics Flow app of this station">
+								Flow
+							</button>
+						)}
+						<button type="button" className={`btn ${station?.flowUrl ? "" : "ml-auto "}h-11 shrink-0 gap-2 px-4 text-sm font-semibold tracking-wide uppercase`} onClick={toggleNight} aria-pressed={night} aria-label={night ? "Night mode on. Switch to day" : "Day mode on. Switch to night"}>
 							<Icon name={night ? "moon" : "sun"} size={20} />
 							{night ? "Night" : "Day"}
 						</button>

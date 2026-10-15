@@ -28,6 +28,7 @@ type Params = Record<string, string | number>;
 const T: Record<Lang, Record<string, string>> = {
 	en: {
 		waiting: "Still on {name}. Say next item to move on, or answer when ready.",
+		waiting_button: "Still on {name}. Press the button to confirm, or answer when ready.",
 		menu_intro: "{n} checklists you can run: {list}. Say a number or a name.",
 		menu_intro_one: "One checklist you can run: {list}. Say start, or its name.",
 		menu_none: "No checklist can be run by voice on this station right now.",
@@ -124,6 +125,7 @@ const T: Record<Lang, Record<string, string>> = {
 	},
 	sv: {
 		waiting: "Kvar på {name}. Säg nästa punkt för att gå vidare, eller svara när du är redo.",
+		waiting_button: "Kvar på {name}. Tryck på knappen för att bekräfta, eller svara när du är redo.",
 		menu_intro: "{n} checklistor du kan köra: {list}. Säg ett nummer eller ett namn.",
 		menu_intro_one: "En checklista du kan köra: {list}. Säg starta, eller namnet.",
 		menu_none: "Ingen checklista kan köras med röst på den här stationen just nu.",
@@ -219,6 +221,7 @@ const T: Record<Lang, Record<string, string>> = {
 	},
 	no: {
 		waiting: "Fortsatt på {name}. Si neste punkt for å gå videre, eller svar når du er klar.",
+		waiting_button: "Fortsatt på {name}. Trykk på knappen for å bekrefte, eller svar når du er klar.",
 		menu_intro: "{n} sjekklister du kan kjøre: {list}. Si et nummer eller et navn.",
 		menu_intro_one: "Én sjekkliste du kan kjøre: {list}. Si start, eller navnet.",
 		menu_none: "Ingen sjekkliste kan kjøres med stemme på denne stasjonen nå.",
@@ -314,6 +317,7 @@ const T: Record<Lang, Record<string, string>> = {
 	},
 	fr: {
 		waiting: "Toujours sur {name}. Dites point suivant pour continuer, ou répondez quand vous êtes prêt.",
+		waiting_button: "Toujours sur {name}. Appuyez sur le bouton pour confirmer, ou répondez quand vous êtes prêt.",
 		menu_intro: "{n} listes disponibles : {list}. Dites un numéro ou un nom.",
 		menu_intro_one: "Une liste disponible : {list}. Dites commencer, ou son nom.",
 		menu_none: "Aucune liste ne peut être exécutée par la voix sur cette station pour le moment.",
@@ -409,6 +413,7 @@ const T: Record<Lang, Record<string, string>> = {
 	},
 	de: {
 		waiting: "Weiter bei {name}. Sagen Sie nächster Punkt, um weiterzugehen, oder antworten Sie, wenn Sie bereit sind.",
+		waiting_button: "Weiter bei {name}. Drücken Sie die Taste zum Bestätigen, oder antworten Sie, wenn Sie bereit sind.",
 		menu_intro: "{n} Checklisten stehen bereit: {list}. Sagen Sie eine Nummer oder einen Namen.",
 		menu_intro_one: "Eine Checkliste steht bereit: {list}. Sagen Sie Start, oder den Namen.",
 		menu_none: "Auf dieser Station kann gerade keine Checkliste per Stimme laufen.",

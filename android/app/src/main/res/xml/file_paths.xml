@@ -1,0 +1,5 @@
+<?xml version="1.0" encoding="utf-8"?>
+<paths>
+    <!-- FlowPane: photos for Flow's picture tasks -->
+    <cache-path name="flow-camera" path="flow-camera/" />
+</paths>

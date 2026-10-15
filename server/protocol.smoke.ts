@@ -1,5 +1,5 @@
 import assert from "node:assert/strict";
-import { BUTTON_DOUBLE_MS, BUTTON_HOLD_MS, DEVICE_INFO_MAX_BYTES, bleIsRelease, bleKeyName, bleKeySlot, buttonKeyName, buttonPresses, deviceInfo, deviceLabel, nextInSequence, parseEndpointMessage, stationButtons, stationSequence, type ButtonAction } from "./protocol.js";
+import { BUTTON_DOUBLE_MS, BUTTON_HOLD_MS, DEVICE_INFO_MAX_BYTES, bleIsRelease, bleKeyName, bleKeySlot, buttonKeyName, buttonPresses, deviceInfo, deviceLabel, flowUrlOf, nextInSequence, parseEndpointMessage, stationButtons, stationSequence, type ButtonAction } from "./protocol.js";
 
 export function run(): void {
 	// checklist order on a station: Arrival → Departure (→ Arrival again with loop)
@@ -16,6 +16,13 @@ export function run(): void {
 	assert.deepEqual(nextInSequence(twice, { templateId: "arr" }), { templateId: "mid", index: 1 });
 	assert.deepEqual(stationSequence({ order: ["a", "", 3, " b "], loop: true }), { order: ["a", "b"], loop: true });
 	assert.equal(stationSequence({ order: [] }), undefined);
+	// the station's Flow app address
+	assert.equal(flowUrlOf("https://flow.example.com/?tenant=acme"), "https://flow.example.com/?tenant=acme");
+	assert.equal(flowUrlOf(" flow.example.com "), "https://flow.example.com/");
+	assert.equal(flowUrlOf("javascript:alert(1)"), undefined);
+	assert.equal(flowUrlOf("https://user:pw@flow.example.com/"), undefined);
+	assert.equal(flowUrlOf(""), undefined);
+	assert.equal(flowUrlOf(42), undefined);
 	assert.deepEqual(stationSequence({ order: ["a"], loop: "yes" }), { order: ["a"] });
 	deviceInfoBounds();
 	// key names: the DOM code, else the key, letters and digits only

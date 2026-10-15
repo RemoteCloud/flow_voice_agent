@@ -34,6 +34,11 @@
     <string name="copied">Copied</string>
     <string name="share">Share</string>
     <string name="menu_reload">Reload</string>
+    <string name="menu_flow">Open the Flow app</string>
+    <string name="menu_voice">Back to Flow Voice</string>
+    <string name="flow_back">◀ Flow Voice</string>
+    <string name="flow_downloading">Downloading %1$s</string>
+    <string name="flow_download_unsupported">This file cannot be saved from here.</string>
     <string name="menu_ptt_hint">Push-to-talk: hold the on-screen button, volume-up, or a headset button.</string>
     <string name="notification_channel">Voice session</string>
     <string name="notification_title">Flow Voice</string>

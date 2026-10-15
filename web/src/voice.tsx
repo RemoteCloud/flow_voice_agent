@@ -16,6 +16,7 @@ import { BleButtonLink } from "./components/BleButtonLink.js";
 import { useApp } from "./context.js";
 import { navigate } from "./router.js";
 import { enterFullscreen, exitFullscreen, isMobileClient } from "./platform.js";
+import { chosenVoice } from "./voices.js";
 
 const mobile = isMobileClient();
 
@@ -99,6 +100,9 @@ export function VoiceProvider({ children }: { children: ReactNode }) {
 	const holdRef = useRef(holdToAnswer);
 	const [voiceControl, setVoiceControlState] = useState<boolean>(() => localStorage.getItem("fv.voiceControl") !== "0");
 	const voiceControlRef = useRef(voiceControl);
+	// Admin's default voice per language; read at every sentence, so the device picks up a change on the next boot probe
+	const adminVoicesRef = useRef(boot.speech.voices);
+	adminVoicesRef.current = boot.speech.voices;
 
 	const stop = useCallback(() => {
 		ep.current?.stop();
@@ -125,7 +129,7 @@ export function VoiceProvider({ children }: { children: ReactNode }) {
 			setError(undefined);
 			const endpoint = new AudioEndpoint(
 				// phones / tablets have no settings of their own: language and hold-to-answer come from the station (and the run language from the template)
-				{ stationId: sid, endpointId: endpointId(), language: (mobile ? "" : langRef.current) || station?.language || "en", answerLanguage: mobile ? "" : answerLangRef.current, holdToAnswer: mobile ? !!station?.holdToAnswer : holdRef.current, sttOnEndpoint: boot.speech.stt === "endpoint", serverBackup: !!boot.speech.sttBackup, hubStt: station?.speech === "hub", serverTts: boot.speech.tts === "http", pushToTalk: !open, handsFree: handsFree || open, listens: voiceControlRef.current },
+				{ stationId: sid, endpointId: endpointId(), language: (mobile ? "" : langRef.current) || station?.language || "en", answerLanguage: mobile ? "" : answerLangRef.current, holdToAnswer: mobile ? !!station?.holdToAnswer : holdRef.current, sttOnEndpoint: boot.speech.stt === "endpoint", serverBackup: !!boot.speech.sttBackup, hubStt: station?.speech === "hub", serverTts: boot.speech.tts === "http", voiceFor: (l) => chosenVoice(l, adminVoicesRef.current), pushToTalk: !open, handsFree: handsFree || open, listens: voiceControlRef.current },
 				{
 					onState: (s, t) => {
 						setState(s);
@@ -145,7 +149,10 @@ export function VoiceProvider({ children }: { children: ReactNode }) {
 					},
 					onRole: setRole,
 					onNavigate: (page, opts) => {
-						if (page === "run" && opts.runId) navigate({ page: "run", id: opts.runId });
+						if (page === "run" && opts.runId) {
+							window.FlowVoiceAndroid?.showFlow?.(false); // a checklist started by button or voice: its screen comes to the front over the Flow app
+							navigate({ page: "run", id: opts.runId });
+						}
 						else {
 							exitFullscreen(); // the checklist started full screen has ended
 							navigate({ page: "picker" });

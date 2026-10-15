@@ -22,6 +22,14 @@ declare global {
 	interface Window {
 		FlowVoiceAndroid?: {
 			speak(text: string, language: string, promptId: string): void;
+			/** Newer app builds: speak with one of the engine's voices by name (`voices`); an unknown name reads with the language's default. */
+			speakWith?(text: string, language: string, promptId: string, voice: string): void;
+			/** Newer app builds: the station's Maranics Flow app address ("" = none); the app loads it in its second WebView. */
+			setFlowUrl?(url: string): void;
+			/** Newer app builds: show (true) the Flow app over the voice client, or go back to the voice client (false). */
+			showFlow?(show: boolean): void;
+			/** Newer app builds: the TTS engine's voices for a language, JSON `[{"name": "...", "label": "..."}]`. */
+			voices?(language: string): string;
 			stopSpeaking(): void;
 			startListening(language: string, maxMs: number, promptId: string): void;
 			/** Newer app builds: recognise `language` and also switch to `extraLanguage` (comma-separated tags) when the speaker uses it. */
@@ -124,6 +132,8 @@ export interface EndpointOptions {
 	hubStt?: boolean;
 	/** Hub boot info: the hub has a voice server (GET /api/tts): the same voice on every computer, in the checklist's language. */
 	serverTts?: boolean;
+	/** The voice picked for a language (`voices.ts` `chosenVoice`: this device's pick, else Admin's default): "hub:<voice>" or a device voice name; undefined = automatic. Read at every sentence, so a change applies at once. */
+	voiceFor?: (language: string) => string | undefined;
 	/** false = voice control off on this device: the hub's voice is played, the mic never opens (answers by button or screen). */
 	listens?: boolean;
 }
@@ -201,6 +211,7 @@ export class AudioEndpoint {
 		window.FlowVoiceAndroid?.prepareGrammarStt?.(opts.answerLanguage || opts.language);
 		window.flowVoiceBridge = {
 			onSpoken: (promptId) => {
+				if (promptId === "preview") return; // a voice sample from the voice picker, not the hub's sentence
 				const p = this.pendingSpoken;
 				if (p && (!promptId || p.promptId === promptId)) p.finish();
 				else this.send({ type: "spoken", promptId });
@@ -491,6 +502,14 @@ export class AudioEndpoint {
 	// ------------------------------------------------------------ TTS
 
 	private async speak(text: string, language: string, promptId: string): Promise<void> {
+		const chosen = this.opts.voiceFor?.(language);
+		const hubVoice = chosen?.startsWith("hub:") ? chosen.slice(4) : undefined;
+		const deviceVoice = chosen && !hubVoice ? chosen : undefined;
+		// a hub voice picked for this language: also on Android (the WebView plays it like a browser)
+		if (hubVoice && this.opts.serverTts && (await this.speakFromHub(text, language, hubVoice))) {
+			this.send({ type: "spoken", promptId });
+			return;
+		}
 		if (hasAndroid()) {
 			// Resolve only when Android reports the utterance done (flowVoiceBridge.onSpoken); resolving
 			// early would re-arm the idle mic, whose startListening() stops TTS mid-sentence.
@@ -508,10 +527,13 @@ export class AudioEndpoint {
 				};
 				this.pendingSpoken = { promptId, finish };
 				timer = window.setTimeout(finish, 4000 + text.length * 120); // safety net if the engine never calls back
-				window.FlowVoiceAndroid!.speak(text, language, promptId);
+				const bridge = window.FlowVoiceAndroid!;
+				if (deviceVoice && bridge.speakWith) bridge.speakWith(text, language, promptId, deviceVoice);
+				else bridge.speak(text, language, promptId);
 			});
 		}
-		if (this.opts.serverTts && !this.noServerVoice.has(language) && (await this.speakFromHub(text, language))) {
+		// a device voice picked: read with it, not with the hub's voice
+		if (!deviceVoice && this.opts.serverTts && !this.noServerVoice.has(language) && (await this.speakFromHub(text, language))) {
 			this.send({ type: "spoken", promptId });
 			return;
 		}
@@ -528,7 +550,7 @@ export class AudioEndpoint {
 		}
 		const lang = language.length === 2 ? { en: "en-GB", no: "nb-NO", nb: "nb-NO", sv: "sv-SE", de: "de-DE", fr: "fr-FR", da: "da-DK" }[language] ?? language : language;
 		// a language tag alone is not enough: Chrome and Safari on a Mac keep the default (English) voice unless one is set
-		const voice = pickVoice(lang);
+		const voice = (deviceVoice ? window.speechSynthesis.getVoices().find((v) => v.name === deviceVoice) : undefined) ?? pickVoice(lang);
 		if (!voice && window.speechSynthesis.getVoices().length && !this.warnedVoice.has(lang)) {
 			this.warnedVoice.add(lang);
 			this.cb.onError(`This device has no ${lang} voice, so the text is read with another voice. Add one in the system settings (Mac: System Settings → Accessibility → Spoken Content → System voice → Manage voices).`);
@@ -615,14 +637,14 @@ export class AudioEndpoint {
 	}
 
 	/** Play the sentence with the hub's voice. False = not played (no voice for the language, hub or autoplay trouble): the browser voice takes over. */
-	private async speakFromHub(text: string, language: string): Promise<boolean> {
+	private async speakFromHub(text: string, language: string, voice?: string): Promise<boolean> {
 		this.stopServerVoice();
 		let url: string | undefined;
 		const ctrl = new AbortController();
 		const abort = window.setTimeout(() => ctrl.abort(), 6000); // a slow or stuck voice server must not hold the dialogue: the browser voice takes over
 		try {
-			const res = await fetch(`/api/tts?lang=${encodeURIComponent(language)}&text=${encodeURIComponent(text)}`, { credentials: "same-origin", signal: ctrl.signal }).finally(() => window.clearTimeout(abort));
-			if (res.status === 404) this.noServerVoice.add(language);
+			const res = await fetch(`/api/tts?lang=${encodeURIComponent(language)}&text=${encodeURIComponent(text)}${voice ? `&voice=${encodeURIComponent(voice)}` : ""}`, { credentials: "same-origin", signal: ctrl.signal }).finally(() => window.clearTimeout(abort));
+			if (res.status === 404 && !voice) this.noServerVoice.add(language);
 			if (!res.ok) return false;
 			url = URL.createObjectURL(await res.blob());
 			const audio = new Audio(url);

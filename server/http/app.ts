@@ -8,7 +8,7 @@ import { Hono, type Context } from "hono";
 import QRCode from "qrcode";
 import { deleteCookie, getCookie, setCookie } from "hono/cookie";
 import type { ApiError, EnrollPollResponse, EnrollRequest, EnrollResponse, HealthResponse, JoinRequest, JoinResponse, JoinTokenResponse, LibraryView, LogoutResponse, MeResponse, SessionProbeResponse, StationView, StatusResponse } from "../api.js";
-import { BUTTON_ACTIONS, isJoinToken, normalizeJoinCode, stationButtons, stationSequence, type TriggerSpec, type VoiceMode } from "../protocol.js";
+import { BUTTON_ACTIONS, flowUrlOf, isJoinToken, normalizeJoinCode, stationButtons, stationSequence, type TriggerSpec, type VoiceMode } from "../protocol.js";
 import type { HubEnv } from "../env.js";
 import type { Logger } from "../core/log.js";
 import type { VoiceRecorder } from "../speech/capture.js";
@@ -222,7 +222,7 @@ export function createApp(deps: AppDeps): Hono {
 	// ----- auth
 	api.get("/auth/session", async (c) => {
 		const row = await sessionFromRequest(c);
-		const res: SessionProbeResponse = { authenticated: !!row, me: row ? meOf(row) : undefined, provider: auth.providerView(), hubVersion: deps.version, vesselId: env.vesselId, hubUrl: hubUrlOf(c), stations: store.get().stations, speech: { stt: env.speech.sttMode, tts: env.speech.ttsMode, sttBackup: !!deps.sttBackup }, maranicsConfigured: !!env.maranics };
+		const res: SessionProbeResponse = { authenticated: !!row, me: row ? meOf(row) : undefined, provider: auth.providerView(), hubVersion: deps.version, vesselId: env.vesselId, hubUrl: hubUrlOf(c), stations: store.get().stations, speech: { stt: env.speech.sttMode, tts: env.speech.ttsMode, sttBackup: !!deps.sttBackup, ttsVoices: deps.tts?.voices(), voices: store.get().settings.voices ?? {} }, maranicsConfigured: !!env.maranics };
 		return c.json(res);
 	});
 
@@ -543,7 +543,7 @@ export function createApp(deps: AppDeps): Hono {
 		const body = (await c.req.json().catch(() => undefined)) as Station[] | undefined;
 		if (!Array.isArray(body) || !body.every((s) => isObj(s) && str(s.stationId) && str(s.name))) return fail(c, 400, "BAD_REQUEST", "array of stations expected");
 		await store.update((d) => {
-			d.stations = body.map((s) => ({ stationId: s.stationId, name: s.name, location: str(s.location), defaultProfile: s.defaultProfile ?? null, language: s.language || "en", audioPolicy: s.audioPolicy === "open" ? "open" : "ptt", autoStartAllowed: !!s.autoStartAllowed, verbosity: s.verbosity ?? "full", voiceActions: s.voiceActions !== false, holdToAnswer: s.holdToAnswer === true, askNext: s.askNext !== false, voiceMode: voiceMode(s.voiceMode), voiceModeCrew: s.voiceModeCrew === true, recordVoice: s.recordVoice === true, speech: s.speech === "hub" ? "hub" : undefined, buttons: stationButtons(s.buttons), templates: templateRules(s.templates), sequence: stationSequence(s.sequence) }));
+			d.stations = body.map((s) => ({ stationId: s.stationId, name: s.name, location: str(s.location), flowUrl: flowUrlOf(s.flowUrl), defaultProfile: s.defaultProfile ?? null, language: s.language || "en", audioPolicy: s.audioPolicy === "open" ? "open" : "ptt", autoStartAllowed: !!s.autoStartAllowed, verbosity: s.verbosity ?? "full", voiceActions: s.voiceActions !== false, holdToAnswer: s.holdToAnswer === true, askNext: s.askNext !== false, voiceMode: voiceMode(s.voiceMode), voiceModeCrew: s.voiceModeCrew === true, recordVoice: s.recordVoice === true, speech: s.speech === "hub" ? "hub" : undefined, buttons: stationButtons(s.buttons), templates: templateRules(s.templates), sequence: stationSequence(s.sequence) }));
 			for (const id of Object.keys(d.stationJoins)) if (!d.stations.some((s) => s.stationId === id)) delete d.stationJoins[id];
 		});
 		await ensureJoins(c.get("sessionRow").sub);
@@ -768,7 +768,8 @@ export function createApp(deps: AppDeps): Hono {
 		if (!text || text.length > MAX_TTS_CHARS) return fail(c, 400, "BAD_REQUEST", `text is required, at most ${MAX_TTS_CHARS} characters`);
 		if (!deps.tts.supports(lang)) return fail(c, 404, "TTS_NO_VOICE", `no server voice for ${lang}`);
 		try {
-			const wav = await deps.tts.speak(text, lang);
+			// a voice picked on the device or in Admin; one the server does not have for this language falls back to its default
+			const wav = await deps.tts.speak(text, lang, c.req.query("voice") || undefined);
 			return c.body(new Uint8Array(wav), 200, { "content-type": "audio/wav", "cache-control": "private, max-age=3600" });
 		} catch (err) {
 			log.warn(`voice server: ${err instanceof Error ? err.message : String(err)}`);
@@ -944,6 +945,12 @@ export function createApp(deps: AppDeps): Hono {
 					if (Object.keys(per).length) all[tpl] = per;
 				}
 				d.settings.itemAnswers = all;
+			}
+			if (body.voices && typeof body.voices === "object") {
+				// language → voice id; an empty value = no default for that language (each device reads with its own)
+				const next: Record<string, string> = {};
+				for (const [k, v] of Object.entries(body.voices)) if (/^[a-z]{2}$/.test(k) && typeof v === "string" && v.trim() && v.length <= 200) next[k] = v.trim();
+				d.settings.voices = next;
 			}
 			if (Array.isArray(body.startable)) d.settings.startable = [...new Set(body.startable.filter((x): x is string => typeof x === "string" && !!x.trim()))];
 		});

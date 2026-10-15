@@ -53,6 +53,9 @@ export interface Station {
 	name: string;
 	/** Free text shown before the station name on phones: "Location 1 · Bridge". Portable (stations.json). */
 	location?: string;
+	/** Address of the Maranics Flow app for this station ("https://flow.example.com/?tenant=acme"): the Android app loads it
+	 * next to the voice client once it joins the station, so one QR poster sets up both. Portable (stations.json). */
+	flowUrl?: string;
 	defaultProfile?: string | null;
 	language: string;
 	audioPolicy: "ptt" | "open";
@@ -390,7 +393,7 @@ export interface HubData {
 	recording?: CentralRecording;
 	/** Portable file → modification time it had when it was last imported; a file is imported again only after it changed. */
 	portableSeen?: Record<string, number>;
-	settings: { readNotices: boolean; tzMode: "utc" | "local"; confirmation: "required" | "optional"; /** Template ids that get a start button on the phone/tablet home screen and in the voice menu; empty or absent → every template. */ startable?: string[]; /** Template id → language the checklist is written in (en/sv/no/fr/de); wins over the station language. */ templateLanguages?: Record<string, string>; /** Template id → item key (`answerKey`) → words that count as that item's answer ("up", "closed"); "a + b" = every part must be heard, in any order. */ itemAnswers?: Record<string, Record<string, string[]>>; /** Template id → item key (`answerKey`) → the trigger words that name and set that item when spoken out of turn. */ itemTriggers?: Record<string, Record<string, TriggerSpec>>; /** Template ids where only the marked answer words count: items with words refuse a plain yes / confirm / no. */ wordsOnly?: string[]; /** Template id → how close a heard word must be to a marked answer word; absent = normal. */ wordMatch?: Record<string, "exact" | "normal" | "loose">; /** Template id → how the run moves to the next item; absent = at once. */ stepMode?: Record<string, StepMode> };
+	settings: { readNotices: boolean; tzMode: "utc" | "local"; confirmation: "required" | "optional"; /** Template ids that get a start button on the phone/tablet home screen and in the voice menu; empty or absent → every template. */ startable?: string[]; /** Template id → language the checklist is written in (en/sv/no/fr/de); wins over the station language. */ templateLanguages?: Record<string, string>; /** Template id → item key (`answerKey`) → words that count as that item's answer ("up", "closed"); "a + b" = every part must be heard, in any order. */ itemAnswers?: Record<string, Record<string, string[]>>; /** Template id → item key (`answerKey`) → the trigger words that name and set that item when spoken out of turn. */ itemTriggers?: Record<string, Record<string, TriggerSpec>>; /** Template ids where only the marked answer words count: items with words refuse a plain yes / confirm / no. */ wordsOnly?: string[]; /** Template id → how close a heard word must be to a marked answer word; absent = normal. */ wordMatch?: Record<string, "exact" | "normal" | "loose">; /** Template id → how the run moves to the next item; absent = at once. */ stepMode?: Record<string, StepMode>; /** Language (en/sv/no/fr/de) → the voice every device reads with unless the person on it picked another (`voiceId`: "hub:<voice>" or a device voice name). */ voices?: Record<string, string> };
 }
 
 export function emptyData(): HubData {

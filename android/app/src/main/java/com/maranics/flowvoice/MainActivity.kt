@@ -144,6 +144,19 @@ class MainActivity : AppCompatActivity() {
         if (!granted) Toast.makeText(this, R.string.mic_denied, Toast.LENGTH_LONG).show()
     }
     private val notifPermission = registerForActivityResult(ActivityResultContracts.RequestPermission()) { }
+
+    /** The station's Maranics Flow app in a second WebView (FlowPane.kt); its address comes from the page (`setFlowUrl`). */
+    private lateinit var flowPane: FlowPane
+    private var pickThen: ((Int, android.content.Intent?) -> Unit)? = null
+    private val pickLauncher = registerForActivityResult(ActivityResultContracts.StartActivityForResult()) { r ->
+        pickThen?.invoke(r.resultCode, r.data)
+        pickThen = null
+    }
+    private var permThen: ((Boolean) -> Unit)? = null
+    private val permLauncher = registerForActivityResult(ActivityResultContracts.RequestPermission()) { granted ->
+        permThen?.invoke(granted)
+        permThen = null
+    }
     /** "Scan QR": the hub shows its own address as a QR code (Login page / Admin → Status). */
     private val scanQr = registerForActivityResult(ScanContract()) { result ->
         val text = result.contents?.trim()
@@ -234,7 +247,19 @@ class MainActivity : AppCompatActivity() {
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
         web = WebView(this)
-        setContentView(web)
+        // the voice client fills the screen; the station's Flow app (FlowPane) lies over it when shown
+        val root = android.widget.FrameLayout(this)
+        root.addView(web, android.widget.FrameLayout.LayoutParams(android.view.ViewGroup.LayoutParams.MATCH_PARENT, android.view.ViewGroup.LayoutParams.MATCH_PARENT))
+        setContentView(root)
+        flowPane = FlowPane(
+            this, root,
+            pick = { intent, then -> pickThen = then; pickLauncher.launch(intent) },
+            permission = { perm, then ->
+                if (ContextCompat.checkSelfPermission(this, perm) == android.content.pm.PackageManager.PERMISSION_GRANTED) then(true)
+                else { permThen = then; permLauncher.launch(perm) }
+            },
+            onShown = { on -> js("window.flowVoiceFlowShown&&window.flowVoiceFlowShown($on)") },
+        )
         with(web.settings) {
             javaScriptEnabled = true
             domStorageEnabled = true
@@ -309,6 +334,8 @@ class MainActivity : AppCompatActivity() {
     private fun load() {
         val url = hubUrl
         if (url.isNullOrBlank()) askHubUrl(first = true) else web.loadUrl(url)
+        // the station's Flow app from last time loads next to it; the page confirms or changes it once it knows the station
+        prefs.getString("flowUrl", null)?.let { flowPane.setUrl(it) }
     }
 
     /** Accepts a plain http(s) URL or a flowvoice://hub?url=… link; anything else is not a hub. */
@@ -401,15 +428,18 @@ class MainActivity : AppCompatActivity() {
     }
 
     private fun showMenu() {
-        val items = arrayOf(getString(R.string.menu_hub), getString(R.string.menu_scan), getString(R.string.menu_code), getString(R.string.menu_button), getString(R.string.menu_device_info), getString(R.string.menu_reload), getString(R.string.menu_ptt_hint))
+        val flow = flowPane.url != null
+        val items = arrayOf(getString(R.string.menu_hub), getString(R.string.menu_scan), getString(R.string.menu_code), getString(R.string.menu_button), getString(R.string.menu_device_info), getString(R.string.menu_reload), getString(R.string.menu_ptt_hint)) +
+            (if (flow) arrayOf(getString(if (flowPane.shown) R.string.menu_voice else R.string.menu_flow)) else emptyArray())
         AlertDialog.Builder(this).setItems(items) { _, which ->
             when (which) {
+                7 -> flowPane.show(!flowPane.shown)
                 0 -> askHubUrl(first = false)
                 1 -> startScan()
                 2 -> askStationCode()
                 3 -> showButtons()
                 4 -> showDeviceInfo()
-                5 -> web.reload()
+                5 -> if (flowPane.shown) flowPane.reload() else web.reload()
             }
         }.show()
     }
@@ -542,6 +572,7 @@ class MainActivity : AppCompatActivity() {
     private fun isPttKey(keyCode: Int) = keyCode == KeyEvent.KEYCODE_VOLUME_UP || keyCode == KeyEvent.KEYCODE_HEADSETHOOK || keyCode == KeyEvent.KEYCODE_MEDIA_PLAY_PAUSE
 
     override fun onBackPressed() {
+        if (flowPane.back()) return
         if (web.canGoBack()) web.goBack() else super.onBackPressed()
     }
 
@@ -552,6 +583,7 @@ class MainActivity : AppCompatActivity() {
 
     override fun onDestroy() {
         for (b in bleButtons) b.close()
+        flowPane.destroy()
         vosk.shutdown()
         recognizer?.destroy()
         web.removeCallbacks(unmuteEarcons)
@@ -642,8 +674,56 @@ class MainActivity : AppCompatActivity() {
             if (t.speak(text, TextToSpeech.QUEUE_FLUSH, null, promptId) != TextToSpeech.SUCCESS) spoken(promptId)
         }
 
+        /** Like speak, with one of the engine's voices by name (Home → Voice, Admin → Voices); an unknown name reads with the language's default voice. */
+        @JavascriptInterface
+        fun speakWith(text: String, language: String, promptId: String, voice: String) = runOnUiThread {
+            closeWindow()
+            val t = tts
+            if (t == null || !ttsReady) {
+                js("window.flowVoiceBridge&&window.flowVoiceBridge.onSpoken(${q(promptId)})")
+                return@runOnUiThread
+            }
+            t.language = localeOf(language)
+            runCatching { t.voices?.firstOrNull { it.name == voice }?.let { t.voice = it } }
+            t.setSpeechRate(0.95f)
+            if (t.speak(text, TextToSpeech.QUEUE_FLUSH, null, promptId) != TextToSpeech.SUCCESS) spoken(promptId)
+        }
+
+        /** The engine's voices for a language, offline ones first: `[{"name": "...", "label": "..."}]` for the voice picker. */
+        @JavascriptInterface
+        fun voices(language: String): String {
+            val t = tts
+            if (t == null || !ttsReady) return "[]"
+            return runCatching {
+                val want = localeOf(language).language
+                val out = JSONArray()
+                (t.voices ?: emptySet())
+                    .filter { it.locale.language == want || (want == "nb" && it.locale.language in setOf("no", "nn")) }
+                    .filter { !it.features.contains(TextToSpeech.Engine.KEY_FEATURE_NOT_INSTALLED) }
+                    .sortedWith(compareBy({ it.isNetworkConnectionRequired }, { -it.quality }, { it.name }))
+                    .take(40)
+                    .forEach { v ->
+                        val label = "${v.name} (${v.locale.toLanguageTag()}${if (v.isNetworkConnectionRequired) ", online" else ""})"
+                        out.put(JSONObject().put("name", v.name).put("label", label))
+                    }
+                out.toString()
+            }.getOrDefault("[]")
+        }
+
         @JavascriptInterface
         fun stopSpeaking() = runOnUiThread { tts?.stop() }
+
+        /** The station's Maranics Flow address (Admin → Stations), "" = none: loaded in the Flow pane at once, so it is ready when shown. */
+        @JavascriptInterface
+        fun setFlowUrl(url: String) = runOnUiThread {
+            val clean = url.trim().takeIf { it.startsWith("https://") || it.startsWith("http://") }
+            prefs.edit().apply { if (clean == null) remove("flowUrl") else putString("flowUrl", clean) }.apply()
+            flowPane.setUrl(clean)
+        }
+
+        /** Show the Flow app over the voice client (true) or go back to the voice client (false). */
+        @JavascriptInterface
+        fun showFlow(show: Boolean) = runOnUiThread { flowPane.show(show) }
 
         @JavascriptInterface
         fun startListening(language: String, maxMs: Int, promptId: String) = runOnUiThread {

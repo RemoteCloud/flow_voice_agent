@@ -39,7 +39,7 @@ export interface SessionProbeResponse {
 	/** The address the Android app pairs with (also rendered at GET /api/qr.svg). */
 	hubUrl: string;
 	stations: Station[];
-	speech: { stt: "endpoint" | "http"; tts: "endpoint" | "http"; /** the hub can transcribe a window the device could not (POST /api/stt) */ sttBackup?: boolean };
+	speech: { stt: "endpoint" | "http"; tts: "endpoint" | "http"; /** the hub can transcribe a window the device could not (POST /api/stt) */ sttBackup?: boolean; /** language → the voice server's voices (first = its default) */ ttsVoices?: Record<string, string[]>; /** language → the voice Admin set as default for every device (Admin → Status → Voices) */ voices?: Record<string, string> };
 	maranicsConfigured: boolean;
 }
 
@@ -103,7 +103,7 @@ export interface StatusResponse {
 	sessions: { id: string; sub: string; name?: string; stationId?: string; lastSeenAt: string; createdAt: string; credential: string }[];
 	prompts: { promptId: string; stationId: string; prompt: string; state: string; createdAt: string }[];
 	speech: { stt: "endpoint" | "http"; tts: "endpoint" | "http"; sttUrl?: string; sttBackup?: boolean; sttBackupUrl?: string };
-	settings: { readNotices: boolean; tzMode: "utc" | "local"; confirmation: "required" | "optional"; /** Template ids that get a start button on the phone/tablet home screen and in the voice menu; empty or absent → every template. */ startable?: string[]; /** Template id → language the checklist is written in (en/sv/no/fr/de); wins over the station language. */ templateLanguages?: Record<string, string>; /** Template id → item key (`answerKey`) → words that count as that item's answer ("up", "closed"); "a + b" = every part must be heard, in any order. */ itemAnswers?: Record<string, Record<string, string[]>> };
+	settings: { readNotices: boolean; tzMode: "utc" | "local"; confirmation: "required" | "optional"; /** Template ids that get a start button on the phone/tablet home screen and in the voice menu; empty or absent → every template. */ startable?: string[]; /** Template id → language the checklist is written in (en/sv/no/fr/de); wins over the station language. */ templateLanguages?: Record<string, string>; /** Template id → item key (`answerKey`) → words that count as that item's answer ("up", "closed"); "a + b" = every part must be heard, in any order. */ itemAnswers?: Record<string, Record<string, string[]>>; /** Language → default voice for every device ("hub:<voice>" or a device voice name). */ voices?: Record<string, string> };
 }
 
 export interface EnrollRequest {
