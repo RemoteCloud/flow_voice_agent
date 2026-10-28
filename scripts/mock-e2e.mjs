@@ -875,6 +875,7 @@ try {
 	await waitFor(async () => (await vcView()).currentTaskId === firstNeg.taskId, "one press at the end goes back to the first negative");
 	// two quick presses while items are open (back at the end): the hub says what is open instead of completing
 	await api("POST", `runs/${vcRun.runId}/abandon`);
+	assert.ok(!vcSpoken.some((t) => /checklists? you can run|Say a number or a name/i.test(t)), "voice control off: the menu is never read out");
 	vcWs.close();
 	await api("PUT", "stations/ecr-01/buttons", { buttons: [] });
 

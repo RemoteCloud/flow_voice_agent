@@ -2058,6 +2058,8 @@ export class RunEngine {
 
 	/** The checklists a signed-in user can run on this station, spoken as a numbered list. */
 	async speakMenu(stationId: string, session: HubSession | undefined): Promise<void> {
+		// voice control off on the device: nobody can say a number or a name, so the menu stays on the screen
+		if (this.deps.io.hasEndpoint(stationId) && !this.deps.io.endpointListens(stationId)) return;
 		const lang = this.stationLang(stationId);
 		if (!session) {
 			await this.sayOn(stationId, lang, tr(lang, "sign_in_first"));
